@@ -14,7 +14,7 @@ cors = CORS()
 
 # Add project root to path for core imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from core.auth import create_token, verify_token
+from core.auth import create_token, verify_token as verify_jwt
 from core.vision_medical import analyze_muscle_growth
 from core.volumetrics import estimate_muscle_volume, compare_volumes
 from core.segmentation import score_muscle_shape, AVAILABLE_TEMPLATES
@@ -31,13 +31,6 @@ _LEGACY_DEV_TOKEN = os.environ.get('MUSCLE_TRACKER_API_TOKEN', 'dev-secret-token
 def require_auth():
     """
     Authenticate the request via JWT or legacy static token.
-
-    Checks the Authorization header for:
-      1. 'Bearer <jwt>' — verifies and decodes the JWT
-      2. 'Bearer <legacy-token>' — matches against MUSCLE_TRACKER_API_TOKEN (dev only)
-
-    Aborts with 401 if neither succeeds.
-    Sets request._auth_payload to the decoded JWT payload when using JWT.
     """
     auth_header = request.headers.get('Authorization')
     if not auth_header or not auth_header.startswith('Bearer '):
@@ -46,21 +39,36 @@ def require_auth():
     token = auth_header[7:]  # Strip 'Bearer '
 
     # Try JWT first
-    payload = verify_token(token)
+    payload = verify_jwt(token)
     if payload is not None:
         request._auth_payload = payload
-        return
+        return payload
 
     # Fall back to legacy static token (dev mode)
     if token == _LEGACY_DEV_TOKEN:
-        request._auth_payload = {'sub': 'dev', 'role': 'admin'}
-        return
+        payload = {'sub': 'dev', 'role': 'admin'}
+        request._auth_payload = payload
+        return payload
 
     abort(401, "Unauthorized: Invalid or expired token")
 
 
-# Keep old name as alias so nothing breaks
-require_api_token = require_auth
+def require_customer_auth(customer_id):
+    """
+    Enforce authentication and ensure the requesting user owns the data.
+    """
+    payload = require_auth()
+    requesting_customer_id = payload.get('sub')
+    
+    # In dev mode with legacy token, sub is 'dev'
+    if requesting_customer_id == 'dev':
+        return requesting_customer_id
+
+    if str(requesting_customer_id) != str(customer_id):
+        abort(403, "Access denied: You do not have permission to access this resource")
+    
+    return requesting_customer_id
+
 
 # File upload constraints
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
@@ -76,7 +84,6 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 def auth_token():
     """
     Issue a JWT token. Accepts email or customer_id.
-    Validates that the customer exists and returns a token.
     """
     data = request.json or {}
     email = data.get('email', '').strip()
@@ -103,8 +110,7 @@ def auth_token():
 @action.uses(cors)
 def auth_admin_token():
     """
-    Issue an admin JWT token. Requires the admin secret.
-    Set MUSCLE_TRACKER_ADMIN_SECRET env var in production.
+    Issue an admin JWT token.
     """
     data = request.json or {}
     secret = data.get('admin_secret', '')
@@ -122,8 +128,7 @@ def auth_admin_token():
 @action('index')
 @action.uses('index.html', db)
 def index():
-    customers = db(db.customer.is_active == True).select(
-        orderby=db.customer.name)
+    customers = db(db.customer.is_active == True).select(orderby=db.customer.name)
     return dict(customers=customers)
 
 
@@ -132,7 +137,9 @@ def index():
 @action('api/customers', method=['GET'])
 @action.uses(db, cors)
 def list_customers():
-    require_api_token()
+    payload = require_auth()
+    if payload.get('role') != 'admin':
+        abort(403, "Admin access required")
     customers = db(db.customer.is_active == True).select().as_list()
     return dict(status='success', customers=customers)
 
@@ -140,7 +147,7 @@ def list_customers():
 @action('api/customers', method=['POST'])
 @action.uses(db, cors)
 def create_customer():
-    require_api_token()
+    # Registration is public
     name = request.json.get('name', '').strip()
     email = request.json.get('email', '').strip()
 
@@ -169,36 +176,29 @@ def create_customer():
 @action('api/upload_scan/<customer_id:int>', method=['POST'])
 @action.uses(db, cors)
 def upload_scan(customer_id):
-    require_api_token()
-    # Validate customer exists
+    auth_id = require_customer_auth(customer_id)
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
 
-    # Get uploaded files
     front = request.files.get('front')
     side = request.files.get('side')
 
     if not front or not side:
         return dict(status='error', message='Both front and side images required')
 
-    # Validate file types
     for f in (front, side):
         ext = os.path.splitext(f.filename)[1].lower()
         if ext not in ALLOWED_EXTENSIONS:
-            return dict(status='error',
-                        message=f'Invalid file type: {ext}. Allowed: {", ".join(ALLOWED_EXTENSIONS)}')
+            return dict(status='error', message=f'Invalid file type: {ext}. Allowed: {", ".join(ALLOWED_EXTENSIONS)}')
 
-    # Validate file sizes
     for f in (front, side):
-        f.file.seek(0, 2)  # Seek to end
+        f.file.seek(0, 2)
         size = f.file.tell()
-        f.file.seek(0)     # Reset
+        f.file.seek(0)
         if size > MAX_FILE_SIZE_BYTES:
-            return dict(status='error',
-                        message=f'File too large: {size // (1024*1024)}MB (max {MAX_FILE_SIZE_MB}MB)')
+            return dict(status='error', message=f'File too large: {size // (1024*1024)}MB (max {MAX_FILE_SIZE_MB}MB)')
 
-    # Optional parameters
     muscle_group = request.forms.get('muscle_group', 'bicep')
     scan_side = request.forms.get('side', 'front')
     marker_size = float(request.forms.get('marker_size', '20.0'))
@@ -208,20 +208,25 @@ def upload_scan(customer_id):
     if muscle_group not in MUSCLE_GROUPS:
         return dict(status='error', message=f'Invalid muscle group. Options: {MUSCLE_GROUPS}')
 
-    # Store files
     front_filename = db.muscle_scan.img_front.store(front.file, front.filename)
     side_filename = db.muscle_scan.img_side.store(side.file, side.filename)
 
     front_path = os.path.join('uploads', front_filename)
     side_path = os.path.join('uploads', side_filename)
 
-    return _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template)
+    res = _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template)
+    
+    if res.get('status') == 'success':
+        db.audit_log.insert(customer_id=auth_id if auth_id != 'dev' else customer_id, action='upload_scan', resource_id=str(res.get('scan_id')), ip_address=request.environ.get('REMOTE_ADDR', 'unknown'))
+        db.commit()
+    
+    return res
 
 
 @action('api/upload_video/<customer_id:int>', method=['POST'])
 @action.uses(db, cors)
 def upload_video(customer_id):
-    require_api_token()
+    auth_id = require_customer_auth(customer_id)
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -234,42 +239,39 @@ def upload_video(customer_id):
     if ext not in ALLOWED_VIDEO_EXTENSIONS:
         return dict(status='error', message=f'Invalid video type: {ext}')
 
-    # Store video
     video_filename = db.muscle_scan.img_front.store(video.file, video.filename)
     video_path = os.path.join('uploads', video_filename)
 
-    # Extract keyframes
     frames = extract_keyframes(video_path, num_frames=3)
     if len(frames) < 2:
         return dict(status='error', message='Failed to extract enough keyframes from video')
 
-    # Save keyframes as JPEGs
     uploads_dir = 'uploads'
     kf_paths = save_keyframes(frames, uploads_dir)
     
-    # Use first two as front and side
     front_path = kf_paths[0]
     side_path = kf_paths[1]
-    
     front_filename = os.path.basename(front_path)
     side_filename = os.path.basename(side_path)
 
-    # Optional parameters
     muscle_group = request.forms.get('muscle_group', 'bicep')
     scan_side = request.forms.get('side', 'front')
     marker_size = float(request.forms.get('marker_size', '20.0'))
     volume_model = request.forms.get('volume_model', 'elliptical_cylinder')
     shape_template = request.forms.get('shape_template')
 
-    return _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template)
+    res = _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template)
+    
+    if res.get('status') == 'success':
+        db.audit_log.insert(customer_id=auth_id if auth_id != 'dev' else customer_id, action='upload_video', resource_id=str(res.get('scan_id')), ip_address=request.environ.get('REMOTE_ADDR', 'unknown'))
+        db.commit()
+        
+    return res
 
 
 def _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template):
     try:
-        # Get height from customer profile for pose calibration if available
         user_height_cm = customer.height_cm
-
-        # 1. Analyze both views
         res_f = analyze_muscle_growth(front_path, front_path, marker_size, align=False, muscle_group=muscle_group, user_height_cm=user_height_cm)
         res_s = analyze_muscle_growth(side_path, side_path, marker_size, align=False, muscle_group=muscle_group, user_height_cm=user_height_cm)
 
@@ -277,20 +279,16 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
             error_msg = res_f.get("error", "") or res_s.get("error", "")
             return dict(status='error', message=f'Vision analysis failed: {error_msg}')
 
-        # 2. Extract metrics
         unit = "mm" if res_f.get("calibrated") else "px"
         area = res_f['metrics'].get(f'area_a_{unit}2', 0.0)
         width = res_f['metrics'].get(f'width_a_{unit}', 0.0)
         height = res_f['metrics'].get(f'height_a_{unit}', 0.0)
-
         area_side = res_s['metrics'].get(f'area_a_{unit}2', 0.0)
         width_side = res_s['metrics'].get(f'width_a_{unit}', 0.0)
 
-        # 3. Calculate volume
         vol_result = estimate_muscle_volume(area, area_side, width, width_side, volume_model)
         vol_cm3 = vol_result.get('volume_cm3', 0.0)
 
-        # 4. Shape scoring (if template specified)
         shape_score = None
         shape_grade = None
         if shape_template and shape_template in AVAILABLE_TEMPLATES:
@@ -299,7 +297,6 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
             shape_score = shape_result.get('score')
             shape_grade = shape_result.get('grade')
 
-        # 5. Compare to previous scan
         growth_pct = None
         volume_delta = None
         prev_scan = db(
@@ -312,7 +309,6 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
             if prev_scan.volume_cm3 > 0:
                 growth_pct = (volume_delta / prev_scan.volume_cm3) * 100
 
-        # 6. Save to database
         detection_conf = res_f.get('confidence', {}).get('detection', 0)
         scan_id = db.muscle_scan.insert(
             customer_id=customer_id,
@@ -346,8 +342,7 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
             volume_delta_cm3=round(volume_delta, 2) if volume_delta else None,
             calibrated=res_f.get('calibrated', False),
         )
-
-    except Exception as e:
+    except Exception:
         logger.exception("Scan processing failed for customer %d", customer_id)
         return dict(status='error', message='Scan processing failed. Please try again.')
 
@@ -357,7 +352,7 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
 @action('api/customer/<customer_id:int>/scans', method=['GET'])
 @action.uses(db, cors)
 def customer_scans(customer_id):
-    require_api_token()
+    require_customer_auth(customer_id)
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -368,8 +363,6 @@ def customer_scans(customer_id):
         query &= db.muscle_scan.muscle_group == muscle_group
 
     scans = db(query).select(orderby=~db.muscle_scan.scan_date).as_list()
-
-    # Strip raw image data from response
     for scan in scans:
         scan.pop('img_front', None)
         scan.pop('img_side', None)
@@ -380,8 +373,7 @@ def customer_scans(customer_id):
 @action('api/customer/<customer_id:int>/report/<scan_id:int>', method=['GET'])
 @action.uses(db, cors)
 def generate_report(customer_id, scan_id):
-    """Generate a clinical report PNG for a specific scan."""
-    require_auth()
+    auth_id = require_customer_auth(customer_id)
     customer = db.customer(customer_id)
     if not customer:
         abort(404, "Customer not found")
@@ -415,10 +407,7 @@ def generate_report(customer_id, scan_id):
 
     shape_result = None
     if scan.shape_score is not None:
-        shape_result = {
-            "score": scan.shape_score,
-            "grade": scan.shape_grade,
-        }
+        shape_result = {"score": scan.shape_score, "grade": scan.shape_grade}
 
     try:
         generate_clinical_report(
@@ -431,6 +420,10 @@ def generate_report(customer_id, scan_id):
         response.headers['Content-Type'] = 'image/png'
         with open(temp_path, 'rb') as f:
             data = f.read()
+        
+        db.audit_log.insert(customer_id=auth_id if auth_id != 'dev' else customer_id, action='get_report', resource_id=str(scan_id), ip_address=request.environ.get('REMOTE_ADDR', 'unknown'))
+        db.commit()
+        
         return data
     finally:
         if os.path.exists(temp_path):
@@ -440,7 +433,7 @@ def generate_report(customer_id, scan_id):
 @action('api/customer/<customer_id:int>/progress', method=['GET'])
 @action.uses(db, cors)
 def customer_progress(customer_id):
-    require_api_token()
+    require_customer_auth(customer_id)
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -453,7 +446,6 @@ def customer_progress(customer_id):
     scans = db(query).select(orderby=db.muscle_scan.scan_date).as_list()
     trend = analyze_trend(scans)
 
-    # Optionally correlate with health data
     health_logs = db(db.health_log.customer_id == customer_id).select().as_list()
     correlation = None
     if len(health_logs) >= 3:
@@ -465,7 +457,7 @@ def customer_progress(customer_id):
 @action('api/customer/<customer_id:int>/symmetry', method=['POST'])
 @action.uses(db, cors)
 def customer_symmetry(customer_id):
-    require_api_token()
+    require_customer_auth(customer_id)
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -484,7 +476,6 @@ def customer_symmetry(customer_id):
     muscle_group = request.forms.get('muscle_group', 'bicep')
     marker_size = float(request.forms.get('marker_size', '20.0'))
 
-    # Store temporarily for analysis
     left_filename = db.muscle_scan.img_front.store(left.file, left.filename)
     right_filename = db.muscle_scan.img_front.store(right.file, right.filename)
 
@@ -493,11 +484,9 @@ def customer_symmetry(customer_id):
 
     try:
         result = compare_symmetry(left_path, right_path, marker_size, muscle_group)
-
         if "error" in result:
             return dict(status='error', message=result['error'])
 
-        # Save assessment
         db.symmetry_assessment.insert(
             customer_id=customer_id,
             muscle_group=muscle_group,
@@ -507,10 +496,8 @@ def customer_symmetry(customer_id):
             verdict=result['verdict'],
         )
         db.commit()
-
         return dict(status='success', **result)
-
-    except Exception as e:
+    except Exception:
         logger.exception("Symmetry analysis failed for customer %d", customer_id)
         return dict(status='error', message='Symmetry analysis failed')
 
@@ -520,8 +507,8 @@ def customer_symmetry(customer_id):
 @action('api/pose_check', method=['POST'])
 @action.uses(db, cors)
 def pose_check():
-    require_api_token()
-
+    # Pose check is public for helping users capture good images
+    require_auth()
     image_file = request.files.get('image')
     if not image_file:
         return dict(status='error', message='Image file is required')
@@ -530,7 +517,6 @@ def pose_check():
     if ext not in ALLOWED_EXTENSIONS:
         return dict(status='error', message=f'Invalid file type: {ext}')
 
-    # Validate file size
     image_file.file.seek(0, 2)
     size = image_file.file.tell()
     image_file.file.seek(0)
@@ -538,8 +524,6 @@ def pose_check():
         return dict(status='error', message=f'File too large (max {MAX_FILE_SIZE_MB}MB)')
 
     muscle_group = request.forms.get('muscle_group', 'bicep')
-
-    # Save temp file for CV2 to read
     temp_filename = db.muscle_scan.img_front.store(image_file.file, image_file.filename)
     temp_path = os.path.join('uploads', temp_filename)
 
@@ -547,14 +531,8 @@ def pose_check():
         img = cv2.imread(temp_path)
         if img is None:
             return dict(status='error', message='Failed to decode image')
-
         result = analyze_pose(img, muscle_group)
-
-        # Cleanup temp file (optional, but keep for now as per upload logic)
-        # os.remove(temp_path)
-
         return dict(status='success', **result)
-
     except Exception as e:
         logger.exception("Pose check failed")
         return dict(status='error', message=str(e))
@@ -565,7 +543,7 @@ def pose_check():
 @action('api/customer/<customer_id:int>/health_log', method=['POST'])
 @action.uses(db, cors)
 def add_health_log(customer_id):
-    require_api_token()
+    auth_id = require_customer_auth(customer_id)
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -591,13 +569,12 @@ def add_health_log(customer_id):
 @action('api/customer/<customer_id:int>/health_logs', method=['GET'])
 @action.uses(db, cors)
 def get_health_logs(customer_id):
-    require_api_token()
+    require_customer_auth(customer_id)
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
 
-    logs = db(db.health_log.customer_id == customer_id).select(
-        orderby=~db.health_log.log_date).as_list()
+    logs = db(db.health_log.customer_id == customer_id).select(orderby=~db.health_log.log_date).as_list()
     return dict(status='success', logs=logs)
 
 
