@@ -11,6 +11,7 @@ late List<CameraDescription> _cameras;
 
 // Server configuration — change for production
 const String serverBaseUrl = 'http://10.0.2.2:8000'; // Android emulator → host
+String? _jwtToken;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,7 +33,109 @@ class MuscleCompanionApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const CameraLevelScreen(),
+      home: const LoginScreen(),
+    );
+  }
+}
+
+// --- LOGIN SCREEN ---
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _emailController = TextEditingController();
+  bool _isLoading = false;
+  String? _error;
+
+  Future<void> _login() async {
+    final email = _emailController.text.trim();
+    if (email.isEmpty) return;
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final response = await http.post(
+        Uri.parse('$serverBaseUrl/api/auth/token'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email}),
+      );
+      
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 && data['status'] == 'success') {
+        _jwtToken = data['token'];
+        if (!mounted) return;
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const CameraLevelScreen()),
+        );
+      } else {
+        setState(() => _error = data['message'] ?? 'Login failed');
+      }
+    } catch (e) {
+      setState(() => _error = 'Network error: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('Connect to Clinic'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.teal,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.fitness_center, size: 64, color: Colors.teal),
+            const SizedBox(height: 32),
+            TextField(
+              controller: _emailController,
+              decoration: InputDecoration(
+                labelText: 'Email Address',
+                labelStyle: const TextStyle(color: Colors.teal),
+                errorText: _error,
+                enabledBorder: const OutlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white30),
+                ),
+                focusedBorder: const OutlineInputBorder(
+                  borderSide: BorderSide(color: Colors.teal),
+                ),
+              ),
+              style: const TextStyle(color: Colors.white),
+              keyboardType: TextInputType.emailAddress,
+            ),
+            const SizedBox(height: 24),
+            _isLoading
+                ? const CircularProgressIndicator(color: Colors.teal)
+                : SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: _login,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.teal,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                      child: const Text('CONNECT', style: TextStyle(letterSpacing: 1.5)),
+                    ),
+                  ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -188,20 +291,35 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     });
 
     try {
+      // NOTE: Uploading to customer ID 1 for now (to match existing logic)
       final uri = Uri.parse('$serverBaseUrl/api/upload_scan/1');
       var request = http.MultipartRequest('POST', uri);
       
-      // Add authentication token
-      request.headers['Authorization'] = 'Bearer dev-secret-token';
+      // Add authentication token from memory
+      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
 
       request.files.add(await http.MultipartFile.fromPath('front', _frontPath!));
       request.files.add(await http.MultipartFile.fromPath('side', _sidePath!));
 
       var streamedResponse = await request.send();
       var response = await http.Response.fromStream(streamedResponse);
-      final result = jsonDecode(response.body);
-
+      
       if (!mounted) return;
+
+      if (response.statusCode == 401) {
+        // Token expired or invalid
+        _jwtToken = null;
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+        );
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Session expired. Please login again.')),
+        );
+        return;
+      }
+
+      final result = jsonDecode(response.body);
 
       if (response.statusCode == 200 && result['status'] == 'success') {
         setState(() {

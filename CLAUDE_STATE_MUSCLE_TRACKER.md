@@ -1,14 +1,16 @@
 # Muscle Tracker — System State (Updated 2026-03-15)
 
-## Status: v2.0 Code Complete — Untested, Not Deployed
+## Status: v2.2 — Tested & Secured
 
-## What Changed (v1.7 → v2.0) — Session 2026-03-15
+## What Changed (v2.0 → v2.2) — Session 2026-03-15
 
-Every file in the project was upgraded or created. Summary:
+The system was stabilized, secured, and tested. Summary:
 
-### Core Engine (9 modules)
+### Core Engine (10 modules)
 | Module | Key Upgrade |
 |--------|------------|
+| `auth.py` | **NEW**: JWT token creation, verification, HS256, roles, expiration. |
+| `pose_analyzer.py` | **NEW**: G12 pose correction engine with natural language feedback. |
 | `calibration.py` | ArUco markers + green fallback, circularity scoring, morphological cleanup |
 | `alignment.py` | Lowe's ratio test, SIFT fallback, confidence scoring, graceful failure |
 | `vision_medical.py` | CLAHE, morphological filtering, contour area gating, solidity confidence, 7-level verdicts |
@@ -23,30 +25,31 @@ Every file in the project was upgraded or created. Summary:
 | Module | Key Upgrade |
 |--------|------------|
 | `models.py` | Extended schema: demographics, muscle groups, symmetry_assessment table, expanded health_log |
-| `controllers.py` | File validation (type + 15MB limit), customer CRUD, symmetry endpoint, progress/trend, health log CRUD |
+| `controllers.py` | Added JWT Auth (`require_auth()`), `/api/auth/token`, CORS enabled, added `pose-check` endpoint. |
 
 ### CLI (`muscle_tracker.py`)
-All 5 commands functional: `growth`, `volumetrics`, `symmetry`, `shape-check`, `report`
+All 6 commands functional: `growth`, `volumetrics`, `symmetry`, `shape-check`, `report`, `pose-check`.
 
 ### Flutter App (`companion_app/lib/main.dart`)
-Low-pass sensor filtering, image saving to filesystem, review screen, HTTP multipart upload, body guide overlay
+Added JWT login/setup screen. Captures use JWT Authorization Header. Removed boilerplate platform files from git.
 
-### Infrastructure
-`setup.py` v2.0.0, `requirements.txt`, `__init__.py` files added
+### Infrastructure & Testing
+- Git initialized.
+- **116 Tests Passing** across 10 test files (`tests/` directory fully populated).
 
 ## Critical Issues for Next Agent
 
-1. **No tests** — zero test coverage, no `tests/` directory
-2. **No git repo** — project is not version-controlled
-3. **No authentication** on web API endpoints
-4. **Flutter upload** uses raw HttpClient (should use `http`/`dio` package)
-5. **py4web model validators** may need import adjustments
-6. **No CORS** on web API
+1. **Flutter upload** uses `http` package directly, but might need robust background retry (dio/workmanager).
+2. **py4web model validators** may need import adjustments.
+3. (RESOLVED) ~~No tests~~ — 116 tests added.
+4. (RESOLVED) ~~No git repo~~ — Git initialized and clean.
+5. (RESOLVED) ~~No authentication~~ — JWT added to Web API and Flutter.
+6. (RESOLVED) ~~No CORS~~ — CORS fixture added to API.
 
 ## Roadmap
 
 See `ROADMAP.md` for the full 24-week, 6-phase, 24-mission plan:
-- Phase 1: Foundation & Stabilization (tests, security, CI/CD)
+- Phase 1: Foundation & Stabilization (tests, security, CI/CD) -> **IN PROGRESS / MOSTLY DONE**
 - Phase 2: Intelligence Upgrade (MediaPipe ML, auto muscle detection)
 - Phase 3: Mobile App Production (camera hardening, auth, offline)
 - Phase 4: Clinical Web Dashboard (SPA, charts, PDF reports)
@@ -61,8 +64,11 @@ muscle_tracker/
 ├── setup.py
 ├── requirements.txt
 ├── ROADMAP.md
+├── GEMINI_TASKS.md
 ├── core/
 │   ├── __init__.py
+│   ├── auth.py
+│   ├── pose_analyzer.py
 │   ├── calibration.py
 │   ├── vision_medical.py
 │   ├── alignment.py
@@ -76,11 +82,23 @@ muscle_tracker/
 │   ├── __init__.py
 │   ├── models.py
 │   └── controllers.py
+├── tests/
+│   ├── __init__.py
+│   ├── test_alignment.py
+│   ├── test_auth.py
+│   ├── test_calibration.py
+│   ├── test_pose.py
+│   ├── test_pose_correction.py
+│   ├── test_progress.py
+│   ├── test_segmentation.py
+│   ├── test_symmetry.py
+│   ├── test_vision_medical.py
+│   └── test_volumetrics.py
 └── companion_app/
     └── lib/main.dart
 ```
 
 ## Tech Stack
-- **Python 3.9+**: OpenCV 4.8+, NumPy 1.24+, py4web
-- **Flutter/Dart 3.11+**: camera, sensors_plus, path_provider
+- **Python 3.9+**: OpenCV 4.8+, NumPy 1.24+, py4web, PyJWT
+- **Flutter/Dart 3.11+**: camera, sensors_plus, path_provider, http
 - **Database**: SQLite (migration-ready for PostgreSQL/Cloud SQL)

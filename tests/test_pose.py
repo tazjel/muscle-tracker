@@ -5,7 +5,7 @@ import numpy as np
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 class MockPoseLandmark:
     def __init__(self, y):
@@ -26,9 +26,12 @@ mock_mp.solutions.pose.Pose = MagicMock(return_value=MockPose())
 sys.modules['mediapipe'] = mock_mp
 
 # Now we can import the pose analyzer
+import core.pose_analyzer as pose_analyzer
 from core.pose_analyzer import get_px_to_mm_ratio_from_pose
 
 class TestPoseAnalyzer(unittest.TestCase):
+    @patch.object(pose_analyzer, 'pose_detector', MockPose())
+    @patch.object(pose_analyzer, 'HAVE_MEDIAPIPE', True)
     def test_get_px_to_mm_ratio_from_pose(self):
         # Create a dummy image of height 1000px
         img = np.zeros((1000, 1000, 3), dtype=np.uint8)
