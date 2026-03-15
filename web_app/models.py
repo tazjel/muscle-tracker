@@ -95,8 +95,7 @@ db.define_table('audit_log',
     Field('action', 'string', length=64),   # e.g. 'upload_scan', 'view_report'
     Field('resource_id', 'string', length=64),  # scan_id or other resource
     Field('ip_address', 'string', length=45),
-    # Use utcnow if preferred, but stay consistent with lambda: datetime.now()
-    Field('created_at', 'datetime', default=lambda: datetime.now()),
+    Field('created_at', 'datetime', default=datetime.utcnow),
 )
 
 db.commit()

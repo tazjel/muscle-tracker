@@ -7,6 +7,7 @@ import logging
 import json
 import cv2
 import numpy as np
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -27,52 +28,6 @@ from core.report_generator import generate_clinical_report
 from core.keyframe_extractor import extract_keyframes, save_keyframes
 from core.muscle_classifier import classify_with_confidence
 
-# Legacy static token for backward compatibility in dev mode
-_LEGACY_DEV_TOKEN = os.environ.get('MUSCLE_TRACKER_API_TOKEN', 'dev-secret-token')
-
-
-def require_auth():
-    """
-    Authenticate the request via JWT or legacy static token.
-    """
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer '):
-        abort(401, "Unauthorized: Missing Authorization header")
-
-    token = auth_header[7:]  # Strip 'Bearer '
-
-    # Try JWT first
-    payload = verify_jwt(token)
-    if payload is not None:
-        request._auth_payload = payload
-        return payload
-
-    # Fall back to legacy static token (dev mode)
-    if token == _LEGACY_DEV_TOKEN:
-        payload = {'sub': 'dev', 'role': 'admin'}
-        request._auth_payload = payload
-        return payload
-
-    abort(401, "Unauthorized: Invalid or expired token")
-
-
-def require_customer_auth(customer_id):
-    """
-    Enforce authentication and ensure the requesting user owns the data.
-    """
-    payload = require_auth()
-    requesting_customer_id = payload.get('sub')
-    
-    # In dev mode with legacy token, sub is 'dev'
-    if requesting_customer_id == 'dev':
-        return requesting_customer_id
-
-    if str(requesting_customer_id) != str(customer_id):
-        abort(403, "Access denied: You do not have permission to access this resource")
-    
-    return requesting_customer_id
-
-
 # File upload constraints
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
 ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv'}
@@ -82,9 +37,10 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
 # --- AUTH ---
 
+@action('api/login', method=['POST'])
 @action('api/auth/token', method=['POST'])
 @action.uses(db, cors)
-def auth_token():
+def login():
     """
     Issue a JWT token. Accepts email or customer_id.
     """
@@ -128,6 +84,16 @@ def auth_admin_token():
 
 # --- DASHBOARD ---
 
+@action('api/health', method=['GET'])
+def health_check():
+    """Health check endpoint for Docker/load balancer."""
+    return dict(
+        status='ok',
+        version='4.0',
+        timestamp=str(datetime.utcnow()),
+    )
+
+
 @action('index')
 @action.uses('index.html', db)
 def index():
@@ -140,9 +106,16 @@ def index():
 @action('api/customers', method=['GET'])
 @action.uses(db, cors)
 def list_customers():
-    payload = require_auth()
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    
     if payload.get('role') != 'admin':
-        abort(403, "Admin access required")
+        return dict(status='error', message='Admin access required')
+        
     customers = db(db.customer.is_active == True).select().as_list()
     return dict(status='success', customers=customers)
 
@@ -179,7 +152,17 @@ def create_customer():
 @action('api/upload_scan/<customer_id:int>', method=['POST'])
 @action.uses(db, cors)
 def upload_scan(customer_id):
-    auth_id = require_customer_auth(customer_id)
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -220,7 +203,12 @@ def upload_scan(customer_id):
     res = _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template)
     
     if res.get('status') == 'success':
-        db.audit_log.insert(customer_id=auth_id if auth_id != 'dev' else customer_id, action='upload_scan', resource_id=str(res.get('scan_id')), ip_address=request.environ.get('REMOTE_ADDR', 'unknown'))
+        db.audit_log.insert(
+            customer_id=customer_id,
+            action='upload_scan',
+            resource_id=str(res.get('scan_id')),
+            ip_address=request.environ.get('REMOTE_ADDR', 'unknown')
+        )
         db.commit()
     
     return res
@@ -229,7 +217,17 @@ def upload_scan(customer_id):
 @action('api/upload_video/<customer_id:int>', method=['POST'])
 @action.uses(db, cors)
 def upload_video(customer_id):
-    auth_id = require_customer_auth(customer_id)
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -266,7 +264,12 @@ def upload_video(customer_id):
     res = _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template)
     
     if res.get('status') == 'success':
-        db.audit_log.insert(customer_id=auth_id if auth_id != 'dev' else customer_id, action='upload_video', resource_id=str(res.get('scan_id')), ip_address=request.environ.get('REMOTE_ADDR', 'unknown'))
+        db.audit_log.insert(
+            customer_id=customer_id,
+            action='upload_video',
+            resource_id=str(res.get('scan_id')),
+            ip_address=request.environ.get('REMOTE_ADDR', 'unknown')
+        )
         db.commit()
         
     return res
@@ -369,7 +372,17 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
 @action('api/customer/<customer_id:int>/scans', method=['GET'])
 @action.uses(db, cors)
 def customer_scans(customer_id):
-    require_customer_auth(customer_id)
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -390,7 +403,17 @@ def customer_scans(customer_id):
 @action('api/customer/<customer_id:int>/report/<scan_id:int>', method=['GET'])
 @action.uses(db, cors)
 def generate_report(customer_id, scan_id):
-    auth_id = require_customer_auth(customer_id)
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
     customer = db.customer(customer_id)
     if not customer:
         abort(404, "Customer not found")
@@ -438,7 +461,12 @@ def generate_report(customer_id, scan_id):
         with open(temp_path, 'rb') as f:
             data = f.read()
         
-        db.audit_log.insert(customer_id=auth_id if auth_id != 'dev' else customer_id, action='get_report', resource_id=str(scan_id), ip_address=request.environ.get('REMOTE_ADDR', 'unknown'))
+        db.audit_log.insert(
+            customer_id=customer_id,
+            action='get_report',
+            resource_id=str(scan_id),
+            ip_address=request.environ.get('REMOTE_ADDR', 'unknown')
+        )
         db.commit()
         
         return data
@@ -450,7 +478,17 @@ def generate_report(customer_id, scan_id):
 @action('api/customer/<customer_id:int>/progress', method=['GET'])
 @action.uses(db, cors)
 def customer_progress(customer_id):
-    require_customer_auth(customer_id)
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -474,7 +512,17 @@ def customer_progress(customer_id):
 @action('api/customer/<customer_id:int>/symmetry', method=['POST'])
 @action.uses(db, cors)
 def customer_symmetry(customer_id):
-    require_customer_auth(customer_id)
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -524,7 +572,13 @@ def customer_symmetry(customer_id):
 @action('api/pose_check', method=['POST'])
 @action.uses(db, cors)
 def pose_check():
-    require_auth()
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+
     image_file = request.files.get('image')
     if not image_file:
         return dict(status='error', message='Image file is required')
@@ -560,7 +614,13 @@ def classify_muscle():
     """
     POST a single image, get back the auto-detected muscle group.
     """
-    require_auth()
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+
     image_file = request.files.get('image')
     if not image_file:
         return dict(status='error', message='No image provided')
@@ -583,7 +643,17 @@ def classify_muscle():
 @action('api/customer/<customer_id:int>/health_log', method=['POST'])
 @action.uses(db, cors)
 def add_health_log(customer_id):
-    auth_id = require_customer_auth(customer_id)
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
@@ -609,7 +679,17 @@ def add_health_log(customer_id):
 @action('api/customer/<customer_id:int>/health_logs', method=['GET'])
 @action.uses(db, cors)
 def get_health_logs(customer_id):
-    require_customer_auth(customer_id)
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
     customer = db.customer(customer_id)
     if not customer:
         return dict(status='error', message='Customer not found')
