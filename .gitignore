@@ -11,15 +11,24 @@ dist/
 *.egg-info/
 .pytest_cache/
 
-# Flutter
+# Flutter - General
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
 .packages
 .pub-cache/
 .pub/
-companion_app/build/
-companion_app/.dart_tool/
+build/
+
+# Flutter - Platform Specific (Boilerplate)
+companion_app/android/
+companion_app/ios/
+companion_app/linux/
+companion_app/macos/
+companion_app/windows/
+
+# Flutter - Web
+companion_app/web/
 
 # IDEs
 .idea/
