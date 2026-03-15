@@ -188,6 +188,10 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   // State flags
   bool _isCapturing = false;
   bool _isUploading = false;
+  bool _isRecordingMode = false;
+  bool _isRecording = false;
+  int _recordingCountdown = 5;
+  Timer? _countdownTimer;
   String? _statusMessage;
 
   // Low-pass filter for sensor smoothing
@@ -439,6 +443,90 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     _resetCapture();
   }
 
+  Future<void> _toggleRecording() async {
+    if (_isRecording) {
+      await _stopVideoRecording();
+    } else {
+      await _startVideoRecording();
+    }
+  }
+
+  Future<void> _startVideoRecording() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    if (_controller!.value.isRecordingVideo) return;
+
+    try {
+      await _controller!.startVideoRecording();
+      setState(() {
+        _isRecording = true;
+        _recordingCountdown = 5;
+        _statusMessage = 'Recording... Keep moving slightly';
+      });
+
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        setState(() {
+          if (_recordingCountdown > 0) {
+            _recordingCountdown--;
+          } else {
+            _stopVideoRecording();
+          }
+        });
+      });
+    } catch (e) {
+      setState(() => _statusMessage = 'Video start failed: ');
+    }
+  }
+
+  Future<void> _stopVideoRecording() async {
+    if (!_isRecording) return;
+    _countdownTimer?.cancel();
+
+    try {
+      XFile videoFile = await _controller!.stopVideoRecording();
+      setState(() {
+        _isRecording = false;
+        _isUploading = true;
+        _statusMessage = 'Uploading video...';
+      });
+      await _uploadVideo(videoFile.path);
+    } catch (e) {
+      setState(() {
+        _isRecording = false;
+        _isUploading = false;
+        _statusMessage = 'Video stop failed: ';
+      });
+    }
+  }
+
+  Future<void> _uploadVideo(String path) async {
+    try {
+      var request = http.MultipartRequest('POST', Uri.parse('/api/upload_video/'));
+      request.headers['Authorization'] = 'Bearer ';
+      request.files.add(await http.MultipartFile.fromPath('video', path));
+      request.fields['muscle_group'] = _selectedMuscleGroup;
+
+      var streamedResponse = await request.send().timeout(const Duration(seconds: 30));
+      var response = await http.Response.fromStream(streamedResponse);
+      final result = jsonDecode(response.body);
+
+      if (response.statusCode == 200 && result['status'] == 'success') {
+        setState(() => _isUploading = false);
+        if (!mounted) return;
+        Navigator.push(context, MaterialPageRoute(builder: (_) => ResultsScreen(result: result, muscleGroup: _selectedMuscleGroup)));
+      } else {
+        setState(() {
+          _statusMessage = 'Upload failed: ';
+          _isUploading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _statusMessage = 'Upload error: ';
+        _isUploading = false;
+      });
+    }
+  }
+
   void _resetCapture() {
     setState(() {
       _capturePhase = 0;
@@ -666,16 +754,35 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
                 ),
               ),
 
-            // Phase label
-            Text(
-              _phaseLabels[_capturePhase],
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 2,
+            // Mode Toggle
+            Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _modeButton('PHOTO', !_isRecordingMode),
+                  _modeButton('VIDEO', _isRecordingMode),
+                ],
               ),
             ),
+
+            // Phase label
+            if (!_isRecordingMode)
+              Text(
+                _phaseLabels[_capturePhase],
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 2,
+                ),
+              ),
+            if (_isRecordingMode && _isRecording)
+              Text(
+                '00:0',
+                style: const TextStyle(color: Colors.redAccent, fontSize: 32, fontWeight: FontWeight.bold, fontFeatures: [FontFeature.tabularFigures()]),
+              ),
             const SizedBox(height: 8),
 
             // Alignment indicator
@@ -728,20 +835,19 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
                 // Main capture button
                 GestureDetector(
-                  onTap: isLevel && !_isCapturing ? _captureImage : null,
+                  onTap: isLevel && !_isCapturing ? (_isRecordingMode ? _toggleRecording : _captureImage) : null,
                   child: Container(
                     width: 72,
                     height: 72,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color:
-                          isLevel ? Colors.teal : Colors.grey.shade800,
+                      color: _isRecording ? Colors.redAccent : (isLevel ? Colors.teal : Colors.grey.shade800),
                       border: Border.all(
                         color: isLevel ? Colors.white : Colors.grey,
                         width: 4,
                       ),
                     ),
-                    child: _isCapturing
+                    child: _isCapturing || (_isUploading && _isRecordingMode)
                         ? const Padding(
                             padding: EdgeInsets.all(18),
                             child: CircularProgressIndicator(
@@ -750,7 +856,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
                             ),
                           )
                         : Icon(
-                            _phaseIcons[_capturePhase],
+                            _isRecordingMode ? (_isRecording ? Icons.stop : Icons.videocam) : _phaseIcons[_capturePhase],
                             color: Colors.white,
                             size: 32,
                           ),
@@ -762,6 +868,23 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _modeButton(String label, bool active) {
+    return GestureDetector(
+      onTap: () => setState(() {
+        _isRecordingMode = label == 'VIDEO';
+        _statusMessage = null;
+      }),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        decoration: BoxDecoration(
+          color: active ? Colors.teal : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(label, style: TextStyle(color: active ? Colors.black : Colors.white70, fontWeight: FontWeight.bold, fontSize: 12)),
       ),
     );
   }

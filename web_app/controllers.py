@@ -22,6 +22,7 @@ from core.symmetry import compare_symmetry
 from core.progress import analyze_trend, calculate_correlation
 from core.pose_analyzer import analyze_pose
 from core.report_generator import generate_clinical_report
+from core.keyframe_extractor import extract_keyframes, save_keyframes
 
 # Legacy static token for backward compatibility in dev mode
 _LEGACY_DEV_TOKEN = os.environ.get('MUSCLE_TRACKER_API_TOKEN', 'dev-secret-token')
@@ -63,6 +64,7 @@ require_api_token = require_auth
 
 # File upload constraints
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv'}
 MAX_FILE_SIZE_MB = 15
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
@@ -85,14 +87,14 @@ def auth_token():
         if not customer:
             return dict(status='error', message='Customer not found')
         token = create_token(customer.id, role='user')
-        return dict(status='success', token=token, customer_id=customer.id)
+        return dict(status='success', token=token, customer_id=customer.id, name=customer.name)
 
     if customer_id:
         customer = db.customer(customer_id)
         if not customer:
             return dict(status='error', message='Customer not found')
         token = create_token(customer.id, role='user')
-        return dict(status='success', token=token, customer_id=customer.id)
+        return dict(status='success', token=token, customer_id=customer.id, name=customer.name)
 
     return dict(status='error', message='Provide email or customer_id')
 
@@ -213,6 +215,56 @@ def upload_scan(customer_id):
     front_path = os.path.join('uploads', front_filename)
     side_path = os.path.join('uploads', side_filename)
 
+    return _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template)
+
+
+@action('api/upload_video/<customer_id:int>', method=['POST'])
+@action.uses(db, cors)
+def upload_video(customer_id):
+    require_api_token()
+    customer = db.customer(customer_id)
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    video = request.files.get('video')
+    if not video:
+        return dict(status='error', message='Video file required')
+
+    ext = os.path.splitext(video.filename)[1].lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        return dict(status='error', message=f'Invalid video type: {ext}')
+
+    # Store video
+    video_filename = db.muscle_scan.img_front.store(video.file, video.filename)
+    video_path = os.path.join('uploads', video_filename)
+
+    # Extract keyframes
+    frames = extract_keyframes(video_path, num_frames=3)
+    if len(frames) < 2:
+        return dict(status='error', message='Failed to extract enough keyframes from video')
+
+    # Save keyframes as JPEGs
+    uploads_dir = 'uploads'
+    kf_paths = save_keyframes(frames, uploads_dir)
+    
+    # Use first two as front and side
+    front_path = kf_paths[0]
+    side_path = kf_paths[1]
+    
+    front_filename = os.path.basename(front_path)
+    side_filename = os.path.basename(side_path)
+
+    # Optional parameters
+    muscle_group = request.forms.get('muscle_group', 'bicep')
+    scan_side = request.forms.get('side', 'front')
+    marker_size = float(request.forms.get('marker_size', '20.0'))
+    volume_model = request.forms.get('volume_model', 'elliptical_cylinder')
+    shape_template = request.forms.get('shape_template')
+
+    return _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template)
+
+
+def _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template):
     try:
         # Get height from customer profile for pose calibration if available
         user_height_cm = customer.height_cm
@@ -469,7 +521,7 @@ def customer_symmetry(customer_id):
 @action.uses(db, cors)
 def pose_check():
     require_api_token()
-    
+
     image_file = request.files.get('image')
     if not image_file:
         return dict(status='error', message='Image file is required')
@@ -490,17 +542,17 @@ def pose_check():
     # Save temp file for CV2 to read
     temp_filename = db.muscle_scan.img_front.store(image_file.file, image_file.filename)
     temp_path = os.path.join('uploads', temp_filename)
-    
+
     try:
         img = cv2.imread(temp_path)
         if img is None:
             return dict(status='error', message='Failed to decode image')
-        
+
         result = analyze_pose(img, muscle_group)
-        
+
         # Cleanup temp file (optional, but keep for now as per upload logic)
         # os.remove(temp_path)
-        
+
         return dict(status='success', **result)
 
     except Exception as e:
