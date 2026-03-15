@@ -43,3 +43,8 @@ data/*
 !data/.gitkeep
 .env
 claude_review.sh
+gemini_start.sh
+gemini_watchdog.sh
+gemini_watchdog.log
+GEMINI_STATUS.md
+database.db
