@@ -15,7 +15,7 @@ late List<CameraDescription> _cameras;
 // --- CONFIG & THEME ---
 
 class AppConfig {
-  static const String serverBaseUrl = 'http://10.0.2.2:8000';
+  static const String serverBaseUrl = 'http://192.168.100.16:8000/web_app';
   static const String appVersion = '3.0.0';
 }
 
@@ -50,6 +50,23 @@ String? _customerName;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   _cameras = await availableCameras();
+  // Auto-login with demo account; fall back to local demo if server unreachable
+  try {
+    final res = await http.post(
+      Uri.parse('${AppConfig.serverBaseUrl}/api/auth/token'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'email': 'demo@muscle.com'}),
+    ).timeout(const Duration(seconds: 4));
+    final data = jsonDecode(res.body);
+    if (res.statusCode == 200 && data['status'] == 'success') {
+      _jwtToken = data['token'];
+      _customerId = data['customer_id']?.toString() ?? '1';
+      _customerName = data['name'] ?? 'Demo User';
+    }
+  } catch (_) {}
+  _jwtToken ??= 'demo';
+  _customerId ??= '1';
+  _customerName ??= 'Demo User';
   runApp(const MuscleCompanionApp());
 }
 
@@ -60,7 +77,7 @@ class MuscleCompanionApp extends StatelessWidget {
     return MaterialApp(
       title: 'Muscle Tracker v3',
       theme: AppTheme.darkTheme,
-      home: const LoginScreen(),
+      home: const CameraLevelScreen(),
       debugShowCheckedModeBanner: false,
     );
   }
