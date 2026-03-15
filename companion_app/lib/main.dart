@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:share_plus/share_plus.dart';
 
 late List<CameraDescription> _cameras;
 
@@ -924,6 +925,7 @@ class ResultsScreen extends StatelessWidget {
     final double? score = result['shape_score']?.toDouble();
     final String? grade = result['shape_grade'];
     final bool calibrated = result['calibrated'] ?? false;
+    final int? scanId = result['scan_id'];
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(title: const Text('Scan Results'), backgroundColor: Colors.black, foregroundColor: Colors.white),
@@ -952,6 +954,8 @@ class ResultsScreen extends StatelessWidget {
           ]),
         ])))],
         const SizedBox(height: 40),
+        if (scanId != null) FilledButton.icon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ReportViewerScreen(scanId: scanId))), icon: const Icon(Icons.summarize), label: const Text('GENERATE REPORT'), style: FilledButton.styleFrom(backgroundColor: Colors.blueGrey.shade700, padding: const EdgeInsets.symmetric(vertical: 16))),
+        const SizedBox(height: 16),
         FilledButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.add_a_photo), label: const Text('NEW SCAN', style: TextStyle(letterSpacing: 1.2)), style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 16))),
         const SizedBox(height: 16),
         OutlinedButton.icon(onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: muscleGroup))), icon: const Icon(Icons.history), label: const Text('VIEW HISTORY', style: TextStyle(letterSpacing: 1.2)), style: OutlinedButton.styleFrom(foregroundColor: Colors.white, side: const BorderSide(color: Colors.white30), padding: const EdgeInsets.symmetric(vertical: 16))),
@@ -1010,7 +1014,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
         final volume = scan['volume_cm3']?.toDouble() ?? 0.0;
         final growth = scan['growth_pct']?.toDouble();
         final grade = scan['shape_grade'];
-        return Card(color: Colors.grey.shade900, margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: ListTile(title: Text('$dateStr - ${(scan['muscle_group'] as String).toUpperCase()}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), subtitle: Text('Volume: ${volume.toStringAsFixed(1)} cm³${grade != null ? ' | Grade: $grade' : ''}', style: const TextStyle(color: Colors.white70)), trailing: growth != null ? Text('${growth > 0 ? '+' : ''}${growth.toStringAsFixed(1)}%', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: growth >= 0 ? Colors.greenAccent : Colors.redAccent)) : const Text('-', style: TextStyle(color: Colors.white54))));
+        final int scanId = scan['id'];
+        return Card(color: Colors.grey.shade900, margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: ListTile(
+          title: Text('$dateStr - ${(scan['muscle_group'] as String).toUpperCase()}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          subtitle: Text('Volume: ${volume.toStringAsFixed(1)} cm³${grade != null ? ' | Grade: $grade' : ''}', style: const TextStyle(color: Colors.white70)),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (growth != null) Text('${growth > 0 ? '+' : ''}${growth.toStringAsFixed(1)}%', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: growth >= 0 ? Colors.greenAccent : Colors.redAccent)),
+            const SizedBox(width: 12),
+            IconButton(icon: const Icon(Icons.summarize, color: Colors.teal, size: 20), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ReportViewerScreen(scanId: scanId)))),
+          ]),
+        ));
       })),
     ]);
   }
@@ -1120,7 +1133,7 @@ class _HealthLogScreenState extends State<HealthLogScreen> {
         Uri.parse('$serverBaseUrl/api/customer/$_customerId/health_log'),
         headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${_jwtToken ?? ''}'},
         body: jsonEncode({
-          'calories': double.tryParse(_caloriesController.text) ?? 0.0,
+          'calories_in': double.tryParse(_caloriesController.text) ?? 0.0,
           'protein_g': double.tryParse(_proteinController.text) ?? 0.0,
           'carbs_g': double.tryParse(_carbsController.text) ?? 0.0,
           'fat_g': double.tryParse(_fatController.text) ?? 0.0,
@@ -1337,4 +1350,49 @@ class GhostOverlayPainter extends CustomPainter {
   }
   @override
   bool shouldRepaint(covariant GhostOverlayPainter oldDelegate) => oldDelegate.image != image;
+}
+
+class ReportViewerScreen extends StatelessWidget {
+  final int scanId;
+  const ReportViewerScreen({super.key, required this.scanId});
+  Future<Uint8List> _fetchReport() async {
+    final response = await http.get(Uri.parse('$serverBaseUrl/api/customer/$_customerId/report/$scanId'), headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'});
+    if (response.statusCode == 200) return response.bodyBytes;
+    throw Exception('Failed to load report: ${response.statusCode}');
+  }
+  Future<void> _saveReport(BuildContext context, Uint8List bytes) async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final filePath = '${directory.path}/report_$scanId.png';
+      await File(filePath).writeAsBytes(bytes);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Report saved to: $filePath')));
+    } catch (e) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save failed: $e'))); }
+  }
+  Future<void> _shareReport(Uint8List bytes) async {
+    final directory = await getTemporaryDirectory();
+    final filePath = '${directory.path}/report_$scanId.png';
+    await File(filePath).writeAsBytes(bytes);
+    await Share.shareXFiles([XFile(filePath)], text: 'Muscle Tracker Clinical Report');
+  }
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(backgroundColor: Colors.black, appBar: AppBar(title: const Text('Clinical Report'), backgroundColor: Colors.black, foregroundColor: Colors.white), body: FutureBuilder<Uint8List>(
+      future: _fetchReport(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator(color: Colors.teal));
+        if (snapshot.hasError) return Center(child: Text('Error: ${snapshot.error}', style: const TextStyle(color: Colors.redAccent)));
+        if (!snapshot.hasData) return const Center(child: Text('No data received'));
+        final bytes = snapshot.data!;
+        return Column(children: [
+          Expanded(child: InteractiveViewer(minScale: 0.5, maxScale: 4.0, child: Center(child: Image.memory(bytes)))),
+          Padding(padding: const EdgeInsets.all(24), child: Row(children: [
+            Expanded(child: OutlinedButton.icon(onPressed: () => _saveReport(context, bytes), icon: const Icon(Icons.save), label: const Text('SAVE'))),
+            const SizedBox(width: 16),
+            Expanded(child: FilledButton.icon(onPressed: () => _shareReport(bytes), icon: const Icon(Icons.share), label: const Text('SHARE'))),
+          ])),
+        ]);
+      },
+    ));
+  }
 }
