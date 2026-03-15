@@ -103,50 +103,81 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    final isTablet = mq.size.shortestSide >= 600;
+    final isLandscape = mq.size.width > mq.size.height;
     return Scaffold(
       body: Container(
         decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color(0xFF004D40), Color(0xFF001A14)])),
-        child: SingleChildScrollView(
-          child: ConstrainedBox(
-          constraints: BoxConstraints(minHeight: MediaQuery.of(context).size.height),
-          child: Padding(
+        child: isTablet && isLandscape ? _buildTabletLandscape(context) : _buildPhoneLayout(context),
+      ),
+    );
+  }
+
+  Widget _buildPhoneLayout(BuildContext context) {
+    return SingleChildScrollView(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minHeight: MediaQuery.of(context).size.height),
+        child: Padding(
           padding: EdgeInsets.only(left: 32, right: 32, top: MediaQuery.of(context).padding.top + 16, bottom: 40),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              const Hero(tag: 'logo', child: Icon(Icons.fitness_center, size: 56, color: AppTheme.primaryTeal)),
-              const SizedBox(height: 12),
-              const Text('MUSCLE TRACKER', textAlign: TextAlign.center, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: 2, color: Colors.white)),
-              const Text('Clinical Vision Engine v3.0', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: Colors.white54, letterSpacing: 1.5)),
-              const SizedBox(height: 20),
-              TextField(
-                controller: _emailController,
-                decoration: InputDecoration(labelText: 'Email Address', errorText: _error, prefixIcon: const Icon(Icons.email, color: AppTheme.primaryTeal)),
-                keyboardType: TextInputType.emailAddress,
-              ),
-              const SizedBox(height: 32),
-              _isLoading ? const CircularProgressIndicator(color: AppTheme.primaryTeal) : Column(children: [
-                SizedBox(width: double.infinity, child: FilledButton(onPressed: _login, child: const Text('CONNECT'))),
-                const SizedBox(height: 12),
-                SizedBox(width: double.infinity, child: OutlinedButton(
-                  onPressed: () {
-                    _customerId = '1'; _customerName = 'Demo User'; _jwtToken = 'demo';
-                    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const CameraLevelScreen()));
-                  },
-                  style: OutlinedButton.styleFrom(foregroundColor: Colors.white54, side: const BorderSide(color: Colors.white24)),
-                  child: const Text('DEMO MODE'),
-                )),
-                const SizedBox(height: 12),
-                TextButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())), child: const Text('CREATE CLINICAL ACCOUNT', style: TextStyle(color: AppTheme.primaryTeal, fontSize: 13))),
-              ]),
-            ],
+            children: _loginFormWidgets(context),
           ),
-        ),
-        ),
         ),
       ),
     );
+  }
+
+  Widget _buildTabletLandscape(BuildContext context) {
+    return SafeArea(
+      child: Row(children: [
+        Expanded(child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.fitness_center, size: 96, color: AppTheme.primaryTeal),
+          const SizedBox(height: 28),
+          const Text('MUSCLE TRACKER', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, letterSpacing: 3, color: Colors.white)),
+          const SizedBox(height: 10),
+          const Text('Clinical Vision Engine v3.0', style: TextStyle(fontSize: 14, color: Colors.white54, letterSpacing: 1.5)),
+        ]))),
+        Expanded(child: Center(child: SizedBox(width: 440, child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 32),
+          child: Column(mainAxisSize: MainAxisSize.min, children: _loginFormWidgets(context, hideHeader: true)),
+        )))),
+      ]),
+    );
+  }
+
+  List<Widget> _loginFormWidgets(BuildContext context, {bool hideHeader = false}) {
+    return [
+      if (!hideHeader) ...[
+        const Hero(tag: 'logo', child: Icon(Icons.fitness_center, size: 56, color: AppTheme.primaryTeal)),
+        const SizedBox(height: 12),
+        const Text('MUSCLE TRACKER', textAlign: TextAlign.center, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: 2, color: Colors.white)),
+        const Text('Clinical Vision Engine v3.0', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: Colors.white54, letterSpacing: 1.5)),
+        const SizedBox(height: 20),
+      ],
+      TextField(
+        controller: _emailController,
+        decoration: InputDecoration(labelText: 'Email Address', errorText: _error, prefixIcon: const Icon(Icons.email, color: AppTheme.primaryTeal)),
+        keyboardType: TextInputType.emailAddress,
+      ),
+      const SizedBox(height: 32),
+      _isLoading ? const CircularProgressIndicator(color: AppTheme.primaryTeal) : Column(children: [
+        SizedBox(width: double.infinity, child: FilledButton(onPressed: _login, child: const Text('CONNECT'))),
+        const SizedBox(height: 12),
+        SizedBox(width: double.infinity, child: OutlinedButton(
+          onPressed: () {
+            _customerId = '1'; _customerName = 'Demo User'; _jwtToken = 'demo';
+            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const CameraLevelScreen()));
+          },
+          style: OutlinedButton.styleFrom(foregroundColor: Colors.white54, side: const BorderSide(color: Colors.white24)),
+          child: const Text('DEMO MODE'),
+        )),
+        const SizedBox(height: 12),
+        TextButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())), child: const Text('CREATE CLINICAL ACCOUNT', style: TextStyle(color: AppTheme.primaryTeal, fontSize: 13))),
+      ]),
+    ];
   }
 }
 
@@ -359,7 +390,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Widget _phaseDot(int p) { return Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: _capturePhase == p ? AppTheme.primaryTeal : ((p == 0 ? _frontPath != null : _sidePath != null) ? AppTheme.accentGreen : Colors.white24))); }
 
   Widget _buildCaptureUI() {
-    return Positioned(bottom: 0, left: 0, right: 0, child: Container(padding: const EdgeInsets.fromLTRB(24, 16, 24, 40), decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Colors.black87, Colors.transparent])), child: Column(mainAxisSize: MainAxisSize.min, children: [
+    final bottomPad = MediaQuery.of(context).padding.bottom + 24;
+    return Positioned(bottom: 0, left: 0, right: 0, child: Container(padding: EdgeInsets.fromLTRB(24, 16, 24, bottomPad), decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Colors.black87, Colors.transparent])), child: Column(mainAxisSize: MainAxisSize.min, children: [
       Container(margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [_modeBtn('PHOTO', !_isRecordingMode), _modeBtn('VIDEO', _isRecordingMode)])),
       AnimatedSwitcher(duration: const Duration(milliseconds: 300), child: _isRecording ? Text('00:0$_recordingCountdown', key: const ValueKey('timer'), style: const TextStyle(color: AppTheme.accentRed, fontSize: 32, fontWeight: FontWeight.bold)) : Row(mainAxisSize: MainAxisSize.min, children: [_phaseDot(0), const SizedBox(width: 6), Text(_phaseLabels[_capturePhase], key: ValueKey(_capturePhase), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2)), const SizedBox(width: 6), _phaseDot(1)])),
       const SizedBox(height: 12),
@@ -1106,7 +1138,7 @@ class _LivePreviewScreenState extends State<LivePreviewScreen> {
         Positioned(
           bottom: 0, left: 0, right: 0,
           child: Container(
-            padding: const EdgeInsets.fromLTRB(24, 16, 24, 40),
+            padding: EdgeInsets.fromLTRB(24, 16, 24, MediaQuery.of(context).padding.bottom + 24),
             decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Colors.black87, Colors.transparent])),
             child: _locked ? _buildLockedControls() : _buildLiveControls(),
           ),
