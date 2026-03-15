@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+    <meta charset='UTF-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    <title>Muscle Tracker — 3D Viewer</title>
+    <style>
+        body { margin: 0; background-color: #1a1a2e; color: #e0e0e0; font-family: sans-serif; overflow: hidden; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        #ui-overlay { position: absolute; top: 20px; left: 20px; z-index: 10; pointer-events: none; }
+        .card { background: rgba(22, 33, 62, 0.8); padding: 15px; border-radius: 8px; border: 1px solid #4a9eff; pointer-events: auto; }
+        h2 { margin: 0 0 10px 0; color: #4a9eff; font-size: 1.2rem; }
+        .controls { display: flex; flex-direction: column; gap: 10px; margin-top: 15px; }
+        button { background: #4a9eff; color: #1a1a2e; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        button:hover { filter: brightness(1.1); }
+        .stats { font-size: 0.8rem; margin-top: 10px; color: #94a3b8; }
+        #loader { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
+    </style>
+</head>
+<body>
+    <div id='ui-overlay'>
+        <div class='card'>
+            <h2>3D Muscle Model</h2>
+            <div id='mesh-info'>Loading model...</div>
+            <div class='controls'>
+                <button onclick='toggleWireframe()'>Toggle Wireframe</button>
+                <button onclick='resetCamera()'>Reset Camera</button>
+                <button onclick='takeScreenshot()'>Take Screenshot</button>
+            </div>
+            <div class='stats' id='stats-display'>
+                Vertices: <span id='v-count'>0</span><br>
+                Faces: <span id='f-count'>0</span><br>
+                Volume: <span id='vol-val'>0</span> cm³
+            </div>
+        </div>
+    </div>
+    <div id='loader'>Loading 3D Engine...</div>
+    <div id='canvas-container'></div>
+
+    <script src='https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js'></script>
+    <script src='https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js'></script>
+    <script src='https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js'></script>
+    <script src='viewer.js'></script>
+</body>
+</html>
