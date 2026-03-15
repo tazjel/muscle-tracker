@@ -1325,7 +1325,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
     );
   }
 
-  Widget _buildStatCard(String label, String value) {
+  Widget _buildStatCard(String label, String value, {Color? valueColor}) {
     return Card(
       color: Colors.grey.shade900,
       margin: const EdgeInsets.only(bottom: 12),
@@ -1334,8 +1334,8 @@ class _ProgressScreenState extends State<ProgressScreen> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(label, style: const TextStyle(color: Colors.white70, fontSize: 16)),
-            Text(value, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+            Expanded(child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 16))),
+            Text(value, style: TextStyle(color: valueColor ?? Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
           ],
         ),
       ),
@@ -1343,3 +1343,317 @@ class _ProgressScreenState extends State<ProgressScreen> {
   }
 }
 
+
+// --- HEALTH LOG SCREEN ---
+class HealthLogScreen extends StatefulWidget {
+  const HealthLogScreen({super.key});
+
+  @override
+  State<HealthLogScreen> createState() => _HealthLogScreenState();
+}
+
+class _HealthLogScreenState extends State<HealthLogScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _caloriesController = TextEditingController();
+  final _proteinController = TextEditingController();
+  final _carbsController = TextEditingController();
+  final _fatController = TextEditingController();
+  final _waterController = TextEditingController();
+  final _activityTypeController = TextEditingController();
+  final _activityDurationController = TextEditingController();
+  final _sleepController = TextEditingController();
+  final _weightController = TextEditingController();
+  final _notesController = TextEditingController();
+  bool _isSubmitting = false;
+
+  Future<void> _submitLog() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isSubmitting = true);
+
+    try {
+      final response = await http.post(
+        Uri.parse('/api/customer/1/health_log'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ',
+        },
+        body: jsonEncode({
+          'calories': double.tryParse(_caloriesController.text) ?? 0.0,
+          'protein_g': double.tryParse(_proteinController.text) ?? 0.0,
+          'carbs_g': double.tryParse(_carbsController.text) ?? 0.0,
+          'fat_g': double.tryParse(_fatController.text) ?? 0.0,
+          'water_ml': double.tryParse(_waterController.text) ?? 0.0,
+          'activity_type': _activityTypeController.text,
+          'activity_duration_min': double.tryParse(_activityDurationController.text) ?? 0.0,
+          'sleep_hours': double.tryParse(_sleepController.text) ?? 0.0,
+          'body_weight_kg': double.tryParse(_weightController.text) ?? 0.0,
+          'notes': _notesController.text,
+        }),
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Health log saved successfully!')),
+        );
+        Navigator.pop(context);
+      } else {
+        final error = jsonDecode(response.body)['message'] ?? 'Failed to save log';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: ')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Network error: ')),
+      );
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('Log Health Data'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildSectionTitle('NUTRITION'),
+              Row(
+                children: [
+                  Expanded(child: _buildTextField(_caloriesController, 'Calories', Icons.local_fire_department, keyboardType: TextInputType.number)),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildTextField(_proteinController, 'Protein (g)', Icons.egg, keyboardType: TextInputType.number)),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(child: _buildTextField(_carbsController, 'Carbs (g)', Icons.bakery_dining, keyboardType: TextInputType.number)),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildTextField(_fatController, 'Fat (g)', Icons.opacity, keyboardType: TextInputType.number)),
+                ],
+              ),
+              const SizedBox(height: 16),
+              _buildTextField(_waterController, 'Water (ml)', Icons.water_drop, keyboardType: TextInputType.number),
+              
+              const SizedBox(height: 32),
+              _buildSectionTitle('ACTIVITY & SLEEP'),
+              _buildTextField(_activityTypeController, 'Activity Type', Icons.directions_run),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(child: _buildTextField(_activityDurationController, 'Duration (min)', Icons.timer, keyboardType: TextInputType.number)),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildTextField(_sleepController, 'Sleep (hrs)', Icons.bedtime, keyboardType: TextInputType.number)),
+                ],
+              ),
+              
+              const SizedBox(height: 32),
+              _buildSectionTitle('BODY'),
+              _buildTextField(_weightController, 'Body Weight (kg)', Icons.monitor_weight, keyboardType: TextInputType.number),
+              const SizedBox(height: 16),
+              _buildTextField(_notesController, 'Notes', Icons.notes, maxLines: 3),
+              
+              const SizedBox(height: 40),
+              _isSubmitting
+                  ? const Center(child: CircularProgressIndicator(color: Colors.teal))
+                  : FilledButton.icon(
+                      onPressed: _submitLog,
+                      icon: const Icon(Icons.save),
+                      label: const Text('SAVE LOG', style: TextStyle(letterSpacing: 1.5)),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.teal,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                    ),
+              const SizedBox(height: 16),
+              TextButton(
+                onPressed: () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const HealthLogListScreen()));
+                },
+                child: const Text('VIEW LOG HISTORY', style: TextStyle(color: Colors.teal)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionTitle(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Text(title, style: TextStyle(color: Colors.teal.shade200, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+    );
+  }
+
+  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {TextInputType? keyboardType, int maxLines = 1}) {
+    return TextFormField(
+      controller: controller,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon, color: Colors.teal, size: 20),
+        labelStyle: const TextStyle(color: Colors.white70),
+        enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+        focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.teal)),
+      ),
+      style: const TextStyle(color: Colors.white),
+      keyboardType: keyboardType,
+      maxLines: maxLines,
+    );
+  }
+}
+
+// --- HEALTH LOG LIST SCREEN ---
+class HealthLogListScreen extends StatefulWidget {
+  const HealthLogListScreen({super.key});
+
+  @override
+  State<HealthLogListScreen> createState() => _HealthLogListScreenState();
+}
+
+class _HealthLogListScreenState extends State<HealthLogListScreen> {
+  bool _isLoading = true;
+  String? _error;
+  List<dynamic> _logs = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchLogs();
+  }
+
+  Future<void> _fetchLogs() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final response = await http.get(
+        Uri.parse('/api/customer/1/health_logs'),
+        headers: {'Authorization': 'Bearer '},
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['status'] == 'success') {
+          setState(() {
+            _logs = data['health_logs'];
+            _isLoading = false;
+          });
+        } else {
+          setState(() {
+            _error = data['message'] ?? 'Failed to load logs';
+            _isLoading = false;
+          });
+        }
+      } else {
+        setState(() {
+          _error = 'Server error: ';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _error = 'Network error: ';
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('Health History'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_isLoading) return const Center(child: CircularProgressIndicator(color: Colors.teal));
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+            const SizedBox(height: 16),
+            ElevatedButton(onPressed: _fetchLogs, child: const Text('Retry')),
+          ],
+        ),
+      );
+    }
+    if (_logs.isEmpty) return const Center(child: Text('No health logs yet.', style: TextStyle(color: Colors.white54, fontSize: 18)));
+
+    return ListView.builder(
+      itemCount: _logs.length,
+      itemBuilder: (context, index) {
+        final log = _logs[index];
+        final dateStr = log['log_date']?.toString().split('T')[0] ?? 'Unknown';
+        return Card(
+          color: Colors.grey.shade900,
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(dateStr, style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold, fontSize: 16)),
+                    if (log['body_weight_kg'] != null)
+                      Text(' kg', style: const TextStyle(color: Colors.white70)),
+                  ],
+                ),
+                const Divider(color: Colors.white10, height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _buildMiniStat(Icons.local_fire_department, '', 'kcal'),
+                    _buildMiniStat(Icons.egg, '', 'g'),
+                    _buildMiniStat(Icons.bedtime, '', 'hrs'),
+                  ],
+                ),
+                if (log['activity_type'] != null && log['activity_type'].toString().isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text('Activity:  ( min)', style: const TextStyle(color: Colors.white60, fontSize: 13)),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildMiniStat(IconData icon, String value, String unit) {
+    return Column(
+      children: [
+        Icon(icon, color: Colors.teal.shade200, size: 18),
+        const SizedBox(height: 4),
+        Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        Text(unit, style: const TextStyle(color: Colors.white54, fontSize: 10)),
+      ],
+    );
+  }
+}

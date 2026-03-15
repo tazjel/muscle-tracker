@@ -1,5 +1,15 @@
 # Gemini Autonomous Roadmap — Muscle Tracker v2.5 → v3.0
 
+> **READ FIRST — ENVIRONMENT**
+> - OS: Windows 11. Your shell tool is `run_shell_command` (PowerShell). Use `C:\Users\MiEXCITE\...` backslash paths.
+> - **ONLY WORKING TOOLS: `run_shell_command` and `list_directory`** — everything else is blocked or missing.
+> - `run_bash_command` → DOES NOT EXIST. `write_file` → NOT FOUND. `read_file` → BLOCKED. `cli_help` → BLOCKED.
+> - **Read files**: `run_shell_command` → `Get-Content C:\Users\MiEXCITE\Projects\muscle_tracker\<file>`
+> - **Write files**: `run_shell_command` → `python -c "open(r'C:\path\file','w').write('''content''')"`
+> - **Edit files**: `run_shell_command` → `python -c "p=r'C:\path\file';t=open(p).read();open(p,'w').write(t.replace('old','new'))"`
+> - **Run tests**: `run_shell_command` → `python -m pytest C:\Users\MiEXCITE\Projects\muscle_tracker\tests\ -v`
+> - Do NOT call `cli_help`. Do NOT spawn sub-agents. Do NOT retry blocked tools in a loop.
+
 **Mode**: AUTONOMOUS — no human in the loop
 **Instructions**: Execute phases sequentially. After each phase, run the review gate. Keep going until you run out of tokens or all phases are complete.
 
