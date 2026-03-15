@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  engine:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - MUSCLE_TRACKER_ADMIN_SECRET=${ADMIN_SECRET:-dev-admin-secret}
+    volumes:
+      - ./web_app/uploads:/app/apps/web_app/uploads
+      - ./data:/app/apps/web_app/databases
+    restart: always
+
+  # Optional: Future addition for PostgreSQL or Redis
