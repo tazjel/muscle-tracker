@@ -421,7 +421,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       Row(mainAxisAlignment: MainAxisAlignment.center, children: [
         if (_frontPath != null) IconButton(onPressed: _resetCapture, icon: const Icon(Icons.refresh, color: Colors.white54)),
         const SizedBox(width: 24),
-        GestureDetector(onTap: isLevel && !_isCapturing ? (_isRecordingMode ? _toggleRecording : _captureImage) : null, child: Container(width: 76, height: 76, decoration: BoxDecoration(shape: BoxShape.circle, color: _isRecording ? AppTheme.accentRed : (isLevel ? AppTheme.primaryTeal : Colors.grey.shade800), border: Border.all(color: Colors.white, width: 4)), child: _isCapturing || (_isUploading && _isRecordingMode) ? const Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: Colors.black, strokeWidth: 3)) : Icon(_isRecordingMode ? (_isRecording ? Icons.stop : Icons.videocam) : _phaseIcons[_capturePhase], color: Colors.black, size: 36))),
+        GestureDetector(onTap: !_isCapturing ? (_isRecordingMode ? _toggleRecording : _captureImage) : null, child: Container(width: 76, height: 76, decoration: BoxDecoration(shape: BoxShape.circle, color: _isRecording ? AppTheme.accentRed : AppTheme.primaryTeal, border: Border.all(color: Colors.white, width: 4)), child: _isCapturing || (_isUploading && _isRecordingMode) ? const Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: Colors.black, strokeWidth: 3)) : Icon(_isRecordingMode ? (_isRecording ? Icons.stop : Icons.videocam) : _phaseIcons[_capturePhase], color: Colors.black, size: 36))),
         const SizedBox(width: 72),
       ]),
     ])));
