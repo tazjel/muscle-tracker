@@ -5,6 +5,8 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
+import 'dart:ui' as ui;
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 late List<CameraDescription> _cameras;
@@ -69,7 +71,7 @@ class _LoginScreenState extends State<LoginScreen> {
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'email': email}),
       );
-      
+
       final data = jsonDecode(response.body);
 
       if (response.statusCode == 200 && data['status'] == 'success') {
@@ -193,6 +195,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   int _recordingCountdown = 5;
   Timer? _countdownTimer;
   String? _statusMessage;
+  bool _showGhost = false;
+  ui.Image? _ghostImage;
 
   // Low-pass filter for sensor smoothing
   double _filteredPitch = 0.0;
@@ -238,6 +242,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   void dispose() {
     _controller?.dispose();
     _sensorSubscription?.cancel();
+    _countdownTimer?.cancel();
     super.dispose();
   }
 
@@ -254,15 +259,15 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
       var streamedResponse = await request.send().timeout(const Duration(seconds: 5));
       var response = await http.Response.fromStream(streamedResponse);
-      
+
       if (response.statusCode == 200) {
         final result = jsonDecode(response.body);
         if (result['status'] == 'corrections_needed' && result['corrections'] != null) {
           if (!mounted) return true;
-          
+
           List<dynamic> corrections = result['corrections'];
           String instructions = corrections.map((c) => "• ${c['instruction']}").join("\n");
-          
+
           final shouldContinue = await showDialog<bool>(
             context: context,
             barrierDismissible: false,
@@ -273,11 +278,11 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.pop(context, false), // Retake
-                    child: const Text('Retake'),
+                    child: const Text('RETAKE'),
                   ),
                   TextButton(
                     onPressed: () => Navigator.pop(context, true), // Continue anyway
-                    child: const Text('Continue Anyway'),
+                    child: const Text('CONTINUE ANYWAY'),
                   ),
                 ],
               );
@@ -286,66 +291,47 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
           return shouldContinue ?? false;
         }
       }
+      return true;
     } catch (e) {
-      // If pose check fails (timeout/network), don't block the user
-      debugPrint('Pose check failed: $e');
+      return true; // If API fails, let user continue
+    } finally {
+      setState(() => _statusMessage = null);
     }
-    return true; // OK or failed check -> proceed
   }
 
   Future<void> _captureImage() async {
-    if (_isCapturing || _controller == null || !_controller!.value.isInitialized) {
-      return;
-    }
+    if (_controller == null || !_controller!.value.isInitialized || _isCapturing) return;
 
-    setState(() => _isCapturing = true);
+    setState(() {
+      _isCapturing = true;
+      _statusMessage = 'Capturing...';
+    });
 
     try {
-      final XFile photo = await _controller!.takePicture();
-
-      // Save to app directory with structured naming
-      final dir = await getApplicationDocumentsDirectory();
-      final scanDir = Directory('${dir.path}/scans');
-      if (!await scanDir.exists()) {
-        await scanDir.create(recursive: true);
+      final XFile image = await _controller!.takePicture();
+      
+      bool proceed = await _runPoseCheck(image.path);
+      if (!proceed) {
+        setState(() {
+          _isCapturing = false;
+          _statusMessage = 'Please retake with corrected pose';
+        });
+        return;
       }
-
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final phase = _capturePhase == 0 ? 'front' : 'side';
-      final savePath = '${scanDir.path}/${phase}_$timestamp.jpg';
-
-      await File(photo.path).copy(savePath);
 
       if (_capturePhase == 0) {
-        // Run pose check on front view
-        bool proceed = await _runPoseCheck(savePath);
-        if (!proceed) {
-          // User chose to retake
-          File(savePath).deleteSync();
-          setState(() {
-            _statusMessage = 'Retake Front View';
-            _isCapturing = false;
-          });
-          return;
-        }
-      }
-
-      setState(() {
-        if (_capturePhase == 0) {
-          _frontPath = savePath;
+        _frontPath = image.path;
+        await _saveLatestScan(image.path, 'front');
+        setState(() {
           _capturePhase = 1;
-          _statusMessage = 'Front captured! Now rotate for SIDE VIEW.';
-        } else {
-          _sidePath = savePath;
-          _statusMessage = 'Both views captured!';
-        }
-        _isCapturing = false;
-      });
-
-      // If both captured, show review
-      if (_frontPath != null && _sidePath != null) {
+          _isCapturing = false;
+        });
+      } else {
+        _sidePath = image.path;
+        await _saveLatestScan(image.path, 'side');
+        await _controller!.pausePreview();
         if (!mounted) return;
-        final shouldUpload = await Navigator.push<bool>(
+        final confirmed = await Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => ReviewScreen(
@@ -355,47 +341,40 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
           ),
         );
 
-        if (shouldUpload == true) {
-          _uploadScan();
+        if (confirmed == true) {
+          await _uploadScan();
         } else {
           _resetCapture();
+          await _controller!.resumePreview();
         }
       }
     } catch (e) {
       setState(() {
-        _isCapturing = false;
         _statusMessage = 'Capture failed: $e';
+        _isCapturing = false;
       });
     }
   }
 
   Future<void> _uploadScan() async {
-    if (_frontPath == null || _sidePath == null) return;
-
     setState(() {
       _isUploading = true;
-      _statusMessage = 'Uploading scan...';
+      _statusMessage = 'Uploading...';
     });
 
     try {
-      // NOTE: Uploading to customer ID 1 for now (to match existing logic)
-      final uri = Uri.parse('$serverBaseUrl/api/upload_scan/');
-      var request = http.MultipartRequest('POST', uri);
-      
-      // Add authentication token from memory
+      var request = http.MultipartRequest('POST', Uri.parse('$serverBaseUrl/api/upload_scan/$_customerId'));
       request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
-
       request.files.add(await http.MultipartFile.fromPath('front', _frontPath!));
       request.files.add(await http.MultipartFile.fromPath('side', _sidePath!));
       request.fields['muscle_group'] = _selectedMuscleGroup;
 
-      var streamedResponse = await request.send();
+      var streamedResponse = await request.send().timeout(const Duration(seconds: 30));
       var response = await http.Response.fromStream(streamedResponse);
-      
+
       if (!mounted) return;
 
       if (response.statusCode == 401) {
-        // Token expired or invalid
         _jwtToken = null;
         Navigator.pushReplacement(
           context,
@@ -410,13 +389,10 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       final result = jsonDecode(response.body);
 
       if (response.statusCode == 200 && result['status'] == 'success') {
-        setState(() {
-          _isUploading = false;
-        });
-
+        setState(() => _isUploading = false);
         _resetCapture();
         if (!mounted) return;
-        
+
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -439,7 +415,6 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         _isUploading = false;
       });
     }
-
     _resetCapture();
   }
 
@@ -473,7 +448,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         });
       });
     } catch (e) {
-      setState(() => _statusMessage = 'Video start failed: ');
+      setState(() => _statusMessage = 'Video start failed: $e');
     }
   }
 
@@ -493,15 +468,15 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       setState(() {
         _isRecording = false;
         _isUploading = false;
-        _statusMessage = 'Video stop failed: ';
+        _statusMessage = 'Video stop failed: $e';
       });
     }
   }
 
   Future<void> _uploadVideo(String path) async {
     try {
-      var request = http.MultipartRequest('POST', Uri.parse('/api/upload_video/'));
-      request.headers['Authorization'] = 'Bearer ';
+      var request = http.MultipartRequest('POST', Uri.parse('$serverBaseUrl/api/upload_video/$_customerId'));
+      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
       request.files.add(await http.MultipartFile.fromPath('video', path));
       request.fields['muscle_group'] = _selectedMuscleGroup;
 
@@ -515,15 +490,67 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         Navigator.push(context, MaterialPageRoute(builder: (_) => ResultsScreen(result: result, muscleGroup: _selectedMuscleGroup)));
       } else {
         setState(() {
-          _statusMessage = 'Upload failed: ';
+          _statusMessage = 'Upload failed: ${result['message'] ?? response.reasonPhrase}';
           _isUploading = false;
         });
       }
     } catch (e) {
       setState(() {
-        _statusMessage = 'Upload error: ';
+        _statusMessage = 'Upload error: $e';
         _isUploading = false;
       });
+    }
+  }
+
+  Future<void> _toggleGhost() async {
+    if (_showGhost) {
+      setState(() {
+        _showGhost = false;
+        _ghostImage = null;
+      });
+      return;
+    }
+
+    setState(() => _statusMessage = 'Loading ghost overlay...');
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final phaseStr = _capturePhase == 0 ? 'front' : 'side';
+      final fileName = 'latest_${_selectedMuscleGroup}_$phaseStr.jpg';
+      final filePath = '${directory.path}/scans/$fileName';
+
+      if (await File(filePath).exists()) {
+        final bytes = await File(filePath).readAsBytes();
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frameInfo = await codec.getNextFrame();
+        setState(() {
+          _ghostImage = frameInfo.image;
+          _showGhost = true;
+          _statusMessage = null;
+        });
+      } else {
+        setState(() {
+          _showGhost = false;
+          _statusMessage = 'No local scan found for ghost overlay';
+        });
+        Timer(const Duration(seconds: 2), () => setState(() => _statusMessage = null));
+      }
+    } catch (e) {
+      setState(() => _statusMessage = 'Ghost load failed: $e');
+    }
+  }
+
+  Future<void> _saveLatestScan(String path, String phase) async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final scansDir = Directory('${directory.path}/scans');
+      if (!await scansDir.exists()) {
+        await scansDir.create(recursive: true);
+      }
+      final fileName = 'latest_${_selectedMuscleGroup}_$phase.jpg';
+      final newPath = '${scansDir.path}/$fileName';
+      await File(path).copy(newPath);
+    } catch (e) {
+      print('Error saving latest scan: $e');
     }
   }
 
@@ -532,7 +559,50 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       _capturePhase = 0;
       _frontPath = null;
       _sidePath = null;
+      _showGhost = false;
+      _ghostImage = null;
     });
+  }
+
+  void _showProfileDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.grey.shade900,
+        title: Row(
+          children: [
+            const Icon(Icons.account_circle, color: Colors.teal),
+            const SizedBox(width: 8),
+            Text(_customerName ?? 'Profile', style: const TextStyle(color: Colors.white)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Customer ID: $_customerId', style: const TextStyle(color: Colors.white70)),
+            const SizedBox(height: 8),
+            const Text('Role: Clinical User', style: TextStyle(color: Colors.teal, fontSize: 12)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _jwtToken = null;
+              _customerId = null;
+              _customerName = null;
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginScreen()),
+                (route) => false,
+              );
+            },
+            child: const Text('LOGOUT', style: TextStyle(color: Colors.redAccent)),
+          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CLOSE')),
+        ],
+      ),
+    );
   }
 
   @override
@@ -560,10 +630,9 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // Camera preview
           CameraPreview(_controller!),
-
-          // Level indicator overlay
+          if (_showGhost && _ghostImage != null)
+            CustomPaint(painter: GhostOverlayPainter(image: _ghostImage)),
           CustomPaint(
             painter: LevelPainter(
               pitch: _pitch,
@@ -571,59 +640,10 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
               color: isLevel ? Colors.greenAccent : Colors.redAccent,
             ),
           ),
-
-          // Guide overlay (body outline)
           CustomPaint(painter: BodyGuidePainter(phase: _capturePhase)),
-
-          // Top status bar
           _buildTopBar(),
-
-          // Bottom capture UI
           _buildCaptureUI(),
-
-          // Upload overlay
           if (_isUploading) _buildUploadOverlay(),
-        ],
-      ),
-    );
-  }
-
-  void _showProfileDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: Colors.grey.shade900,
-        title: Row(
-          children: [
-            const Icon(Icons.account_circle, color: Colors.teal),
-            const SizedBox(width: 8),
-            Text(_customerName ?? 'Profile', style: const TextStyle(color: Colors.white)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Customer ID: ', style: const TextStyle(color: Colors.white70)),
-            const SizedBox(height: 8),
-            const Text('Role: Clinical User', style: TextStyle(color: Colors.teal, fontSize: 12)),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              _jwtToken = null;
-              _customerId = null;
-              _customerName = null;
-              Navigator.pushAndRemoveUntil(
-                context,
-                MaterialPageRoute(builder: (_) => const LoginScreen()),
-                (route) => false,
-              );
-            },
-            child: const Text('LOGOUT', style: TextStyle(color: Colors.redAccent)),
-          ),
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CLOSE')),
         ],
       ),
     );
@@ -659,48 +679,34 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
               ),
             ),
             const SizedBox(width: 8),
-            // Muscle Group Selector
             DropdownButtonHideUnderline(
               child: DropdownButton<String>(
                 value: _selectedMuscleGroup,
                 dropdownColor: Colors.black87,
                 icon: const Icon(Icons.arrow_drop_down, color: Colors.teal),
-                style: const TextStyle(
-                  color: Colors.teal,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                ),
+                style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold, fontSize: 14),
                 onChanged: _frontPath != null ? null : (String? newValue) {
-                  if (newValue != null) {
-                    setState(() {
-                      _selectedMuscleGroup = newValue;
-                    });
-                  }
+                  if (newValue != null) setState(() => _selectedMuscleGroup = newValue);
                 },
                 items: _muscleGroups.map<DropdownMenuItem<String>>((String value) {
-                  return DropdownMenuItem<String>(
-                    value: value,
-                    child: Text(value.toUpperCase()),
-                  );
+                  return DropdownMenuItem<String>(value: value, child: Text(value.toUpperCase()));
                 }).toList(),
               ),
             ),
             const Spacer(),
             IconButton(
+              icon: Icon(_showGhost ? Icons.visibility : Icons.visibility_off, color: _showGhost ? Colors.teal : Colors.white70),
+              onPressed: _toggleGhost,
+              tooltip: 'Ghost Overlay',
+            ),
+            IconButton(
               icon: const Icon(Icons.history, color: Colors.white),
               onPressed: () {
-                Navigator.push(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: _selectedMuscleGroup)));
+                Navigator.push(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: _selectedMuscleGroup)));   
               },
             ),
             const SizedBox(width: 8),
-            // Phase indicator dots
-            Row(
-              children: [
-                _phaseDot(0),
-                const SizedBox(width: 8),
-                _phaseDot(1),
-              ],
-            ),
+            Row(children: [_phaseDot(0), const SizedBox(width: 8), _phaseDot(1)]),
           ],
         ),
       ),
@@ -709,18 +715,13 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
   Widget _phaseDot(int phase) {
     final isActive = _capturePhase == phase;
-    final isDone = (phase == 0 && _frontPath != null) ||
-        (phase == 1 && _sidePath != null);
+    final isDone = (phase == 0 && _frontPath != null) || (phase == 1 && _sidePath != null);
     return Container(
       width: 10,
       height: 10,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: isDone
-            ? Colors.greenAccent
-            : isActive
-                ? Colors.teal
-                : Colors.grey.shade700,
+        color: isDone ? Colors.greenAccent : isActive ? Colors.teal : Colors.grey.shade700,
         border: Border.all(color: Colors.white30, width: 1),
       ),
     );
@@ -743,18 +744,6 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Status message
-            if (_statusMessage != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Text(
-                  _statusMessage!,
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-
-            // Mode Toggle
             Container(
               margin: const EdgeInsets.only(bottom: 16),
               decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)),
@@ -766,74 +755,33 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
                 ],
               ),
             ),
-
-            // Phase label
             if (!_isRecordingMode)
-              Text(
-                _phaseLabels[_capturePhase],
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 2,
-                ),
-              ),
+              Text(_phaseLabels[_capturePhase], style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: 2)),
             if (_isRecordingMode && _isRecording)
-              Text(
-                '00:0',
-                style: const TextStyle(color: Colors.redAccent, fontSize: 32, fontWeight: FontWeight.bold, fontFeatures: [FontFeature.tabularFigures()]),
-              ),
+              Text('00:0$_recordingCountdown', style: const TextStyle(color: Colors.redAccent, fontSize: 32, fontWeight: FontWeight.bold, fontFeatures: [FontFeature.tabularFigures()])),
             const SizedBox(height: 8),
-
-            // Alignment indicator
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               decoration: BoxDecoration(
                 color: Colors.black54,
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: isLevel ? Colors.greenAccent : Colors.redAccent,
-                  width: 1,
-                ),
+                border: Border.all(color: isLevel ? Colors.greenAccent : Colors.redAccent, width: 1),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    isLevel ? Icons.check_circle : Icons.warning,
-                    color: isLevel ? Colors.greenAccent : Colors.redAccent,
-                    size: 16,
-                  ),
+                  Icon(isLevel ? Icons.check_circle : Icons.warning, color: isLevel ? Colors.greenAccent : Colors.redAccent, size: 16),
                   const SizedBox(width: 8),
-                  Text(
-                    isLevel ? 'ALIGNED — READY' : 'TILT TO ALIGN',
-                    style: TextStyle(
-                      color: isLevel ? Colors.greenAccent : Colors.redAccent,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13,
-                    ),
-                  ),
+                  Text(isLevel ? 'ALIGNED — READY' : 'TILT TO ALIGN', style: TextStyle(color: isLevel ? Colors.greenAccent : Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 13)),
                 ],
               ),
             ),
             const SizedBox(height: 20),
-
-            // Capture button
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Reset button
-                if (_frontPath != null)
-                  IconButton(
-                    onPressed: _resetCapture,
-                    icon:
-                        const Icon(Icons.refresh, color: Colors.white54, size: 28),
-                  ),
-
+                if (_frontPath != null) IconButton(onPressed: _resetCapture, icon: const Icon(Icons.refresh, color: Colors.white54, size: 28)),
                 const SizedBox(width: 20),
-
-                // Main capture button
                 GestureDetector(
                   onTap: isLevel && !_isCapturing ? (_isRecordingMode ? _toggleRecording : _captureImage) : null,
                   child: Container(
@@ -842,27 +790,13 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: _isRecording ? Colors.redAccent : (isLevel ? Colors.teal : Colors.grey.shade800),
-                      border: Border.all(
-                        color: isLevel ? Colors.white : Colors.grey,
-                        width: 4,
-                      ),
+                      border: Border.all(color: isLevel ? Colors.white : Colors.grey, width: 4),
                     ),
                     child: _isCapturing || (_isUploading && _isRecordingMode)
-                        ? const Padding(
-                            padding: EdgeInsets.all(18),
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 3,
-                            ),
-                          )
-                        : Icon(
-                            _isRecordingMode ? (_isRecording ? Icons.stop : Icons.videocam) : _phaseIcons[_capturePhase],
-                            color: Colors.white,
-                            size: 32,
-                          ),
+                        ? const Padding(padding: EdgeInsets.all(18), child: CircularProgressIndicator(color: Colors.white, strokeWidth: 3))
+                        : Icon(_isRecordingMode ? (_isRecording ? Icons.stop : Icons.videocam) : _phaseIcons[_capturePhase], color: Colors.white, size: 32),
                   ),
                 ),
-
                 const SizedBox(width: 48),
               ],
             ),
@@ -880,10 +814,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       }),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        decoration: BoxDecoration(
-          color: active ? Colors.teal : Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
-        ),
+        decoration: BoxDecoration(color: active ? Colors.teal : Colors.transparent, borderRadius: BorderRadius.circular(20)),
         child: Text(label, style: TextStyle(color: active ? Colors.black : Colors.white70, fontWeight: FontWeight.bold, fontSize: 12)),
       ),
     );
@@ -898,11 +829,9 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
           children: [
             CircularProgressIndicator(color: Colors.teal),
             SizedBox(height: 20),
-            Text('Analyzing scan...',
-                style: TextStyle(color: Colors.white, fontSize: 18)),
+            Text('Analyzing scan...', style: TextStyle(color: Colors.white, fontSize: 18)),
             SizedBox(height: 8),
-            Text('This may take a moment',
-                style: TextStyle(color: Colors.white54, fontSize: 14)),
+            Text('This may take a moment', style: TextStyle(color: Colors.white54, fontSize: 14)),
           ],
         ),
       ),
@@ -910,217 +839,83 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   }
 }
 
-// --- BODY GUIDE OVERLAY ---
-
 class BodyGuidePainter extends CustomPainter {
   final int phase;
   BodyGuidePainter({required this.phase});
-
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.15)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-
+    final paint = Paint()..color = Colors.white.withOpacity(0.15)..style = PaintingStyle.stroke..strokeWidth = 1.5;
     final cx = size.width / 2;
     final cy = size.height / 2;
-
     if (phase == 0) {
-      // Front view: shoulders-to-hips outline
-      final path = Path()
-        ..moveTo(cx - 60, cy - 120)  // left shoulder
-        ..lineTo(cx - 80, cy - 80)   // left arm
-        ..lineTo(cx - 50, cy + 80)   // left hip
-        ..lineTo(cx + 50, cy + 80)   // right hip
-        ..lineTo(cx + 80, cy - 80)   // right arm
-        ..lineTo(cx + 60, cy - 120)  // right shoulder
-        ..close();
+      final path = Path()..moveTo(cx - 60, cy - 120)..lineTo(cx - 80, cy - 80)..lineTo(cx - 50, cy + 80)..lineTo(cx + 50, cy + 80)..lineTo(cx + 80, cy - 80)..lineTo(cx + 60, cy - 120)..close();
       canvas.drawPath(path, paint);
-      // Head
       canvas.drawCircle(Offset(cx, cy - 150), 30, paint);
     } else {
-      // Side view: profile outline
-      final path = Path()
-        ..moveTo(cx - 20, cy - 120)
-        ..lineTo(cx - 30, cy - 80)
-        ..lineTo(cx - 25, cy + 80)
-        ..lineTo(cx + 25, cy + 80)
-        ..lineTo(cx + 40, cy - 80)
-        ..lineTo(cx + 20, cy - 120)
-        ..close();
+      final path = Path()..moveTo(cx - 20, cy - 120)..lineTo(cx - 30, cy - 80)..lineTo(cx - 25, cy + 80)..lineTo(cx + 25, cy + 80)..lineTo(cx + 40, cy - 80)..lineTo(cx + 20, cy - 120)..close();
       canvas.drawPath(path, paint);
       canvas.drawCircle(Offset(cx + 5, cy - 150), 28, paint);
     }
   }
-
   @override
   bool shouldRepaint(covariant BodyGuidePainter old) => old.phase != phase;
 }
-
-// --- LEVEL INDICATOR ---
 
 class LevelPainter extends CustomPainter {
   final double pitch, roll;
   final Color color;
   LevelPainter({required this.pitch, required this.roll, required this.color});
-
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, 120);
-
-    // Outer ring
-    final outerPaint = Paint()
-      ..color = Colors.white.withOpacity(0.3)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0;
+    final outerPaint = Paint()..color = Colors.white.withOpacity(0.3)..style = PaintingStyle.stroke..strokeWidth = 2.0;
     canvas.drawCircle(center, 35, outerPaint);
-
-    // Cross-hairs
-    final crossPaint = Paint()
-      ..color = Colors.white.withOpacity(0.15)
-      ..strokeWidth = 1.0;
-    canvas.drawLine(
-        Offset(center.dx - 35, center.dy), Offset(center.dx + 35, center.dy), crossPaint);
-    canvas.drawLine(
-        Offset(center.dx, center.dy - 35), Offset(center.dx, center.dy + 35), crossPaint);
-
-    // Level bubble
-    final bubbleOffset = Offset(
-      center.dx - roll.clamp(-3.0, 3.0) * 10,
-      center.dy - pitch.clamp(-3.0, 3.0) * 10,
-    );
-    final bubblePaint = Paint()
-      ..color = color
-      ..style = PaintingStyle.fill;
+    final crossPaint = Paint()..color = Colors.white.withOpacity(0.15)..strokeWidth = 1.0;
+    canvas.drawLine(Offset(center.dx - 35, center.dy), Offset(center.dx + 35, center.dy), crossPaint);
+    canvas.drawLine(Offset(center.dx, center.dy - 35), Offset(center.dx, center.dy + 35), crossPaint);
+    final bubbleOffset = Offset(center.dx - roll.clamp(-3.0, 3.0) * 10, center.dy - pitch.clamp(-3.0, 3.0) * 10);
+    final bubblePaint = Paint()..color = color..style = PaintingStyle.fill;
     canvas.drawCircle(bubbleOffset, 12, bubblePaint);
-
-    // Glow effect when level
     if (color == Colors.greenAccent) {
-      final glowPaint = Paint()
-        ..color = color.withOpacity(0.2)
-        ..style = PaintingStyle.fill;
+      final glowPaint = Paint()..color = color.withOpacity(0.2)..style = PaintingStyle.fill;
       canvas.drawCircle(bubbleOffset, 20, glowPaint);
     }
   }
-
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
 
-// --- REVIEW SCREEN ---
-
 class ReviewScreen extends StatelessWidget {
   final String frontPath;
   final String sidePath;
-
-  const ReviewScreen({
-    super.key,
-    required this.frontPath,
-    required this.sidePath,
-  });
-
+  const ReviewScreen({super.key, required this.frontPath, required this.sidePath});
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: const Text('Review Captures'),
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-      ),
+      appBar: AppBar(title: const Text('Review Captures'), backgroundColor: Colors.black, foregroundColor: Colors.white),
       body: Column(
         children: [
-          Expanded(
-            child: Row(
-              children: [
-                // Front preview
-                Expanded(
-                  child: Column(
-                    children: [
-                      const Padding(
-                        padding: EdgeInsets.all(8),
-                        child: Text('FRONT',
-                            style: TextStyle(
-                                color: Colors.teal,
-                                fontWeight: FontWeight.bold)),
-                      ),
-                      Expanded(
-                        child: Image.file(File(frontPath), fit: BoxFit.contain),
-                      ),
-                    ],
-                  ),
-                ),
-                const VerticalDivider(color: Colors.grey, width: 1),
-                // Side preview
-                Expanded(
-                  child: Column(
-                    children: [
-                      const Padding(
-                        padding: EdgeInsets.all(8),
-                        child: Text('SIDE',
-                            style: TextStyle(
-                                color: Colors.teal,
-                                fontWeight: FontWeight.bold)),
-                      ),
-                      Expanded(
-                        child: Image.file(File(sidePath), fit: BoxFit.contain),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          // Action buttons
-          Padding(
-            padding: const EdgeInsets.all(24),
-            child: Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.pop(context, false),
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('RETAKE'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white70,
-                      side: const BorderSide(color: Colors.white30),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () => Navigator.pop(context, true),
-                    icon: const Icon(Icons.cloud_upload),
-                    label: const Text('ANALYZE'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Colors.teal,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          Expanded(child: Row(children: [
+            Expanded(child: Column(children: [const Padding(padding: EdgeInsets.all(8), child: Text('FRONT', style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold))), Expanded(child: Image.file(File(frontPath), fit: BoxFit.contain))])),
+            const VerticalDivider(color: Colors.grey, width: 1),
+            Expanded(child: Column(children: [const Padding(padding: EdgeInsets.all(8), child: Text('SIDE', style: TextStyle(color: Colors.teal, fontWeight: FontWeight.bold))), Expanded(child: Image.file(File(sidePath), fit: BoxFit.contain))])),
+          ])),
+          Padding(padding: const EdgeInsets.all(24), child: Row(children: [
+            Expanded(child: OutlinedButton.icon(onPressed: () => Navigator.pop(context, false), icon: const Icon(Icons.refresh), label: const Text('RETAKE'), style: OutlinedButton.styleFrom(foregroundColor: Colors.white70, side: const BorderSide(color: Colors.white30), padding: const EdgeInsets.symmetric(vertical: 16)))),
+            const SizedBox(width: 16),
+            Expanded(child: FilledButton.icon(onPressed: () => Navigator.pop(context, true), icon: const Icon(Icons.cloud_upload), label: const Text('ANALYZE'), style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 16)))),
+          ])),
         ],
       ),
     );
   }
 }
 
-// --- RESULTS SCREEN ---
 class ResultsScreen extends StatelessWidget {
   final Map<String, dynamic> result;
   final String muscleGroup;
-
-  const ResultsScreen({
-    super.key,
-    required this.result,
-    required this.muscleGroup,
-  });
-
+  const ResultsScreen({super.key, required this.result, required this.muscleGroup});
   @override
   Widget build(BuildContext context) {
     final double volume = result['volume_cm3']?.toDouble() ?? 0.0;
@@ -1129,119 +924,45 @@ class ResultsScreen extends StatelessWidget {
     final double? score = result['shape_score']?.toDouble();
     final String? grade = result['shape_grade'];
     final bool calibrated = result['calibrated'] ?? false;
-
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: const Text('Scan Results'),
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Card(
-              color: Colors.grey.shade900,
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  children: [
-                    Text(muscleGroup.toUpperCase(), style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold, letterSpacing: 2)),
-                    const SizedBox(height: 16),
-                    Text('${volume.toStringAsFixed(2)} cm³', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white)),
-                    const Text('ESTIMATED VOLUME', style: TextStyle(color: Colors.white54)),
-                    const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: calibrated ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: calibrated ? Colors.green : Colors.orange),
-                      ),
-                      child: Text(calibrated ? 'CALIBRATED' : 'UNCALIBRATED', style: TextStyle(color: calibrated ? Colors.green : Colors.orange, fontSize: 12)),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            if (growth != null) ...[
-              const SizedBox(height: 16),
-              Card(
-                color: Colors.grey.shade900,
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Growth', style: TextStyle(fontSize: 18, color: Colors.white)),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text('${growth > 0 ? '+' : ''}${growth.toStringAsFixed(1)}%', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: growth >= 0 ? Colors.greenAccent : Colors.redAccent)),
-                          Text('${delta! > 0 ? '+' : ''}${delta.toStringAsFixed(1)} cm³', style: const TextStyle(color: Colors.white54)),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-            if (score != null) ...[
-              const SizedBox(height: 16),
-              Card(
-                color: Colors.grey.shade900,
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Shape', style: TextStyle(fontSize: 18, color: Colors.white)),
-                      Row(
-                        children: [
-                          Text('${score.toStringAsFixed(1)}/100', style: const TextStyle(fontSize: 18, color: Colors.white70)),
-                          const SizedBox(width: 12),
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.teal),
-                            child: Text(grade ?? '-', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 40),
-            FilledButton.icon(
-              onPressed: () => Navigator.pop(context),
-              icon: const Icon(Icons.add_a_photo),
-              label: const Text('NEW SCAN', style: TextStyle(letterSpacing: 1.2)),
-              style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 16)),
-            ),
-            const SizedBox(height: 16),
-            OutlinedButton.icon(
-              onPressed: () {
-                Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: muscleGroup)));
-              },
-              icon: const Icon(Icons.history),
-              label: const Text('VIEW HISTORY', style: TextStyle(letterSpacing: 1.2)),
-              style: OutlinedButton.styleFrom(foregroundColor: Colors.white, side: const BorderSide(color: Colors.white30), padding: const EdgeInsets.symmetric(vertical: 16)),
-            ),
-          ],
-        ),
-      ),
+      appBar: AppBar(title: const Text('Scan Results'), backgroundColor: Colors.black, foregroundColor: Colors.white),
+      body: SingleChildScrollView(padding: const EdgeInsets.all(24), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Card(color: Colors.grey.shade900, child: Padding(padding: const EdgeInsets.all(24), child: Column(children: [
+          Text(muscleGroup.toUpperCase(), style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold, letterSpacing: 2)),
+          const SizedBox(height: 16),
+          Text('${volume.toStringAsFixed(2)} cm³', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white)),
+          const Text('ESTIMATED VOLUME', style: TextStyle(color: Colors.white54)),
+          const SizedBox(height: 16),
+          Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), decoration: BoxDecoration(color: calibrated ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2), borderRadius: BorderRadius.circular(12), border: Border.all(color: calibrated ? Colors.green : Colors.orange)), child: Text(calibrated ? 'CALIBRATED' : 'UNCALIBRATED', style: TextStyle(color: calibrated ? Colors.green : Colors.orange, fontSize: 12))),
+        ]))),
+        if (growth != null) ...[const SizedBox(height: 16), Card(color: Colors.grey.shade900, child: Padding(padding: const EdgeInsets.all(20), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          const Text('Growth', style: TextStyle(fontSize: 18, color: Colors.white)),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text('${growth > 0 ? '+' : ''}${growth.toStringAsFixed(1)}%', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: growth >= 0 ? Colors.greenAccent : Colors.redAccent)),
+            Text('${delta! > 0 ? '+' : ''}${delta.toStringAsFixed(1)} cm³', style: const TextStyle(color: Colors.white54)),
+          ]),
+        ])))],
+        if (score != null) ...[const SizedBox(height: 16), Card(color: Colors.grey.shade900, child: Padding(padding: const EdgeInsets.all(20), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          const Text('Shape', style: TextStyle(fontSize: 18, color: Colors.white)),
+          Row(children: [
+            Text('${score.toStringAsFixed(1)}/100', style: const TextStyle(fontSize: 18, color: Colors.white70)),
+            const SizedBox(width: 12),
+            Container(padding: const EdgeInsets.all(8), decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.teal), child: Text(grade ?? '-', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black))),
+          ]),
+        ])))],
+        const SizedBox(height: 40),
+        FilledButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.add_a_photo), label: const Text('NEW SCAN', style: TextStyle(letterSpacing: 1.2)), style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 16))),
+        const SizedBox(height: 16),
+        OutlinedButton.icon(onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: muscleGroup))), icon: const Icon(Icons.history), label: const Text('VIEW HISTORY', style: TextStyle(letterSpacing: 1.2)), style: OutlinedButton.styleFrom(foregroundColor: Colors.white, side: const BorderSide(color: Colors.white30), padding: const EdgeInsets.symmetric(vertical: 16))),
+      ])),
     );
   }
 }
 
-// --- HISTORY SCREEN ---
 class HistoryScreen extends StatefulWidget {
   final String? muscleGroup;
   const HistoryScreen({super.key, this.muscleGroup});
-
   @override
   State<HistoryScreen> createState() => _HistoryScreenState();
 }
@@ -1250,143 +971,54 @@ class _HistoryScreenState extends State<HistoryScreen> {
   bool _isLoading = true;
   String? _error;
   List<dynamic> _scans = [];
-
   @override
-  void initState() {
-    super.initState();
-    _fetchHistory();
-  }
-
+  void initState() { super.initState(); _fetchHistory(); }
   Future<void> _fetchHistory() async {
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
-
+    setState(() { _isLoading = true; _error = null; });
     try {
-      String url = '$serverBaseUrl/api/customer//scans';
-      if (widget.muscleGroup != null) {
-        url += '?muscle_group=${widget.muscleGroup}';
-      }
-      
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'},
-      );
-
+      String url = '$serverBaseUrl/api/customer/$_customerId/scans';
+      if (widget.muscleGroup != null) url += '?muscle_group=${widget.muscleGroup}';
+      final response = await http.get(Uri.parse(url), headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'});
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data['status'] == 'success') {
-          setState(() {
-            _scans = data['scans'];
-            _isLoading = false;
-          });
-        } else {
-          setState(() {
-            _error = data['message'] ?? 'Failed to load history';
-            _isLoading = false;
-          });
-        }
-      } else {
-        setState(() {
-          _error = 'Server error: ${response.statusCode}';
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _error = 'Network error: $e';
-        _isLoading = false;
-      });
-    }
+        if (data['status'] == 'success') setState(() { _scans = data['scans']; _isLoading = false; });
+        else setState(() { _error = data['message'] ?? 'Failed to load history'; _isLoading = false; });
+      } else setState(() { _error = 'Server error: ${response.statusCode}'; _isLoading = false; });
+    } catch (e) { setState(() { _error = 'Network error: $e'; _isLoading = false; }); }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: const Text('History'),
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-      ),
+      appBar: AppBar(title: const Text('History'), backgroundColor: Colors.black, foregroundColor: Colors.white),
       body: _buildBody(),
     );
   }
-
   Widget _buildBody() {
-    if (_isLoading) {
-      return const Center(child: CircularProgressIndicator(color: Colors.teal));
-    }
-    if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(_error!, style: const TextStyle(color: Colors.redAccent)),
-            const SizedBox(height: 16),
-            ElevatedButton(onPressed: _fetchHistory, child: const Text('Retry')),
-          ],
-        ),
-      );
-    }
-
-    if (_scans.isEmpty) {
-      return const Center(
-        child: Text('No scans yet.', style: TextStyle(color: Colors.white54, fontSize: 18)),
-      );
-    }
-
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: () {
-                Navigator.push(context, MaterialPageRoute(builder: (_) => ProgressScreen(muscleGroup: widget.muscleGroup)));
-              },
-              icon: const Icon(Icons.trending_up),
-              label: const Text('VIEW TRENDS'),
-              style: FilledButton.styleFrom(backgroundColor: Colors.teal.shade700),
-            ),
-          ),
-        ),
-        Expanded(
-          child: ListView.builder(
-            itemCount: _scans.length,
-            itemBuilder: (context, index) {
-              final scan = _scans[index];
-              final dateStr = scan['scan_date']?.toString().split('T')[0] ?? 'Unknown';
-              final volume = scan['volume_cm3']?.toDouble() ?? 0.0;
-              final growth = scan['growth_pct']?.toDouble();
-              final grade = scan['shape_grade'];
-              
-              return Card(
-                color: Colors.grey.shade900,
-                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: ListTile(
-                  title: Text('$dateStr - ${(scan['muscle_group'] as String).toUpperCase()}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  subtitle: Text('Volume: ${volume.toStringAsFixed(1)} cm³${grade != null ? ' | Grade: $grade' : ''}', style: const TextStyle(color: Colors.white70)),
-                  trailing: growth != null 
-                    ? Text('${growth > 0 ? '+' : ''}${growth.toStringAsFixed(1)}%', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: growth >= 0 ? Colors.greenAccent : Colors.redAccent))
-                    : const Text('-', style: TextStyle(color: Colors.white54)),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-    );
+    if (_isLoading) return const Center(child: CircularProgressIndicator(color: Colors.teal));
+    if (_error != null) return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Text(_error!, style: const TextStyle(color: Colors.redAccent)), const SizedBox(height: 16), ElevatedButton(onPressed: _fetchHistory, child: const Text('Retry'))]));
+    if (_scans.isEmpty) return const Center(child: Text('No scans yet.', style: TextStyle(color: Colors.white54, fontSize: 18)));
+    return Column(children: [
+      Padding(padding: const EdgeInsets.all(16.0), child: Row(children: [
+        Expanded(child: FilledButton.icon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ProgressScreen(muscleGroup: widget.muscleGroup))), icon: const Icon(Icons.trending_up), label: const Text('TRENDS'), style: FilledButton.styleFrom(backgroundColor: Colors.teal.shade700))),
+        const SizedBox(width: 8),
+        Expanded(child: FilledButton.icon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HealthLogScreen())), icon: const Icon(Icons.health_and_safety), label: const Text('HEALTH'), style: FilledButton.styleFrom(backgroundColor: Colors.blueGrey.shade700))),
+      ])),
+      Expanded(child: ListView.builder(itemCount: _scans.length, itemBuilder: (context, index) {
+        final scan = _scans[index];
+        final dateStr = scan['scan_date']?.toString().split('T')[0] ?? 'Unknown';
+        final volume = scan['volume_cm3']?.toDouble() ?? 0.0;
+        final growth = scan['growth_pct']?.toDouble();
+        final grade = scan['shape_grade'];
+        return Card(color: Colors.grey.shade900, margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: ListTile(title: Text('$dateStr - ${(scan['muscle_group'] as String).toUpperCase()}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), subtitle: Text('Volume: ${volume.toStringAsFixed(1)} cm³${grade != null ? ' | Grade: $grade' : ''}', style: const TextStyle(color: Colors.white70)), trailing: growth != null ? Text('${growth > 0 ? '+' : ''}${growth.toStringAsFixed(1)}%', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: growth >= 0 ? Colors.greenAccent : Colors.redAccent)) : const Text('-', style: TextStyle(color: Colors.white54))));
+      })),
+    ]);
   }
 }
 
-// --- PROGRESS SCREEN ---
 class ProgressScreen extends StatefulWidget {
   final String? muscleGroup;
   const ProgressScreen({super.key, this.muscleGroup});
-
   @override
   State<ProgressScreen> createState() => _ProgressScreenState();
 }
@@ -1395,146 +1027,73 @@ class _ProgressScreenState extends State<ProgressScreen> {
   bool _isLoading = true;
   String? _error;
   Map<String, dynamic>? _trendData;
-
   @override
-  void initState() {
-    super.initState();
-    _fetchProgress();
-  }
-
+  void initState() { super.initState(); _fetchProgress(); }
   Future<void> _fetchProgress() async {
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
-
+    setState(() { _isLoading = true; _error = null; });
     try {
-      String url = '$serverBaseUrl/api/customer//progress';
-      if (widget.muscleGroup != null) {
-        url += '?muscle_group=${widget.muscleGroup}';
-      }
-      
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'},
-      );
-
+      String url = '$serverBaseUrl/api/customer/$_customerId/progress';
+      if (widget.muscleGroup != null) url += '?muscle_group=${widget.muscleGroup}';
+      final response = await http.get(Uri.parse(url), headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'});
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data['status'] == 'success') {
-          setState(() {
-            _trendData = data;
-            _isLoading = false;
-          });
-        } else {
-          setState(() {
-            _error = data['message'] ?? 'Failed to load progress';
-            _isLoading = false;
-          });
-        }
-      } else {
-        setState(() {
-          _error = 'Server error: ${response.statusCode}';
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _error = 'Network error: $e';
-        _isLoading = false;
-      });
-    }
+        if (data['status'] == 'success') setState(() { _trendData = data; _isLoading = false; });
+        else setState(() { _error = data['message'] ?? 'Failed to load progress'; _isLoading = false; });
+      } else setState(() { _error = 'Server error: ${response.statusCode}'; _isLoading = false; });
+    } catch (e) { setState(() { _error = 'Network error: $e'; _isLoading = false; }); }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: const Text('Progress & Trends'),
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-      ),
+      appBar: AppBar(title: const Text('Progress & Trends'), backgroundColor: Colors.black, foregroundColor: Colors.white),
       body: _buildBody(),
     );
   }
-
   Widget _buildBody() {
-    if (_isLoading) {
-      return const Center(child: CircularProgressIndicator(color: Colors.teal));
-    }
-    if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(_error!, style: const TextStyle(color: Colors.redAccent)),
-            const SizedBox(height: 16),
-            ElevatedButton(onPressed: _fetchProgress, child: const Text('Retry')),
-          ],
-        ),
-      );
-    }
-
+    if (_isLoading) return const Center(child: CircularProgressIndicator(color: Colors.teal));
+    if (_error != null) return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Text(_error!, style: const TextStyle(color: Colors.redAccent)), const SizedBox(height: 16), ElevatedButton(onPressed: _fetchProgress, child: const Text('Retry'))]));
     final trendObj = _trendData?['trend'] ?? {};
-    if (trendObj['status'] == 'Insufficient Data' || trendObj.isEmpty) {
-      return const Center(
-        child: Text('Insufficient data to analyze trends.\nPlease complete at least 2 scans.', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 16)),
-      );
-    }
-
+    if (trendObj['status'] == 'Insufficient Data' || trendObj.isEmpty) return const Center(child: Text('Insufficient data to analyze trends.\nPlease complete at least 2 scans.', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 16)));
     final summary = _trendData?['volume_summary'] ?? {};
     final streak = _trendData?['growth_streak'] ?? {};
     final bestPeriod = _trendData?['best_period'] ?? {};
-
     final direction = trendObj['direction'] ?? 'UNKNOWN';
     final color = direction == 'gaining' ? Colors.greenAccent : (direction == 'losing' ? Colors.redAccent : Colors.orangeAccent);
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('OVERALL TREND', style: TextStyle(color: Colors.teal.shade200, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
-          const SizedBox(height: 8),
-          Text(direction.toUpperCase(), style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: color)),
-          const SizedBox(height: 24),
-
-          _buildStatCard('Total Change', '${summary['total_change_cm3']?.toStringAsFixed(1) ?? '0'} cm³ (${summary['total_change_pct']?.toStringAsFixed(1) ?? '0'}%)'),
-          _buildStatCard('Weekly Rate', '${trendObj['weekly_rate_cm3']?.toStringAsFixed(2) ?? '0'} cm³/wk'),
-          _buildStatCard('Consistency (R²)', '${trendObj['consistency_r2']?.toStringAsFixed(2) ?? '0'}'),
-          _buildStatCard('30-Day Projection', '${trendObj['projected_30d_cm3']?.toStringAsFixed(1) ?? '0'} cm³'),
-          _buildStatCard('Growth Streak', '${streak['consecutive_gains'] ?? 0} periods'),
-          if (bestPeriod['volume_change_cm3'] != null)
-            _buildStatCard('Best Period Gain', '+${bestPeriod['volume_change_cm3']?.toStringAsFixed(1) ?? '0'} cm³'),
-        ],
-      ),
-    );
+    return SingleChildScrollView(padding: const EdgeInsets.all(24), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Text('OVERALL TREND', style: TextStyle(color: Colors.teal.shade200, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+      const SizedBox(height: 8),
+      Text(direction.toUpperCase(), style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: color)),
+      const SizedBox(height: 24),
+      _buildStatCard('Total Change', '${summary['total_change_cm3']?.toStringAsFixed(1) ?? '0'} cm³ (${summary['total_change_pct']?.toStringAsFixed(1) ?? '0'}%)'),
+      _buildStatCard('Weekly Rate', '${trendObj['weekly_rate_cm3']?.toStringAsFixed(2) ?? '0'} cm³/wk'),
+      _buildStatCard('Consistency (R²)', '${trendObj['consistency_r2']?.toStringAsFixed(2) ?? '0'}'),
+      _buildStatCard('30-Day Projection', '${trendObj['projected_30d_cm3']?.toStringAsFixed(1) ?? '0'} cm³'),
+      _buildStatCard('Growth Streak', '${streak['consecutive_gains'] ?? 0} periods'),
+      if (bestPeriod['volume_change_cm3'] != null) _buildStatCard('Best Period Gain', '+${bestPeriod['volume_change_cm3']?.toStringAsFixed(1) ?? '0'} cm³'),
+      const SizedBox(height: 32),
+      if (_trendData?['correlation'] != null) ...[
+        Text('CORRELATIONS', style: TextStyle(color: Colors.teal.shade200, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+        const SizedBox(height: 16),
+        ...(_trendData!['correlation'] as Map<String, dynamic>).entries.map((e) {
+          final val = e.value as double;
+          final color = val > 0 ? Colors.greenAccent : Colors.redAccent;
+          final strength = val.abs() > 0.7 ? 'strong' : (val.abs() > 0.4 ? 'moderate' : 'weak');
+          return _buildStatCard(e.key.replaceAll('_', ' ').toUpperCase(), '$strength ${val > 0 ? 'positive' : 'negative'} (${val.toStringAsFixed(2)})', valueColor: color);
+        }).toList(),
+      ],
+    ]));
   }
-
   Widget _buildStatCard(String label, String value, {Color? valueColor}) {
-    return Card(
-      color: Colors.grey.shade900,
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Expanded(child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 16))),
-            Text(value, style: TextStyle(color: valueColor ?? Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-          ],
-        ),
-      ),
-    );
+    return Card(color: Colors.grey.shade900, margin: const EdgeInsets.only(bottom: 12), child: Padding(padding: const EdgeInsets.all(16), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      Expanded(child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 16))),
+      Text(value, style: TextStyle(color: valueColor ?? Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+    ])));
   }
 }
 
-
-// --- HEALTH LOG SCREEN ---
 class HealthLogScreen extends StatefulWidget {
   const HealthLogScreen({super.key});
-
   @override
   State<HealthLogScreen> createState() => _HealthLogScreenState();
 }
@@ -1555,16 +1114,11 @@ class _HealthLogScreenState extends State<HealthLogScreen> {
 
   Future<void> _submitLog() async {
     if (!_formKey.currentState!.validate()) return;
-
     setState(() => _isSubmitting = true);
-
     try {
       final response = await http.post(
-        Uri.parse('/api/customer//health_log'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ',
-        },
+        Uri.parse('$serverBaseUrl/api/customer/$_customerId/health_log'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${_jwtToken ?? ''}'},
         body: jsonEncode({
           'calories': double.tryParse(_caloriesController.text) ?? 0.0,
           'protein_g': double.tryParse(_proteinController.text) ?? 0.0,
@@ -1578,136 +1132,67 @@ class _HealthLogScreenState extends State<HealthLogScreen> {
           'notes': _notesController.text,
         }),
       );
-
       if (!mounted) return;
-
       if (response.statusCode == 200 || response.statusCode == 201) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Health log saved successfully!')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Health log saved successfully!')));
         Navigator.pop(context);
       } else {
         final error = jsonDecode(response.body)['message'] ?? 'Failed to save log';
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: ')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $error')));
       }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Network error: ')),
-      );
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
-    }
+    } catch (e) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Network error: $e')));
+    } finally { if (mounted) setState(() => _isSubmitting = false); }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: const Text('Log Health Data'),
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildSectionTitle('NUTRITION'),
-              Row(
-                children: [
-                  Expanded(child: _buildTextField(_caloriesController, 'Calories', Icons.local_fire_department, keyboardType: TextInputType.number)),
-                  const SizedBox(width: 16),
-                  Expanded(child: _buildTextField(_proteinController, 'Protein (g)', Icons.egg, keyboardType: TextInputType.number)),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(child: _buildTextField(_carbsController, 'Carbs (g)', Icons.bakery_dining, keyboardType: TextInputType.number)),
-                  const SizedBox(width: 16),
-                  Expanded(child: _buildTextField(_fatController, 'Fat (g)', Icons.opacity, keyboardType: TextInputType.number)),
-                ],
-              ),
-              const SizedBox(height: 16),
-              _buildTextField(_waterController, 'Water (ml)', Icons.water_drop, keyboardType: TextInputType.number),
-              
-              const SizedBox(height: 32),
-              _buildSectionTitle('ACTIVITY & SLEEP'),
-              _buildTextField(_activityTypeController, 'Activity Type', Icons.directions_run),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(child: _buildTextField(_activityDurationController, 'Duration (min)', Icons.timer, keyboardType: TextInputType.number)),
-                  const SizedBox(width: 16),
-                  Expanded(child: _buildTextField(_sleepController, 'Sleep (hrs)', Icons.bedtime, keyboardType: TextInputType.number)),
-                ],
-              ),
-              
-              const SizedBox(height: 32),
-              _buildSectionTitle('BODY'),
-              _buildTextField(_weightController, 'Body Weight (kg)', Icons.monitor_weight, keyboardType: TextInputType.number),
-              const SizedBox(height: 16),
-              _buildTextField(_notesController, 'Notes', Icons.notes, maxLines: 3),
-              
-              const SizedBox(height: 40),
-              _isSubmitting
-                  ? const Center(child: CircularProgressIndicator(color: Colors.teal))
-                  : FilledButton.icon(
-                      onPressed: _submitLog,
-                      icon: const Icon(Icons.save),
-                      label: const Text('SAVE LOG', style: TextStyle(letterSpacing: 1.5)),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: Colors.teal,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                      ),
-                    ),
-              const SizedBox(height: 16),
-              TextButton(
-                onPressed: () {
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const HealthLogListScreen()));
-                },
-                child: const Text('VIEW LOG HISTORY', style: TextStyle(color: Colors.teal)),
-              ),
-            ],
-          ),
-        ),
-      ),
+      appBar: AppBar(title: const Text('Log Health Data'), backgroundColor: Colors.black, foregroundColor: Colors.white),
+      body: SingleChildScrollView(padding: const EdgeInsets.all(24), child: Form(key: _formKey, child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        _buildSectionTitle('NUTRITION'),
+        Row(children: [
+          Expanded(child: _buildTextField(_caloriesController, 'Calories', Icons.local_fire_department, keyboardType: TextInputType.number)),
+          const SizedBox(width: 16),
+          Expanded(child: _buildTextField(_proteinController, 'Protein (g)', Icons.egg, keyboardType: TextInputType.number)),
+        ]),
+        const SizedBox(height: 16),
+        Row(children: [
+          Expanded(child: _buildTextField(_carbsController, 'Carbs (g)', Icons.bakery_dining, keyboardType: TextInputType.number)),
+          const SizedBox(width: 16),
+          Expanded(child: _buildTextField(_fatController, 'Fat (g)', Icons.opacity, keyboardType: TextInputType.number)),
+        ]),
+        const SizedBox(height: 16),
+        _buildTextField(_waterController, 'Water (ml)', Icons.water_drop, keyboardType: TextInputType.number),
+        const SizedBox(height: 32),
+        _buildSectionTitle('ACTIVITY & SLEEP'),
+        _buildTextField(_activityTypeController, 'Activity Type', Icons.directions_run),
+        const SizedBox(height: 16),
+        Row(children: [
+          Expanded(child: _buildTextField(_activityDurationController, 'Duration (min)', Icons.timer, keyboardType: TextInputType.number)),
+          const SizedBox(width: 16),
+          Expanded(child: _buildTextField(_sleepController, 'Sleep (hrs)', Icons.bedtime, keyboardType: TextInputType.number)),
+        ]),
+        const SizedBox(height: 32),
+        _buildSectionTitle('BODY'),
+        _buildTextField(_weightController, 'Body Weight (kg)', Icons.monitor_weight, keyboardType: TextInputType.number),
+        const SizedBox(height: 16),
+        _buildTextField(_notesController, 'Notes', Icons.notes, maxLines: 3),
+        const SizedBox(height: 40),
+        _isSubmitting ? const Center(child: CircularProgressIndicator(color: Colors.teal)) : FilledButton.icon(onPressed: _submitLog, icon: const Icon(Icons.save), label: const Text('SAVE LOG', style: TextStyle(letterSpacing: 1.5)), style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 16))),
+        const SizedBox(height: 16),
+        TextButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HealthLogListScreen())), child: const Text('VIEW LOG HISTORY', style: TextStyle(color: Colors.teal))),
+      ]))),
     );
   }
-
-  Widget _buildSectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Text(title, style: TextStyle(color: Colors.teal.shade200, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-    );
-  }
-
+  Widget _buildSectionTitle(String title) { return Padding(padding: const EdgeInsets.only(bottom: 16), child: Text(title, style: TextStyle(color: Colors.teal.shade200, fontWeight: FontWeight.bold, letterSpacing: 1.2))); }
   Widget _buildTextField(TextEditingController controller, String label, IconData icon, {TextInputType? keyboardType, int maxLines = 1}) {
-    return TextFormField(
-      controller: controller,
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon, color: Colors.teal, size: 20),
-        labelStyle: const TextStyle(color: Colors.white70),
-        enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-        focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.teal)),
-      ),
-      style: const TextStyle(color: Colors.white),
-      keyboardType: keyboardType,
-      maxLines: maxLines,
-    );
+    return TextFormField(controller: controller, decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon, color: Colors.teal, size: 20), labelStyle: const TextStyle(color: Colors.white70), enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)), focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.teal))), style: const TextStyle(color: Colors.white), keyboardType: keyboardType, maxLines: maxLines);
   }
 }
 
-// --- HEALTH LOG LIST SCREEN ---
 class HealthLogListScreen extends StatefulWidget {
   const HealthLogListScreen({super.key});
-
   @override
   State<HealthLogListScreen> createState() => _HealthLogListScreenState();
 }
@@ -1716,139 +1201,53 @@ class _HealthLogListScreenState extends State<HealthLogListScreen> {
   bool _isLoading = true;
   String? _error;
   List<dynamic> _logs = [];
-
   @override
-  void initState() {
-    super.initState();
-    _fetchLogs();
-  }
-
+  void initState() { super.initState(); _fetchLogs(); }
   Future<void> _fetchLogs() async {
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
-
+    setState(() { _isLoading = true; _error = null; });
     try {
-      final response = await http.get(
-        Uri.parse('/api/customer//health_logs'),
-        headers: {'Authorization': 'Bearer '},
-      );
-
+      final response = await http.get(Uri.parse('$serverBaseUrl/api/customer/$_customerId/health_logs'), headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'});
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data['status'] == 'success') {
-          setState(() {
-            _logs = data['health_logs'];
-            _isLoading = false;
-          });
-        } else {
-          setState(() {
-            _error = data['message'] ?? 'Failed to load logs';
-            _isLoading = false;
-          });
-        }
-      } else {
-        setState(() {
-          _error = 'Server error: ';
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _error = 'Network error: ';
-        _isLoading = false;
-      });
-    }
+        if (data['status'] == 'success') setState(() { _logs = data['logs']; _isLoading = false; });
+        else setState(() { _error = data['message'] ?? 'Failed to load logs'; _isLoading = false; });
+      } else setState(() { _error = 'Server error: ${response.statusCode}'; _isLoading = false; });
+    } catch (e) { setState(() { _error = 'Network error: $e'; _isLoading = false; }); }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: const Text('Health History'),
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-      ),
+      appBar: AppBar(title: const Text('Health History'), backgroundColor: Colors.black, foregroundColor: Colors.white),
       body: _buildBody(),
     );
   }
-
   Widget _buildBody() {
     if (_isLoading) return const Center(child: CircularProgressIndicator(color: Colors.teal));
-    if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(_error!, style: const TextStyle(color: Colors.redAccent)),
-            const SizedBox(height: 16),
-            ElevatedButton(onPressed: _fetchLogs, child: const Text('Retry')),
-          ],
-        ),
-      );
-    }
+    if (_error != null) return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Text(_error!, style: const TextStyle(color: Colors.redAccent)), const SizedBox(height: 16), ElevatedButton(onPressed: _fetchLogs, child: const Text('Retry'))]));
     if (_logs.isEmpty) return const Center(child: Text('No health logs yet.', style: TextStyle(color: Colors.white54, fontSize: 18)));
-
-    return ListView.builder(
-      itemCount: _logs.length,
-      itemBuilder: (context, index) {
-        final log = _logs[index];
-        final dateStr = log['log_date']?.toString().split('T')[0] ?? 'Unknown';
-        return Card(
-          color: Colors.grey.shade900,
-          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(dateStr, style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold, fontSize: 16)),
-                    if (log['body_weight_kg'] != null)
-                      Text(' kg', style: const TextStyle(color: Colors.white70)),
-                  ],
-                ),
-                const Divider(color: Colors.white10, height: 20),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    _buildMiniStat(Icons.local_fire_department, '', 'kcal'),
-                    _buildMiniStat(Icons.egg, '', 'g'),
-                    _buildMiniStat(Icons.bedtime, '', 'hrs'),
-                  ],
-                ),
-                if (log['activity_type'] != null && log['activity_type'].toString().isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  Text('Activity:  ( min)', style: const TextStyle(color: Colors.white60, fontSize: 13)),
-                ],
-              ],
-            ),
-          ),
-        );
-      },
-    );
+    return ListView.builder(itemCount: _logs.length, itemBuilder: (context, index) {
+      final log = _logs[index];
+      final dateStr = log['log_date']?.toString().split('T')[0] ?? 'Unknown';
+      return Card(color: Colors.grey.shade900, margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(dateStr, style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold, fontSize: 16)), if (log['body_weight_kg'] != null) Text('${log['body_weight_kg']} kg', style: const TextStyle(color: Colors.white70))]),
+        const Divider(color: Colors.white10, height: 20),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+          _buildMiniStat(Icons.local_fire_department, '${log['calories_in'] ?? 0}', 'kcal'),
+          _buildMiniStat(Icons.egg, '${log['protein_g'] ?? 0}', 'g'),
+          _buildMiniStat(Icons.bedtime, '${log['sleep_hours'] ?? 0}', 'hrs'),
+        ]),
+        if (log['activity_type'] != null && log['activity_type'].toString().isNotEmpty) ...[const SizedBox(height: 12), Text('Activity: ${log['activity_type']} (${log['activity_duration_min'] ?? 0} min)', style: const TextStyle(color: Colors.white60, fontSize: 13))],
+      ])));
+    });
   }
-
   Widget _buildMiniStat(IconData icon, String value, String unit) {
-    return Column(
-      children: [
-        Icon(icon, color: Colors.teal.shade200, size: 18),
-        const SizedBox(height: 4),
-        Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        Text(unit, style: const TextStyle(color: Colors.white54, fontSize: 10)),
-      ],
-    );
+    return Column(children: [Icon(icon, color: Colors.teal.shade200, size: 18), const SizedBox(height: 4), Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), Text(unit, style: const TextStyle(color: Colors.white54, fontSize: 10))]);
   }
 }
 
-// --- REGISTER SCREEN ---
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
-
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
 }
@@ -1864,129 +1263,78 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Future<void> _register() async {
     if (!_formKey.currentState!.validate()) return;
-
     setState(() => _isLoading = true);
-
     try {
-      final response = await http.post(
-        Uri.parse('/api/customers'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'name': _nameController.text.trim(),
-          'email': _emailController.text.trim(),
-          'height_cm': double.tryParse(_heightController.text) ?? 0.0,
-          'weight_kg': double.tryParse(_weightController.text) ?? 0.0,
-          'gender': _gender,
-        }),
-      );
-
+      final response = await http.post(Uri.parse('$serverBaseUrl/api/customers'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({
+        'name': _nameController.text.trim(),
+        'email': _emailController.text.trim(),
+        'height_cm': double.tryParse(_heightController.text) ?? 0.0,
+        'weight_kg': double.tryParse(_weightController.text) ?? 0.0,
+        'gender': _gender,
+      }));
       final data = jsonDecode(response.body);
-
       if (response.statusCode == 200 || response.statusCode == 201) {
-        // Auto-login after registration
-        final loginResponse = await http.post(
-          Uri.parse('/api/auth/token'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'email': _emailController.text.trim()}),
-        );
+        final loginResponse = await http.post(Uri.parse('$serverBaseUrl/api/auth/token'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'email': _emailController.text.trim()}));
         final loginData = jsonDecode(loginResponse.body);
         if (loginResponse.statusCode == 200) {
           _jwtToken = loginData['token'];
           _customerId = loginData['customer_id']?.toString() ?? '1';
           _customerName = loginData['name'] ?? _nameController.text;
           if (!mounted) return;
-          Navigator.pushAndRemoveUntil(
-            context,
-            MaterialPageRoute(builder: (_) => const CameraLevelScreen()),
-            (route) => false,
-          );
+          Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const CameraLevelScreen()), (route) => false);
         }
       } else {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(data['message'] ?? 'Registration failed')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(data['message'] ?? 'Registration failed')));
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Network error: ')),
-      );
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Network error: $e')));
+    } finally { if (mounted) setState(() => _isLoading = false); }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: const Text('Create Account'),
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.teal,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24.0),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            children: [
-              _buildField(_nameController, 'Full Name', Icons.person),
-              const SizedBox(height: 16),
-              _buildField(_emailController, 'Email Address', Icons.email, keyboardType: TextInputType.emailAddress),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(child: _buildField(_heightController, 'Height (cm)', Icons.height, keyboardType: TextInputType.number)),
-                  const SizedBox(width: 16),
-                  Expanded(child: _buildField(_weightController, 'Weight (kg)', Icons.monitor_weight, keyboardType: TextInputType.number)),
-                ],
-              ),
-              const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
-                value: _gender,
-                dropdownColor: Colors.grey.shade900,
-                decoration: const InputDecoration(
-                  labelText: 'Gender',
-                  prefixIcon: Icon(Icons.people, color: Colors.teal),
-                  enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-                  focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.teal)),
-                ),
-                style: const TextStyle(color: Colors.white),
-                items: ['Male', 'Female', 'Other'].map((g) => DropdownMenuItem(value: g, child: Text(g))).toList(),
-                onChanged: (val) => setState(() => _gender = val!),
-              ),
-              const SizedBox(height: 32),
-              _isLoading
-                ? const CircularProgressIndicator(color: Colors.teal)
-                : SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: _register,
-                      style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 16)),
-                      child: const Text('REGISTER & START'),
-                    ),
-                  ),
-            ],
-          ),
-        ),
-      ),
-    );
+    return Scaffold(backgroundColor: Colors.black, appBar: AppBar(title: const Text('Create Account'), backgroundColor: Colors.black, foregroundColor: Colors.teal), body: SingleChildScrollView(padding: const EdgeInsets.all(24.0), child: Form(key: _formKey, child: Column(children: [
+      _buildField(_nameController, 'Full Name', Icons.person),
+      const SizedBox(height: 16),
+      _buildField(_emailController, 'Email Address', Icons.email, keyboardType: TextInputType.emailAddress),
+      const SizedBox(height: 16),
+      Row(children: [
+        Expanded(child: _buildField(_heightController, 'Height (cm)', Icons.height, keyboardType: TextInputType.number)),
+        const SizedBox(width: 16),
+        Expanded(child: _buildField(_weightController, 'Weight (kg)', Icons.monitor_weight, keyboardType: TextInputType.number)),
+      ]),
+      const SizedBox(height: 16),
+      DropdownButtonFormField<String>(value: _gender, dropdownColor: Colors.grey.shade900, decoration: const InputDecoration(labelText: 'Gender', prefixIcon: Icon(Icons.people, color: Colors.teal), enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.teal))), style: const TextStyle(color: Colors.white), items: ['Male', 'Female', 'Other'].map((g) => DropdownMenuItem(value: g, child: Text(g))).toList(), onChanged: (val) => setState(() => _gender = val!)),
+      const SizedBox(height: 32),
+      _isLoading ? const CircularProgressIndicator(color: Colors.teal) : SizedBox(width: double.infinity, child: FilledButton(onPressed: _register, style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 16)), child: const Text('REGISTER & START'))),
+    ]))));
   }
-
   Widget _buildField(TextEditingController controller, String label, IconData icon, {TextInputType? keyboardType}) {
-    return TextFormField(
-      controller: controller,
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon, color: Colors.teal),
-        enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-        focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.teal)),
-      ),
-      style: const TextStyle(color: Colors.white),
-      keyboardType: keyboardType,
-      validator: (val) => val == null || val.isEmpty ? 'Required' : null,
-    );
+    return TextFormField(controller: controller, decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon, color: Colors.teal), enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)), focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.teal))), style: const TextStyle(color: Colors.white), keyboardType: keyboardType, validator: (val) => val == null || val.isEmpty ? 'Required' : null);
   }
+}
+
+class GhostOverlayPainter extends CustomPainter {
+  final ui.Image? image;
+  final double opacity;
+  GhostOverlayPainter({this.image, this.opacity = 0.2});
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (image == null) return;
+    final paint = Paint()..color = Colors.white.withOpacity(opacity);
+    double srcW = image!.width.toDouble();
+    double srcH = image!.height.toDouble();
+    double dstW = size.width;
+    double dstH = size.height;
+    double scale = (dstW / srcW > dstH / srcH) ? dstH / srcH : dstW / srcW;
+    double finalW = srcW * scale;
+    double finalH = srcH * scale;
+    double dx = (dstW - finalW) / 2;
+    double dy = (dstH - finalH) / 2;
+    canvas.drawImageRect(image!, Rect.fromLTWH(0, 0, srcW, srcH), Rect.fromLTWH(dx, dy, finalW, finalH), paint);
+  }
+  @override
+  bool shouldRepaint(covariant GhostOverlayPainter oldDelegate) => oldDelegate.image != image;
 }
