@@ -33,22 +33,25 @@
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
         .nav-brand { font-weight: bold; font-size: 1.5rem; letter-spacing: 1px; color: var(--accent); }
-        .nav-links { display: flex; gap: 1.5rem; }
+        .nav-links { display: flex; gap: 1.5rem; align-items: center; }
         .nav-links a { color: var(--text); text-decoration: none; cursor: pointer; font-size: 0.9rem; }
         .nav-links a:hover { color: var(--accent); }
+        .status-indicator { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+        .status-ok { background-color: var(--success); }
+        .status-down { background-color: var(--error); }
         
         main { padding: 2rem; flex: 1; max-width: 1200px; margin: 0 auto; width: 100%; }
         .page { display: none; }
         .page.active { display: block; animation: fadeIn 0.3s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-        .card { background-color: var(--card-bg); padding: 1.5rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+        .card { background-color: var(--card-bg); padding: 1.5rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); margin-bottom: 1rem; }
         
         /* LOGIN */
         .login-container { max-width: 400px; margin: 10vh auto; text-align: center; }
         .form-group { margin-bottom: 1.5rem; text-align: left; }
         label { display: block; margin-bottom: 0.5rem; font-size: 0.85rem; color: var(--text-dim); }
-        input {
+        input, select {
             width: 100%; padding: 0.75rem; background: #0f172a; border: 1px solid #334155;
             color: white; border-radius: 4px; outline: none;
         }
@@ -58,6 +61,8 @@
             color: #1a1a2e; font-weight: bold; border-radius: 4px; cursor: pointer; transition: 0.2s;
         }
         button:hover { filter: brightness(1.1); }
+        .btn-small { width: auto; padding: 0.4rem 0.8rem; font-size: 0.8rem; }
+        .btn-outline { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
         .error-msg { color: var(--error); font-size: 0.85rem; margin-top: 1rem; }
 
         /* PATIENTS TABLE */
@@ -69,7 +74,7 @@
         
         .scans-detail { padding: 1rem; background: #0f172a; display: none; border-bottom: 1px solid var(--accent); }
         .scans-detail.active { display: table-row; }
-        .scan-item { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid #1e293b; }
+        .scan-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 0; border-bottom: 1px solid #1e293b; }
         .scan-item:last-child { border-bottom: none; }
 
         /* ANALYTICS */
@@ -77,12 +82,20 @@
         .stat-card { text-align: center; }
         .stat-val { font-size: 2.5rem; font-weight: bold; color: var(--accent); }
         .stat-label { font-size: 0.8rem; color: var(--text-dim); text-transform: uppercase; margin-top: 0.5rem; }
+
+        /* MODALS / OVERLAYS */
+        .overlay { 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            background: rgba(0,0,0,0.8); display: none; justify-content: center; align-items: center; z-index: 100;
+        }
+        .modal { background: var(--bg); border: 1px solid #334155; padding: 2rem; border-radius: 8px; width: 90%; max-width: 500px; }
     </style>
 </head>
 <body>
     <nav id="main-nav" style="display: none;">
         <div class="nav-brand">MUSCLE TRACKER</div>
         <div class="nav-links">
+            <span id="engine-status"><span class="status-indicator"></span>Engine</span>
             <a onclick="showPage('patients')">Patients</a>
             <a onclick="showPage('analytics')">Analytics</a>
             <a onclick="logout()">Logout</a>
@@ -95,14 +108,10 @@
             <div class="login-container card">
                 <h2>Clinic Login</h2>
                 <div class="form-group">
-                    <label>Admin Email</label>
-                    <input type="email" id="login-email" placeholder="admin@example.com">
+                    <label>Admin Secret</label>
+                    <input type="password" id="login-secret" placeholder="Enter admin secret">
                 </div>
-                <div class="form-group">
-                    <label>Password</label>
-                    <input type="password" id="login-pass" placeholder="••••••••">
-                </div>
-                <button onclick="handleLogin()">Sign In</button>
+                <button onclick="handleAdminLogin()">Sign In</button>
                 <div id="login-error" class="error-msg"></div>
             </div>
         </section>
@@ -111,7 +120,10 @@
         <section id="page-patients" class="page">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
                 <h2>Patient Registry</h2>
-                <button onclick="loadPatients()" style="width: auto; padding: 0.5rem 1rem;">Refresh</button>
+                <div style="display: flex; gap: 10px;">
+                    <button class="btn-small btn-outline" onclick="showUploadModal()">Upload Scan</button>
+                    <button class="btn-small" onclick="loadPatients()">Refresh</button>
+                </div>
             </div>
             <div class="card" style="padding: 0;">
                 <table id="patients-table">
@@ -119,7 +131,7 @@
                         <tr>
                             <th>Patient Name</th>
                             <th>Email</th>
-                            <th>Scans</th>
+                            <th>ID</th>
                             <th>Last Activity</th>
                         </tr>
                     </thead>
@@ -142,31 +154,69 @@
                     <div id="stat-scans" class="stat-val">0</div>
                     <div class="stat-label">Total Scans</div>
                 </div>
-                <div class="card stat-card">
-                    <div id="stat-uptime" class="stat-val">100%</div>
-                    <div class="stat-label">Engine Uptime</div>
+                <div id="stat-health-card" class="card stat-card">
+                    <div id="stat-version" class="stat-val">v4.0</div>
+                    <div class="stat-label">Engine Version</div>
                 </div>
             </div>
         </section>
     </main>
 
+    <!-- UPLOAD MODAL -->
+    <div id="upload-overlay" class="overlay">
+        <div class="modal">
+            <h3>New Clinical Scan</h3>
+            <div class="form-group">
+                <label>Customer ID</label>
+                <input type="number" id="up-customer-id">
+            </div>
+            <div class="form-group">
+                <label>Muscle Group</label>
+                <select id="up-muscle">
+                    <option value="bicep">Bicep</option>
+                    <option value="tricep">Tricep</option>
+                    <option value="quad">Quad</option>
+                    <option value="calf">Calf</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Front Image</label>
+                <input type="file" id="up-front" accept="image/*">
+            </div>
+            <div class="form-group">
+                <label>Side Image</label>
+                <input type="file" id="up-side" accept="image/*">
+            </div>
+            <div style="display: flex; gap: 10px; margin-top: 2rem;">
+                <button onclick="handleUpload()">Process Scan</button>
+                <button class="btn-outline" onclick="closeUploadModal()">Cancel</button>
+            </div>
+            <div id="up-status" style="margin-top: 1rem; font-size: 0.8rem;"></div>
+        </div>
+    </div>
+
     <script>
         const API_BASE = window.location.origin;
         let authToken = localStorage.getItem('mt_token');
 
-        async function apiCall(path, method = 'GET', body = null) {
+        async function apiCall(path, method = 'GET', body = null, isFormData = false) {
             const headers = { 'Authorization': `Bearer ${authToken}` };
-            if (body) {
+            if (body && !isFormData) {
                 headers['Content-Type'] = 'application/json';
             }
             const options = { method, headers };
-            if (body) options.body = JSON.stringify(body);
+            if (body) {
+                options.body = isFormData ? body : JSON.stringify(body);
+            }
 
             try {
                 const res = await fetch(`${API_BASE}${path}`, options);
                 if (res.status === 401 || res.status === 403) {
                     logout();
                     return null;
+                }
+                if (path.includes('/report/')) {
+                    return await res.blob();
                 }
                 return await res.json();
             } catch (err) {
@@ -175,17 +225,15 @@
             }
         }
 
-        async function handleLogin() {
-            const email = document.getElementById('login-email').value;
-            const pass = document.getElementById('login-pass').value;
+        async function handleAdminLogin() {
+            const secret = document.getElementById('login-secret').value;
             const errorDiv = document.getElementById('login-error');
             errorDiv.innerText = '';
 
-            // We use /api/auth/token for clinical dev, assuming admin_token if pass matches
-            const res = await fetch(`${API_BASE}/api/auth/token`, {
+            const res = await fetch(`${API_BASE}/api/auth/admin_token`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email })
+                body: JSON.stringify({ admin_secret: secret })
             });
             const data = await res.json();
 
@@ -194,7 +242,7 @@
                 localStorage.setItem('mt_token', authToken);
                 initApp();
             } else {
-                errorDiv.innerText = 'Login failed. Check your clinical credentials.';
+                errorDiv.innerText = 'Access Denied. Invalid clinical secret.';
             }
         }
 
@@ -210,9 +258,25 @@
             document.getElementById(`page-${name}`).classList.add('active');
         }
 
+        async function checkHealth() {
+            try {
+                const res = await fetch(`${API_BASE}/api/health`);
+                const data = await res.json();
+                const indicator = document.querySelector('.status-indicator');
+                if (data.status === 'ok') {
+                    indicator.className = 'status-indicator status-ok';
+                    document.getElementById('stat-version').innerText = data.version;
+                } else {
+                    indicator.className = 'status-indicator status-down';
+                }
+            } catch (e) {
+                document.querySelector('.status-indicator').className = 'status-indicator status-down';
+            }
+        }
+
         async function loadPatients() {
-            const data = await apiCall('/api/customers/list');
-            if (!data || data.status !== 'ok') return;
+            const data = await apiCall('/api/customers');
+            if (!data || data.status !== 'success') return;
 
             const body = document.getElementById('patients-body');
             body.innerHTML = '';
@@ -223,8 +287,8 @@
                 row.innerHTML = `
                     <td><strong>${p.name}</strong></td>
                     <td>${p.email}</td>
-                    <td><span class="scan-count">${p.scan_count}</span></td>
-                    <td>${p.last_scan_date || 'N/A'}</td>
+                    <td>${p.id}</td>
+                    <td>${p.weight_kg ? p.weight_kg + 'kg' : 'N/A'}</td>
                 `;
                 row.onclick = () => togglePatientDetail(p.id, row);
                 body.appendChild(row);
@@ -236,16 +300,13 @@
                 body.appendChild(detailRow);
             });
 
-            // Update stats
             document.getElementById('stat-patients').innerText = data.customers.length;
-            document.getElementById('stat-scans').innerText = data.customers.reduce((a, b) => a + b.scan_count, 0);
         }
 
         async function togglePatientDetail(id, row) {
             const detailRow = document.getElementById(`detail-${id}`);
             const isActive = detailRow.classList.contains('active');
             
-            // Close others
             document.querySelectorAll('.scans-detail').forEach(d => d.classList.remove('active'));
             
             if (!isActive) {
@@ -258,11 +319,13 @@
                         <div style="font-weight: bold; margin-bottom: 1rem; color: var(--accent);">Recent Clinical Scans</div>
                         ${data.scans.map(s => `
                             <div class="scan-item">
-                                <span>${s.scan_date.split('T')[0]} — <strong>${s.muscle_group.toUpperCase()}</strong></span>
-                                <span>${s.volume_cm3.toFixed(1)} cm³ 
-                                    <span style="color: ${s.growth_pct >= 0 ? 'var(--success)' : 'var(--error)'}; margin-left: 10px;">
+                                <span>${new Date(s.scan_date).toLocaleDateString()} — <strong>${s.muscle_group.toUpperCase()}</strong></span>
+                                <span>
+                                    ${s.volume_cm3 ? s.volume_cm3.toFixed(1) + ' cm³' : 'In processing'}
+                                    <span style="color: ${s.growth_pct >= 0 ? 'var(--success)' : 'var(--error)'}; margin-left: 10px; font-size: 0.8rem;">
                                         ${s.growth_pct ? (s.growth_pct > 0 ? '+' : '') + s.growth_pct + '%' : ''}
                                     </span>
+                                    <button class="btn-small btn-outline" style="margin-left: 15px;" onclick="viewReport(${id}, ${s.id})">View PDF</button>
                                 </span>
                             </div>
                         `).join('')}
@@ -273,17 +336,59 @@
             }
         }
 
+        async function viewReport(cid, sid) {
+            const blob = await apiCall(`/api/customer/${cid}/report/${sid}`);
+            if (blob) {
+                const url = URL.createObjectURL(blob);
+                window.open(url, '_blank');
+            }
+        }
+
+        function showUploadModal() { document.getElementById('upload-overlay').style.display = 'flex'; }
+        function closeUploadModal() { document.getElementById('upload-overlay').style.display = 'none'; }
+
+        async function handleUpload() {
+            const cid = document.getElementById('up-customer-id').value;
+            const muscle = document.getElementById('up-muscle').value;
+            const front = document.getElementById('up-front').files[0];
+            const side = document.getElementById('up-side').files[0];
+            const status = document.getElementById('up-status');
+
+            if (!cid || !front || !side) {
+                status.innerText = 'Error: Fill all fields';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('front', front);
+            formData.append('side', side);
+            formData.append('muscle_group', muscle);
+
+            status.innerText = 'Processing clinical metrics...';
+            const res = await apiCall(`/api/upload_scan/${cid}`, 'POST', formData, true);
+            
+            if (res && res.status === 'success') {
+                status.style.color = 'var(--success)';
+                status.innerText = 'Scan Complete! Refreshing...';
+                setTimeout(() => { closeUploadModal(); loadPatients(); }, 1500);
+            } else {
+                status.style.color = 'var(--error)';
+                status.innerText = 'Error: ' + (res ? res.message : 'Engine failure');
+            }
+        }
+
         function initApp() {
             if (authToken) {
                 document.getElementById('main-nav').style.display = 'flex';
                 showPage('patients');
                 loadPatients();
+                checkHealth();
+                setInterval(checkHealth, 30000);
             } else {
                 showPage('login');
             }
         }
 
-        // On load
         window.onload = initApp;
     </script>
 </body>
