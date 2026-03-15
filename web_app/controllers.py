@@ -6,6 +6,7 @@ import sys
 import logging
 import json
 import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ from core.progress import analyze_trend, calculate_correlation
 from core.pose_analyzer import analyze_pose
 from core.report_generator import generate_clinical_report
 from core.keyframe_extractor import extract_keyframes, save_keyframes
+from core.muscle_classifier import classify_with_confidence
 
 # Legacy static token for backward compatibility in dev mode
 _LEGACY_DEV_TOKEN = os.environ.get('MUSCLE_TRACKER_API_TOKEN', 'dev-secret-token')
@@ -502,12 +504,11 @@ def customer_symmetry(customer_id):
         return dict(status='error', message='Symmetry analysis failed')
 
 
-# --- POSE ANALYSIS ---
+# --- POSE ANALYSIS & CLASSIFICATION ---
 
 @action('api/pose_check', method=['POST'])
 @action.uses(db, cors)
 def pose_check():
-    # Pose check is public for helping users capture good images
     require_auth()
     image_file = request.files.get('image')
     if not image_file:
@@ -536,6 +537,31 @@ def pose_check():
     except Exception as e:
         logger.exception("Pose check failed")
         return dict(status='error', message=str(e))
+
+
+@action('api/classify_muscle', method=['POST'])
+@action.uses(db, cors)
+def classify_muscle():
+    """
+    POST a single image, get back the auto-detected muscle group.
+    """
+    require_auth()
+    image_file = request.files.get('image')
+    if not image_file:
+        return dict(status='error', message='No image provided')
+
+    ext = os.path.splitext(image_file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return dict(status='error', message=f'Invalid file type: {ext}')
+
+    # Read image into memory for classifier
+    file_bytes = np.frombuffer(image_file.file.read(), np.uint8)
+    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    if image is None:
+        return dict(status='error', message='Could not decode image')
+
+    result = classify_with_confidence(image)
+    return dict(status='ok', **result)
 
 
 # --- HEALTH LOGGING ---
