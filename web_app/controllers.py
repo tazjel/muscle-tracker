@@ -21,6 +21,7 @@ from core.segmentation import score_muscle_shape, AVAILABLE_TEMPLATES
 from core.symmetry import compare_symmetry
 from core.progress import analyze_trend, calculate_correlation
 from core.pose_analyzer import analyze_pose
+from core.report_generator import generate_clinical_report
 
 # Legacy static token for backward compatibility in dev mode
 _LEGACY_DEV_TOKEN = os.environ.get('MUSCLE_TRACKER_API_TOKEN', 'dev-secret-token')
@@ -322,6 +323,120 @@ def customer_scans(customer_id):
         scan.pop('img_side', None)
 
     return dict(status='success', customer=customer.name, scans=scans)
+
+
+    @action('api/customer/<customer_id:int>/report/<scan_id:int>', method=['GET'])
+    @action.uses(db, cors)
+    def generate_report(customer_id, scan_id):
+    require_api_token()
+    customer = db.customer(customer_id)
+    if not customer:
+        abort(404, "Customer not found")
+
+    scan = db.muscle_scan(scan_id)
+    if not scan or scan.customer_id != customer_id:
+        abort(404, "Scan not found")
+
+    import tempfile
+    fd, temp_path = tempfile.mkstemp(suffix='.png')
+    os.close(fd)
+
+    scan_result = {
+        "status": "Success",
+        "metrics": {
+            "area_a_mm2" if scan.calibrated else "area_a_px2": scan.area_mm2,
+            "width_a_mm" if scan.calibrated else "width_a_px": scan.width_mm,
+            "height_a_mm" if scan.calibrated else "height_a_px": scan.height_mm,
+            "growth_pct": scan.growth_pct
+        },
+        "confidence": {"detection": scan.detection_confidence}
+    }
+
+    volume_result = {
+        "volume_cm3": scan.volume_cm3,
+        "model": scan.volume_model,
+        "height_mm": scan.height_mm
+    }
+
+    shape_result = None
+    if scan.shape_score is not None:
+        shape_result = {
+            "score": scan.shape_score,
+            "grade": scan.shape_grade
+        }
+
+    try:
+        generate_clinical_report(
+            scan_result,
+            volume_result=volume_result,
+            shape_result=shape_result,
+            output_path=temp_path,
+            patient_name=customer.name
+        )
+        response.headers['Content-Type'] = 'image/png'
+        with open(temp_path, 'rb') as f:
+            data = f.read()
+        return data
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+    @action('api/customer/<customer_id:int>/progress', method=['GET'])
+@action.uses(db, cors)
+def generate_report(customer_id, scan_id):
+    require_api_token()
+    customer = db.customer(customer_id)
+    if not customer:
+        abort(404, "Customer not found")
+
+    scan = db.muscle_scan(scan_id)
+    if not scan or scan.customer_id != customer_id:
+        abort(404, "Scan not found")
+
+    import tempfile
+    fd, temp_path = tempfile.mkstemp(suffix='.png')
+    os.close(fd)
+
+    scan_result = {
+        "status": "Success",
+        "metrics": {
+            "area_a_mm2" if scan.calibrated else "area_a_px2": scan.area_mm2,
+            "width_a_mm" if scan.calibrated else "width_a_px": scan.width_mm,
+            "height_a_mm" if scan.calibrated else "height_a_px": scan.height_mm,
+            "growth_pct": scan.growth_pct
+        },
+        "confidence": {"detection": scan.detection_confidence}
+    }
+
+    volume_result = {
+        "volume_cm3": scan.volume_cm3,
+        "model": scan.volume_model,
+        "height_mm": scan.height_mm
+    }
+
+    shape_result = None
+    if scan.shape_score is not None:
+        shape_result = {
+            "score": scan.shape_score,
+            "grade": scan.shape_grade
+        }
+
+    try:
+        generate_clinical_report(
+            scan_result,
+            volume_result=volume_result,
+            shape_result=shape_result,
+            output_path=temp_path,
+            patient_name=customer.name
+        )
+        response.headers['Content-Type'] = 'image/png'
+        with open(temp_path, 'rb') as f:
+            data = f.read()
+        return data
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 @action('api/customer/<customer_id:int>/progress', method=['GET'])

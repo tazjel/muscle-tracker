@@ -391,17 +391,22 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
       if (response.statusCode == 200 && result['status'] == 'success') {
         setState(() {
-          _statusMessage = 'Scan uploaded! Volume: ${result["volume_cm3"]} cm³';
           _isUploading = false;
         });
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Volume: ${result["volume_cm3"]} cm³'),
-            backgroundColor: Colors.teal,
-            duration: const Duration(seconds: 5),
+        _resetCapture();
+        if (!mounted) return;
+        
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ResultsScreen(
+              result: result,
+              muscleGroup: _selectedMuscleGroup,
+            ),
           ),
         );
+        return;
       } else {
         setState(() {
           _statusMessage = 'Upload failed: ${result["message"] ?? response.reasonPhrase}';
@@ -529,6 +534,13 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
               ),
             ),
             const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.history, color: Colors.white),
+              onPressed: () {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: _selectedMuscleGroup)));
+              },
+            ),
+            const SizedBox(width: 8),
             // Phase indicator dots
             Row(
               children: [
@@ -910,3 +922,424 @@ class ReviewScreen extends StatelessWidget {
     );
   }
 }
+
+// --- RESULTS SCREEN ---
+class ResultsScreen extends StatelessWidget {
+  final Map<String, dynamic> result;
+  final String muscleGroup;
+
+  const ResultsScreen({
+    super.key,
+    required this.result,
+    required this.muscleGroup,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final double volume = result['volume_cm3']?.toDouble() ?? 0.0;
+    final double? growth = result['growth_pct']?.toDouble();
+    final double? delta = result['volume_delta_cm3']?.toDouble();
+    final double? score = result['shape_score']?.toDouble();
+    final String? grade = result['shape_grade'];
+    final bool calibrated = result['calibrated'] ?? false;
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('Scan Results'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Card(
+              color: Colors.grey.shade900,
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  children: [
+                    Text(muscleGroup.toUpperCase(), style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold, letterSpacing: 2)),
+                    const SizedBox(height: 16),
+                    Text('${volume.toStringAsFixed(2)} cm³', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white)),
+                    const Text('ESTIMATED VOLUME', style: TextStyle(color: Colors.white54)),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: calibrated ? Colors.green.withOpacity(0.2) : Colors.orange.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: calibrated ? Colors.green : Colors.orange),
+                      ),
+                      child: Text(calibrated ? 'CALIBRATED' : 'UNCALIBRATED', style: TextStyle(color: calibrated ? Colors.green : Colors.orange, fontSize: 12)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (growth != null) ...[
+              const SizedBox(height: 16),
+              Card(
+                color: Colors.grey.shade900,
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Growth', style: TextStyle(fontSize: 18, color: Colors.white)),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text('${growth > 0 ? '+' : ''}${growth.toStringAsFixed(1)}%', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: growth >= 0 ? Colors.greenAccent : Colors.redAccent)),
+                          Text('${delta! > 0 ? '+' : ''}${delta.toStringAsFixed(1)} cm³', style: const TextStyle(color: Colors.white54)),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            if (score != null) ...[
+              const SizedBox(height: 16),
+              Card(
+                color: Colors.grey.shade900,
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Shape', style: TextStyle(fontSize: 18, color: Colors.white)),
+                      Row(
+                        children: [
+                          Text('${score.toStringAsFixed(1)}/100', style: const TextStyle(fontSize: 18, color: Colors.white70)),
+                          const SizedBox(width: 12),
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.teal),
+                            child: Text(grade ?? '-', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 40),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.add_a_photo),
+              label: const Text('NEW SCAN', style: TextStyle(letterSpacing: 1.2)),
+              style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 16)),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: () {
+                Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: muscleGroup)));
+              },
+              icon: const Icon(Icons.history),
+              label: const Text('VIEW HISTORY', style: TextStyle(letterSpacing: 1.2)),
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.white, side: const BorderSide(color: Colors.white30), padding: const EdgeInsets.symmetric(vertical: 16)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// --- HISTORY SCREEN ---
+class HistoryScreen extends StatefulWidget {
+  final String? muscleGroup;
+  const HistoryScreen({super.key, this.muscleGroup});
+
+  @override
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
+
+class _HistoryScreenState extends State<HistoryScreen> {
+  bool _isLoading = true;
+  String? _error;
+  List<dynamic> _scans = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchHistory();
+  }
+
+  Future<void> _fetchHistory() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      String url = '$serverBaseUrl/api/customer/1/scans';
+      if (widget.muscleGroup != null) {
+        url += '?muscle_group=${widget.muscleGroup}';
+      }
+      
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'},
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['status'] == 'success') {
+          setState(() {
+            _scans = data['scans'];
+            _isLoading = false;
+          });
+        } else {
+          setState(() {
+            _error = data['message'] ?? 'Failed to load history';
+            _isLoading = false;
+          });
+        }
+      } else {
+        setState(() {
+          _error = 'Server error: ${response.statusCode}';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _error = 'Network error: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('History'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator(color: Colors.teal));
+    }
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+            const SizedBox(height: 16),
+            ElevatedButton(onPressed: _fetchHistory, child: const Text('Retry')),
+          ],
+        ),
+      );
+    }
+
+    if (_scans.isEmpty) {
+      return const Center(
+        child: Text('No scans yet.', style: TextStyle(color: Colors.white54, fontSize: 18)),
+      );
+    }
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: () {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => ProgressScreen(muscleGroup: widget.muscleGroup)));
+              },
+              icon: const Icon(Icons.trending_up),
+              label: const Text('VIEW TRENDS'),
+              style: FilledButton.styleFrom(backgroundColor: Colors.teal.shade700),
+            ),
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: _scans.length,
+            itemBuilder: (context, index) {
+              final scan = _scans[index];
+              final dateStr = scan['scan_date']?.toString().split('T')[0] ?? 'Unknown';
+              final volume = scan['volume_cm3']?.toDouble() ?? 0.0;
+              final growth = scan['growth_pct']?.toDouble();
+              final grade = scan['shape_grade'];
+              
+              return Card(
+                color: Colors.grey.shade900,
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: ListTile(
+                  title: Text('$dateStr - ${(scan['muscle_group'] as String).toUpperCase()}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  subtitle: Text('Volume: ${volume.toStringAsFixed(1)} cm³${grade != null ? ' | Grade: $grade' : ''}', style: const TextStyle(color: Colors.white70)),
+                  trailing: growth != null 
+                    ? Text('${growth > 0 ? '+' : ''}${growth.toStringAsFixed(1)}%', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: growth >= 0 ? Colors.greenAccent : Colors.redAccent))
+                    : const Text('-', style: TextStyle(color: Colors.white54)),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// --- PROGRESS SCREEN ---
+class ProgressScreen extends StatefulWidget {
+  final String? muscleGroup;
+  const ProgressScreen({super.key, this.muscleGroup});
+
+  @override
+  State<ProgressScreen> createState() => _ProgressScreenState();
+}
+
+class _ProgressScreenState extends State<ProgressScreen> {
+  bool _isLoading = true;
+  String? _error;
+  Map<String, dynamic>? _trendData;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchProgress();
+  }
+
+  Future<void> _fetchProgress() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      String url = '$serverBaseUrl/api/customer/1/progress';
+      if (widget.muscleGroup != null) {
+        url += '?muscle_group=${widget.muscleGroup}';
+      }
+      
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'},
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['status'] == 'success') {
+          setState(() {
+            _trendData = data;
+            _isLoading = false;
+          });
+        } else {
+          setState(() {
+            _error = data['message'] ?? 'Failed to load progress';
+            _isLoading = false;
+          });
+        }
+      } else {
+        setState(() {
+          _error = 'Server error: ${response.statusCode}';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _error = 'Network error: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('Progress & Trends'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator(color: Colors.teal));
+    }
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+            const SizedBox(height: 16),
+            ElevatedButton(onPressed: _fetchProgress, child: const Text('Retry')),
+          ],
+        ),
+      );
+    }
+
+    final trendObj = _trendData?['trend'] ?? {};
+    if (trendObj['status'] == 'Insufficient Data' || trendObj.isEmpty) {
+      return const Center(
+        child: Text('Insufficient data to analyze trends.\nPlease complete at least 2 scans.', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 16)),
+      );
+    }
+
+    final summary = _trendData?['volume_summary'] ?? {};
+    final streak = _trendData?['growth_streak'] ?? {};
+    final bestPeriod = _trendData?['best_period'] ?? {};
+
+    final direction = trendObj['direction'] ?? 'UNKNOWN';
+    final color = direction == 'gaining' ? Colors.greenAccent : (direction == 'losing' ? Colors.redAccent : Colors.orangeAccent);
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('OVERALL TREND', style: TextStyle(color: Colors.teal.shade200, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+          const SizedBox(height: 8),
+          Text(direction.toUpperCase(), style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: color)),
+          const SizedBox(height: 24),
+
+          _buildStatCard('Total Change', '${summary['total_change_cm3']?.toStringAsFixed(1) ?? '0'} cm³ (${summary['total_change_pct']?.toStringAsFixed(1) ?? '0'}%)'),
+          _buildStatCard('Weekly Rate', '${trendObj['weekly_rate_cm3']?.toStringAsFixed(2) ?? '0'} cm³/wk'),
+          _buildStatCard('Consistency (R²)', '${trendObj['consistency_r2']?.toStringAsFixed(2) ?? '0'}'),
+          _buildStatCard('30-Day Projection', '${trendObj['projected_30d_cm3']?.toStringAsFixed(1) ?? '0'} cm³'),
+          _buildStatCard('Growth Streak', '${streak['consecutive_gains'] ?? 0} periods'),
+          if (bestPeriod['volume_change_cm3'] != null)
+            _buildStatCard('Best Period Gain', '+${bestPeriod['volume_change_cm3']?.toStringAsFixed(1) ?? '0'} cm³'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatCard(String label, String value) {
+    return Card(
+      color: Colors.grey.shade900,
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label, style: const TextStyle(color: Colors.white70, fontSize: 16)),
+            Text(value, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
