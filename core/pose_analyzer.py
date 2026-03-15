@@ -236,7 +236,10 @@ def get_px_to_mm_ratio_from_pose(img, user_height_cm):
 
     # Find the bounding box of the person based on landmarks
     y_coords = [landmark.y * h for landmark in results.pose_landmarks.landmark]
-    
+
+    if not y_coords:
+        return None
+
     # We add a slight margin because landmarks (like ankle and eye/nose)
     # don't cover the absolute top of the head or bottom of the feet.
     # Typically, eye to top of head is about 10-12cm, ankle to floor is about 5-8cm.

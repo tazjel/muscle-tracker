@@ -1,0 +1,137 @@
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface2: #222636;
+  --border: #2e3245;
+  --teal: #00b4cc;
+  --teal-dim: rgba(0,180,204,0.15);
+  --gold: #ffcc00;
+  --green: #00c866;
+  --red: #e03030;
+  --text: #e2e4f0;
+  --text-dim: #7a7f9a;
+  --radius: 12px;
+  --radius-sm: 7px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; min-height: 100vh; display: flex; flex-direction: column; }
+
+/* ── Header ── */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 24px; background: var(--surface);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.header-left { display: flex; align-items: center; gap: 12px; }
+.header h1 { font-size: 18px; font-weight: 700; color: var(--teal); }
+.header p  { font-size: 11px; color: var(--text-dim); }
+.header-right { display: flex; align-items: center; gap: 10px; }
+.logo {
+  width: 36px; height: 36px; background: var(--teal); border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 900; font-size: 13px; color: #000;
+}
+
+/* ── Buttons ── */
+.btn {
+  padding: 7px 16px; border-radius: var(--radius-sm); border: none;
+  font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .15s;
+}
+.btn:hover { opacity: .85; }
+.btn-primary { background: var(--teal); color: #000; }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-gold { background: var(--gold); color: #000; }
+.btn-lg  { padding: 11px 26px; font-size: 15px; }
+.hidden  { display: none !important; }
+
+/* ── Main layout ── */
+.live-main {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  padding: 20px; gap: 16px;
+}
+
+/* ── Camera ── */
+.camera-container {
+  position: relative; width: 100%; max-width: 720px;
+  border-radius: var(--radius); overflow: hidden;
+  border: 2px solid var(--border); background: #000;
+  aspect-ratio: 4/3;
+}
+#video {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+#overlay-canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
+}
+#crosshair {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(circle, transparent 30%, rgba(0,180,204,0.04) 100%);
+}
+#crosshair::before, #crosshair::after {
+  content: ''; position: absolute; background: rgba(0,180,204,0.25);
+}
+#crosshair::before { left: 50%; top: 25%; bottom: 25%; width: 1px; transform: translateX(-50%); }
+#crosshair::after  { top: 50%; left: 25%; right: 25%; height: 1px; transform: translateY(-50%); }
+
+/* ── Metric badges ── */
+.badge-group {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 10px;
+}
+.metric-badge {
+  background: rgba(15,17,23,0.85); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px 14px; text-align: center;
+  min-width: 90px; backdrop-filter: blur(6px);
+}
+.badge-val { display: block; font-size: 18px; font-weight: 800; color: var(--teal); }
+.badge-lbl { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px; }
+
+/* Active state — data is live */
+.metric-badge.live { border-color: var(--teal); }
+.metric-badge.live .badge-val { color: var(--green); }
+
+/* ── Scan indicator ── */
+.scan-indicator {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  color: var(--teal); font-size: 12px; font-weight: 600;
+}
+.scan-ring {
+  width: 48px; height: 48px; border: 3px solid transparent;
+  border-top-color: var(--teal); border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Controls ── */
+.controls-bar {
+  display: flex; gap: 12px; flex-wrap: wrap; justify-content: center;
+  width: 100%; max-width: 720px;
+}
+
+/* ── Locked panel ── */
+.locked-panel {
+  width: 100%; max-width: 720px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px;
+}
+.locked-panel h2 { color: var(--gold); margin-bottom: 14px; font-size: 15px; }
+.locked-grid { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+#locked-canvas { border-radius: var(--radius-sm); border: 1px solid var(--border); max-width: 100%; }
+.locked-metrics { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.locked-metric { background: var(--surface2); border-radius: var(--radius-sm); padding: 8px 12px; }
+.locked-metric .lbl { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
+.locked-metric .val { font-size: 20px; font-weight: 700; color: var(--teal); }
+.locked-actions { display: flex; gap: 10px; }
+
+#muscle-select {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 6px 10px; color: var(--text); font-size: 12px;
+}
+
+@media (max-width: 500px) {
+  .badge-group { gap: 6px; }
+  .metric-badge { min-width: 70px; padding: 6px 10px; }
+  .badge-val { font-size: 15px; }
+}

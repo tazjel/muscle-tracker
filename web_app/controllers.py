@@ -776,6 +776,705 @@ def get_volume_models():
     return dict(models=VOLUME_MODELS)
 
 
+# --- BODY COMPOSITION ---
+
+@action('api/customer/<customer_id:int>/body_composition', method=['POST'])
+@action.uses(db, cors)
+def body_composition(customer_id):
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    customer = db.customer(customer_id)
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    image_file = request.files.get('image')
+    if not image_file:
+        return dict(status='error', message='Image file required')
+
+    ext = os.path.splitext(image_file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return dict(status='error', message=f'Invalid file type: {ext}')
+
+    data = request.forms
+    weight_kg  = float(data.get('weight_kg') or customer.weight_kg or 0) or None
+    height_cm  = float(data.get('height_cm') or customer.height_cm or 0) or None
+    gender     = data.get('gender') or customer.gender or 'male'
+
+    img_filename = db.muscle_scan.img_front.store(image_file.file, image_file.filename)
+    img_path     = os.path.join('uploads', img_filename)
+
+    try:
+        from core.body_composition import estimate_body_composition, estimate_lean_mass, generate_composition_visual
+        img = cv2.imread(img_path)
+        if img is None:
+            return dict(status='error', message='Could not decode image')
+
+        landmarks = {}
+        try:
+            from core.body_segmentation import segment_body
+            seg = segment_body(img)
+            if seg and 'landmarks' in seg:
+                landmarks = seg['landmarks']
+        except Exception:
+            pass
+
+        result = estimate_body_composition(
+            landmarks=landmarks,
+            user_weight_kg=weight_kg,
+            user_height_cm=height_cm,
+            gender=gender,
+        )
+
+        if weight_kg and result.get('estimated_body_fat_pct') is not None:
+            lean = estimate_lean_mass(weight_kg, result['estimated_body_fat_pct'])
+            result.update(lean)
+
+        # Save annotated visual
+        visual_path = None
+        try:
+            visual = generate_composition_visual(img, landmarks, result)
+            if visual is not None:
+                vis_name = 'comp_' + img_filename
+                vis_path = os.path.join('uploads', vis_name)
+                cv2.imwrite(vis_path, visual)
+                visual_path = f'/uploads/{vis_name}'
+        except Exception:
+            pass
+
+        log_id = db.body_composition_log.insert(
+            customer_id=customer_id,
+            bmi=result.get('bmi'),
+            body_fat_pct=result.get('estimated_body_fat_pct'),
+            lean_mass_kg=result.get('lean_mass_kg'),
+            waist_hip_ratio=result.get('waist_to_hip_ratio'),
+            classification=result.get('classification'),
+            confidence=result.get('confidence'),
+            visual_img=visual_path,
+        )
+        db.commit()
+
+        return dict(
+            status='success',
+            log_id=log_id,
+            visual_url=visual_path,
+            **result,
+        )
+    except Exception:
+        logger.exception('Body composition failed for customer %d', customer_id)
+        return dict(status='error', message='Body composition analysis failed')
+
+
+# --- 3D MESH RECONSTRUCTION ---
+
+@action('api/customer/<customer_id:int>/reconstruct_3d', method=['POST'])
+@action.uses(db, cors)
+def reconstruct_3d(customer_id):
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    customer = db.customer(customer_id)
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    front_file = request.files.get('front')
+    side_file  = request.files.get('side')
+    if not front_file or not side_file:
+        return dict(status='error', message='Both front and side images required')
+
+    for f in (front_file, side_file):
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            return dict(status='error', message=f'Invalid file type: {ext}')
+
+    muscle_group = request.forms.get('muscle_group', 'bicep')
+    marker_size  = float(request.forms.get('marker_size', '20.0'))
+
+    front_fn = db.muscle_scan.img_front.store(front_file.file, front_file.filename)
+    side_fn  = db.muscle_scan.img_front.store(side_file.file, side_file.filename)
+    front_path = os.path.join('uploads', front_fn)
+    side_path  = os.path.join('uploads', side_fn)
+
+    try:
+        from core.vision_medical import analyze_muscle_growth
+        from core.mesh_reconstruction import reconstruct_mesh_from_silhouettes, export_obj, generate_mesh_preview_image
+        from core.mesh_volume import compute_mesh_volume_cm3
+
+        res_f = analyze_muscle_growth(front_path, front_path, marker_size, align=False, muscle_group=muscle_group)
+        res_s = analyze_muscle_growth(side_path,  side_path,  marker_size, align=False, muscle_group=muscle_group)
+
+        if 'error' in res_f or 'error' in res_s:
+            return dict(status='error', message='Vision analysis failed on one or both images')
+
+        contour_front = res_f.get('raw_data', {}).get('contour_a')
+        contour_side  = res_s.get('raw_data', {}).get('contour_a')
+        if contour_front is None or contour_side is None:
+            return dict(status='error', message='Could not extract muscle contours')
+
+        ratio_f = res_f.get('ratio', 1.0)
+        ratio_s = res_s.get('ratio', 1.0)
+        ppm_f   = 1.0 / ratio_f if ratio_f > 0 else 1.0
+        ppm_s   = 1.0 / ratio_s if ratio_s > 0 else 1.0
+
+        mesh_data = reconstruct_mesh_from_silhouettes(contour_front, contour_side, ppm_f, ppm_s)
+        if not mesh_data or mesh_data.get('num_vertices', 0) == 0:
+            return dict(status='error', message='3D reconstruction produced empty mesh')
+
+        # Precise volume from mesh
+        precise_vol = compute_mesh_volume_cm3(mesh_data['vertices'], mesh_data['faces'])
+        if precise_vol > 0:
+            mesh_data['volume_cm3'] = precise_vol
+
+        # Save OBJ
+        os.makedirs('meshes', exist_ok=True)
+        import time
+        base_name  = f'mesh_{customer_id}_{int(time.time())}'
+        obj_path   = os.path.join('meshes', base_name + '.obj')
+        prev_path  = os.path.join('meshes', base_name + '_preview.png')
+
+        export_obj(mesh_data['vertices'], mesh_data['faces'], obj_path)
+
+        preview_url = None
+        try:
+            generate_mesh_preview_image(mesh_data['vertices'], mesh_data['faces'], prev_path)
+            preview_url = f'/meshes/{base_name}_preview.png'
+        except Exception:
+            pass
+
+        mesh_id = db.mesh_model.insert(
+            customer_id=customer_id,
+            muscle_group=muscle_group,
+            obj_path=obj_path,
+            preview_path=prev_path if preview_url else None,
+            volume_cm3=mesh_data.get('volume_cm3'),
+            num_vertices=mesh_data.get('num_vertices'),
+            num_faces=mesh_data.get('num_faces'),
+        )
+        db.commit()
+
+        return dict(
+            status='success',
+            mesh_id=mesh_id,
+            mesh_url=f'/meshes/{base_name}.obj',
+            preview_url=preview_url,
+            volume_cm3=mesh_data.get('volume_cm3'),
+            num_vertices=mesh_data.get('num_vertices'),
+            num_faces=mesh_data.get('num_faces'),
+        )
+    except Exception:
+        logger.exception('3D reconstruction failed for customer %d', customer_id)
+        return dict(status='error', message='3D reconstruction failed')
+
+
+@action('api/mesh/<mesh_id:int>.obj', method=['GET'])
+@action.uses(db, cors)
+def serve_mesh_obj(mesh_id):
+    mesh = db.mesh_model(mesh_id)
+    if not mesh or not mesh.obj_path or not os.path.exists(mesh.obj_path):
+        abort(404, 'Mesh not found')
+    response.headers['Content-Type'] = 'text/plain'
+    with open(mesh.obj_path, 'r') as f:
+        return f.read()
+
+
+@action('api/customer/<customer_id:int>/compare_3d', method=['POST'])
+@action.uses(db, cors)
+def compare_3d(customer_id):
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    data = request.json or {}
+    before_id = data.get('mesh_id_before')
+    after_id  = data.get('mesh_id_after')
+    if not before_id or not after_id:
+        return dict(status='error', message='mesh_id_before and mesh_id_after required')
+
+    mesh_before = db.mesh_model(before_id)
+    mesh_after  = db.mesh_model(after_id)
+    if not mesh_before or not mesh_after:
+        return dict(status='error', message='One or both meshes not found')
+    if mesh_before.customer_id != customer_id or mesh_after.customer_id != customer_id:
+        return dict(status='error', message='Access denied')
+
+    try:
+        from core.mesh_reconstruction import export_obj
+        from core.mesh_comparison import compare_meshes, export_colored_obj
+        import numpy as np
+
+        def _load_obj_verts_faces(path):
+            verts, faces = [], []
+            with open(path) as f:
+                for line in f:
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    if parts[0] == 'v':
+                        verts.append([float(x) for x in parts[1:4]])
+                    elif parts[0] == 'f':
+                        faces.append([int(x) - 1 for x in parts[1:4]])
+            return np.array(verts), np.array(faces)
+
+        vb, fb = _load_obj_verts_faces(mesh_before.obj_path)
+        va, fa = _load_obj_verts_faces(mesh_after.obj_path)
+
+        result = compare_meshes(
+            {'vertices': vb, 'faces': fb, 'volume_cm3': mesh_before.volume_cm3},
+            {'vertices': va, 'faces': fa, 'volume_cm3': mesh_after.volume_cm3},
+        )
+
+        import time
+        colored_name = f'compare_{customer_id}_{int(time.time())}.obj'
+        colored_path = os.path.join('meshes', colored_name)
+        export_colored_obj(va, fa, result['displacement_map'], colored_path)
+
+        return dict(
+            status='success',
+            mean_growth_mm=round(result['mean_growth_mm'], 3),
+            max_growth_mm=round(result['max_growth_mm'], 3),
+            volume_change_cm3=round(result['volume_change_cm3'], 3),
+            colored_mesh_url=f'/meshes/{colored_name}',
+        )
+    except Exception:
+        logger.exception('3D comparison failed for customer %d', customer_id)
+        return dict(status='error', message='3D comparison failed')
+
+
+# --- DASHBOARD ENDPOINTS ---
+
+@action('api/customer/<customer_id:int>/body_map', method=['GET'])
+@action.uses(db, cors)
+def customer_body_map(customer_id):
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    scans = db(db.muscle_scan.customer_id == customer_id).select(
+        orderby=~db.muscle_scan.scan_date
+    ).as_list()
+
+    # Latest scan per muscle group
+    latest = {}
+    for s in scans:
+        mg = s['muscle_group']
+        if mg not in latest:
+            latest[mg] = s
+
+    muscle_groups = []
+    for mg, s in latest.items():
+        muscle_groups.append({
+            'muscle_group':   mg,
+            'scan_date':      str(s.get('scan_date', '')),
+            'volume_cm3':     s.get('volume_cm3'),
+            'shape_score':    s.get('shape_score'),
+            'shape_grade':    s.get('shape_grade'),
+            'growth_pct':     s.get('growth_pct'),
+            'definition_score': s.get('definition_score'),
+            'definition_grade': s.get('definition_grade'),
+            'circumference_cm': s.get('circumference_cm'),
+            'annotated_img_url': f'/uploads/{s["annotated_img"]}' if s.get('annotated_img') else None,
+        })
+
+    return dict(status='success', muscle_groups=muscle_groups)
+
+
+@action('api/customer/<customer_id:int>/quick_stats', method=['GET'])
+@action.uses(db, cors)
+def customer_quick_stats(customer_id):
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    scans = db(db.muscle_scan.customer_id == customer_id).select(
+        orderby=~db.muscle_scan.scan_date
+    ).as_list()
+
+    total_scans      = len(scans)
+    active_groups    = len(set(s['muscle_group'] for s in scans))
+    growths          = [s['growth_pct'] for s in scans if s.get('growth_pct') is not None]
+    best_growth_pct  = round(max(growths), 2) if growths else None
+    best_muscle      = None
+    if growths:
+        for s in scans:
+            if s.get('growth_pct') == max(growths):
+                best_muscle = s['muscle_group']
+                break
+
+    def_scores = [s['definition_score'] for s in scans if s.get('definition_score') is not None]
+    avg_definition = round(sum(def_scores) / len(def_scores), 1) if def_scores else None
+
+    # Days active
+    dates = sorted(set(
+        str(s['scan_date'])[:10] for s in scans if s.get('scan_date')
+    ))
+    days_active = (
+        (
+            __import__('datetime').date.fromisoformat(dates[-1]) -
+            __import__('datetime').date.fromisoformat(dates[0])
+        ).days
+        if len(dates) >= 2 else 0
+    )
+
+    # Streak (weekly — same as dashboard JS logic)
+    streak = 0
+    if dates:
+        from datetime import date
+        streak = 1
+        prev   = date.fromisoformat(dates[-1])
+        for d_str in reversed(dates[:-1]):
+            d = date.fromisoformat(d_str)
+            if (prev - d).days <= 7:
+                streak += 1
+                prev = d
+            else:
+                break
+
+    # Latest body composition
+    latest_comp = db(
+        db.body_composition_log.customer_id == customer_id
+    ).select(orderby=~db.body_composition_log.assessed_on, limitby=(0, 1)).first()
+
+    return dict(
+        status='success',
+        total_scans=total_scans,
+        active_muscle_groups=active_groups,
+        best_growth_pct=best_growth_pct,
+        best_muscle=best_muscle,
+        avg_definition_score=avg_definition,
+        days_active=days_active,
+        current_streak=streak,
+        body_fat_pct=latest_comp.body_fat_pct if latest_comp else None,
+        lean_mass_kg=latest_comp.lean_mass_kg if latest_comp else None,
+    )
+
+
+@action('api/customer/<customer_id:int>/progress_summary', method=['GET'])
+@action.uses(db, cors)
+def customer_progress_summary(customer_id):
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    muscle_group = request.params.get('muscle_group')
+    query = db.muscle_scan.customer_id == customer_id
+    if muscle_group:
+        query &= db.muscle_scan.muscle_group == muscle_group
+
+    scans = db(query).select(orderby=db.muscle_scan.scan_date).as_list()
+
+    # Strip raw image filenames, include all metrics
+    for s in scans:
+        s.pop('img_front', None)
+        s.pop('img_side', None)
+        s['scan_date'] = str(s.get('scan_date', ''))
+        if s.get('annotated_img'):
+            s['annotated_img_url'] = f'/uploads/{s["annotated_img"]}'
+        s.pop('annotated_img', None)
+
+    # Body comp history
+    comp_history = db(
+        db.body_composition_log.customer_id == customer_id
+    ).select(orderby=db.body_composition_log.assessed_on).as_list()
+    for c in comp_history:
+        c['assessed_on'] = str(c.get('assessed_on', ''))
+
+    return dict(
+        status='success',
+        scans=scans,
+        body_composition_history=comp_history,
+    )
+
+
+# --- SESSION REPORT ---
+
+@action('api/customer/<customer_id:int>/session_report', method=['POST'])
+@action.uses(db, cors)
+def generate_session_report_endpoint(customer_id):
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    customer = db.customer(customer_id)
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    # Option A: scan_id provided — generate from stored scan
+    scan_id = (request.json or {}).get('scan_id') or request.forms.get('scan_id')
+    if scan_id:
+        scan = db.muscle_scan(int(scan_id))
+        if not scan or scan.customer_id != customer_id:
+            return dict(status='error', message='Scan not found')
+
+        from core.session_report import generate_session_report
+        import tempfile
+
+        front_path = os.path.join('uploads', scan.img_front) if scan.img_front else None
+        image_bgr  = cv2.imread(front_path) if front_path and os.path.exists(front_path) else None
+
+        scan_results = {
+            'patient_name':   customer.name,
+            'scan_date':      str(scan.scan_date)[:10],
+            'muscle_group':   scan.muscle_group,
+            'image_bgr':      image_bgr,
+            'metrics':        {
+                'area_mm2':         scan.area_mm2,
+                'width_mm':         scan.width_mm,
+                'height_mm':        scan.height_mm,
+                'circumference_cm': scan.circumference_cm,
+            },
+            'volume_cm3':     scan.volume_cm3,
+            'circumference_cm': scan.circumference_cm,
+            'shape_score':    scan.shape_score,
+            'shape_grade':    scan.shape_grade,
+            'definition':     {'overall_definition': scan.definition_score, 'grade': scan.definition_grade}
+                              if scan.definition_score else None,
+            'growth_analysis': {'growth_pct': scan.growth_pct, 'area_change_mm2': scan.volume_delta_cm3}
+                               if scan.growth_pct is not None else None,
+        }
+
+        fd, tmp = tempfile.mkstemp(suffix='.pdf')
+        os.close(fd)
+        try:
+            pdf_path = generate_session_report(scan_results, output_path=tmp)
+            response.headers['Content-Type'] = 'application/pdf'
+            response.headers['Content-Disposition'] = (
+                f'attachment; filename="session_report_{customer.name}_{str(scan.scan_date)[:10]}.pdf"'
+            )
+            with open(pdf_path, 'rb') as f:
+                return f.read()
+        finally:
+            for p in (tmp, tmp.replace('.pdf', '') + '.pdf'):
+                if os.path.exists(p):
+                    os.remove(p)
+
+    # Option B: image uploaded directly
+    image_file = request.files.get('image')
+    if not image_file:
+        return dict(status='error', message='Provide scan_id or upload an image')
+
+    ext = os.path.splitext(image_file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return dict(status='error', message=f'Invalid file type: {ext}')
+
+    img_fn   = db.muscle_scan.img_front.store(image_file.file, image_file.filename)
+    img_path = os.path.join('uploads', img_fn)
+    image_bgr = cv2.imread(img_path)
+
+    from core.session_report import generate_session_report
+    from core.pipeline import full_scan_pipeline
+    import tempfile
+
+    muscle_group = request.forms.get('muscle_group', 'bicep')
+    pipe_result  = full_scan_pipeline(
+        img_path,
+        user_weight_kg=float(request.forms.get('weight_kg') or customer.weight_kg or 0) or None,
+        user_height_cm=float(request.forms.get('height_cm') or customer.height_cm or 0) or None,
+        gender=request.forms.get('gender') or customer.gender or 'male',
+        muscle_group=muscle_group,
+        marker_size_mm=float(request.forms.get('marker_size', '20.0')),
+    )
+
+    scan_results = {
+        'patient_name':    customer.name,
+        'scan_date':       __import__('datetime').datetime.now().strftime('%Y-%m-%d'),
+        'muscle_group':    muscle_group,
+        'image_bgr':       image_bgr,
+        'metrics':         pipe_result.get('metrics', {}),
+        'volume_cm3':      pipe_result.get('volume_cm3'),
+        'circumference_cm': pipe_result.get('circumference_cm'),
+        'shape_score':     pipe_result.get('shape_score'),
+        'shape_grade':     pipe_result.get('shape_grade'),
+        'definition':      {'overall_definition': pipe_result.get('definition_score'),
+                            'grade': pipe_result.get('definition_grade')}
+                           if pipe_result.get('definition_score') else None,
+        'body_composition': pipe_result.get('body_composition'),
+    }
+
+    fd, tmp = tempfile.mkstemp(suffix='.pdf')
+    os.close(fd)
+    try:
+        pdf_path = generate_session_report(scan_results, output_path=tmp)
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = (
+            f'attachment; filename="session_report_{customer.name}.pdf"'
+        )
+        with open(pdf_path, 'rb') as f:
+            return f.read()
+    finally:
+        for p in (tmp, tmp.replace('.pdf', '') + '.pdf'):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+# --- DATA EXPORT ---
+
+@action('api/customer/<customer_id:int>/export', method=['GET'])
+@action.uses(db, cors)
+def export_data(customer_id):
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    customer = db.customer(customer_id)
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    fmt = request.params.get('format', 'csv').lower()
+
+    scans = db(db.muscle_scan.customer_id == customer_id).select(
+        orderby=db.muscle_scan.scan_date
+    ).as_list()
+
+    fields = [
+        'scan_date', 'muscle_group', 'side', 'calibrated',
+        'volume_cm3', 'area_mm2', 'width_mm', 'height_mm',
+        'circumference_cm', 'shape_score', 'shape_grade',
+        'definition_score', 'definition_grade',
+        'growth_pct', 'volume_delta_cm3', 'detection_confidence',
+    ]
+
+    if fmt == 'json':
+        export_rows = []
+        for s in scans:
+            row = {k: s.get(k) for k in fields}
+            row['scan_date'] = str(row.get('scan_date', ''))
+            export_rows.append(row)
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = (
+            f'attachment; filename="scans_{customer.name}.json"'
+        )
+        import json as _json
+        return _json.dumps({'customer': customer.name, 'scans': export_rows}, indent=2)
+
+    # Default: CSV
+    import io
+    import csv
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fields)
+    writer.writeheader()
+    for s in scans:
+        row = {k: s.get(k) for k in fields}
+        row['scan_date'] = str(row.get('scan_date', ''))
+        writer.writerow(row)
+
+    response.headers['Content-Type'] = 'text/csv'
+    response.headers['Content-Disposition'] = (
+        f'attachment; filename="scans_{customer.name}.csv"'
+    )
+    return buf.getvalue()
+
+
+# --- LIVE ANALYSIS ---
+
+@action('api/live_analyze', method=['POST'])
+@action.uses(cors)
+def live_analyze():
+    """Fast single-frame analysis for live camera mode. No DB writes."""
+    import base64
+    data = request.json or {}
+    frame_b64    = data.get('frame_base64', '')
+    muscle_group = data.get('muscle_group', 'bicep')
+
+    if not frame_b64:
+        return dict(status='error', message='frame_base64 required')
+
+    try:
+        img_bytes = base64.b64decode(frame_b64)
+        img_arr   = np.frombuffer(img_bytes, np.uint8)
+        img       = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return dict(status='error', message='Could not decode frame')
+
+        # Write to temp file for analysis
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(suffix='.jpg')
+        os.close(fd)
+        cv2.imwrite(tmp_path, img)
+
+        from core.vision_medical import analyze_muscle_growth
+        from core.circumference import estimate_circumference
+
+        res = analyze_muscle_growth(tmp_path, tmp_path, 20.0, align=False, muscle_group=muscle_group)
+        os.remove(tmp_path)
+
+        if 'error' in res:
+            return dict(status='error', message=res['error'])
+
+        contour = res.get('raw_data', {}).get('contour_a')
+        circ_cm = None
+        if contour is not None:
+            ratio   = res.get('ratio', 1.0)
+            ppm     = 1.0 / ratio if ratio > 0 else 1.0
+            circ    = estimate_circumference(contour, ppm)
+            circ_cm = circ.get('circumference_cm')
+
+        unit    = 'mm' if res.get('calibrated') else 'px'
+        metrics = res.get('metrics', {})
+
+        return dict(
+            status='success',
+            calibrated=res.get('calibrated', False),
+            area=metrics.get(f'area_a_{unit}2'),
+            width=metrics.get(f'width_a_{unit}'),
+            height=metrics.get(f'height_a_{unit}'),
+            circumference_cm=round(circ_cm, 2) if circ_cm else None,
+            contour_points=contour.reshape(-1, 2).tolist() if contour is not None else [],
+        )
+    except Exception:
+        logger.exception('Live analysis error')
+        return dict(status='error', message='Analysis failed')
+
+
 @action('api/<path:path>', method=['OPTIONS'])
 @action.uses(cors)
 def api_options(path):

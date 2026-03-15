@@ -40,6 +40,22 @@ try:
 except ImportError:
     _HAS_BODY_COMP = False
 
+try:
+    from core.mesh_reconstruction import (
+        reconstruct_mesh_from_silhouettes, export_obj, export_stl,
+        generate_mesh_preview_image,
+    )
+    from core.mesh_volume import compute_mesh_volume_cm3
+    _HAS_3D = True
+except ImportError:
+    _HAS_3D = False
+
+try:
+    from core.session_report import generate_session_report as _gen_session_report
+    _HAS_SESSION_REPORT = True
+except ImportError:
+    _HAS_SESSION_REPORT = False
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -116,6 +132,30 @@ def main():
     comp_p.add_argument('--height', type=float, help='Height in cm (improves accuracy)')
     comp_p.add_argument('--gender', choices=['male', 'female'], default='male')
 
+    # --- RECONSTRUCT 3D ---
+    r3d_p = subparsers.add_parser('reconstruct-3d', help='Build 3D mesh from front + side images')
+    r3d_p.add_argument('--front',    required=True, help='Front view image')
+    r3d_p.add_argument('--side',     required=True, help='Side view image')
+    r3d_p.add_argument('--marker-size', type=float, default=20.0)
+    r3d_p.add_argument('--output',   default='muscle.obj', help='Output OBJ file path')
+    r3d_p.add_argument('--stl',      help='Also export STL file (optional)')
+    r3d_p.add_argument('--preview',  help='Render preview PNG (optional, requires matplotlib)')
+    r3d_p.add_argument('--muscle-group', default='bicep')
+
+    # --- SESSION REPORT ---
+    sr_p = subparsers.add_parser('session-report', help='Generate comprehensive PDF session report')
+    sr_p.add_argument('--image',    required=True, help='Front view image')
+    sr_p.add_argument('--side',     help='Side view image (optional, enables 3D section)')
+    sr_p.add_argument('--before',   help='Previous scan image (optional, enables growth section)')
+    sr_p.add_argument('--weight',   type=float, help='Body weight in kg')
+    sr_p.add_argument('--height',   type=float, help='Height in cm')
+    sr_p.add_argument('--gender',   choices=['male', 'female'], default='male')
+    sr_p.add_argument('--patient',  default='Patient', help='Patient name for report')
+    sr_p.add_argument('--output',   default='session_report.pdf', help='Output PDF path')
+    sr_p.add_argument('--muscle-group', default='bicep')
+    sr_p.add_argument('--marker-size', type=float, default=20.0)
+    sr_p.add_argument('--template', choices=AVAILABLE_TEMPLATES, help='Shape template')
+
     # --- REPORT ---
     report_p = subparsers.add_parser('report', help='Generate clinical report')
     report_p.add_argument('--front', required=True, help='Front view image')
@@ -151,6 +191,8 @@ def main():
         'circumference': _cmd_circumference,
         'definition': _cmd_definition,
         'body-composition': _cmd_body_composition,
+        'reconstruct-3d': _cmd_reconstruct_3d,
+        'session-report': _cmd_session_report,
     }
 
     result = handlers[args.command](args)
@@ -440,6 +482,132 @@ def _cmd_body_composition(args):
         result.update(lean)
 
     return result
+
+
+def _cmd_reconstruct_3d(args):
+    """Build a 3D mesh from front + side images and export OBJ/STL."""
+    if not _HAS_3D:
+        return {'error': '3D modules not available (mesh_reconstruction / mesh_volume missing)'}
+
+    for path in (args.front, args.side):
+        if not os.path.exists(path):
+            return {'error': f'File not found: {path}'}
+
+    res_f = analyze_muscle_growth(args.front, args.front, args.marker_size, align=False,
+                                  muscle_group=args.muscle_group)
+    res_s = analyze_muscle_growth(args.side,  args.side,  args.marker_size, align=False,
+                                  muscle_group=args.muscle_group)
+
+    if 'error' in res_f:
+        return {'error': f'Front view: {res_f["error"]}'}
+    if 'error' in res_s:
+        return {'error': f'Side view: {res_s["error"]}'}
+
+    contour_f = res_f.get('raw_data', {}).get('contour_a')
+    contour_s = res_s.get('raw_data', {}).get('contour_a')
+
+    if contour_f is None or contour_s is None:
+        return {'error': 'Could not extract muscle contours from one or both images'}
+
+    ratio_f = res_f.get('ratio', 1.0)
+    ratio_s = res_s.get('ratio', 1.0)
+    ppm_f   = 1.0 / ratio_f if ratio_f > 0 else 1.0
+    ppm_s   = 1.0 / ratio_s if ratio_s > 0 else 1.0
+
+    mesh_data = reconstruct_mesh_from_silhouettes(contour_f, contour_s, ppm_f, ppm_s)
+
+    if not mesh_data or mesh_data.get('num_vertices', 0) == 0:
+        return {'error': '3D reconstruction produced an empty mesh'}
+
+    # Precise volume via divergence theorem
+    precise_vol = compute_mesh_volume_cm3(mesh_data['vertices'], mesh_data['faces'])
+    if precise_vol > 0:
+        mesh_data['volume_cm3'] = precise_vol
+
+    export_obj(mesh_data['vertices'], mesh_data['faces'], args.output)
+    result = {
+        'status': 'Success',
+        'obj_path': args.output,
+        'volume_cm3': mesh_data.get('volume_cm3'),
+        'num_vertices': mesh_data.get('num_vertices'),
+        'num_faces': mesh_data.get('num_faces'),
+        'calibrated': res_f.get('calibrated', False),
+    }
+
+    if args.stl:
+        export_stl(mesh_data['vertices'], mesh_data['faces'], args.stl)
+        result['stl_path'] = args.stl
+
+    if args.preview:
+        try:
+            generate_mesh_preview_image(mesh_data['vertices'], mesh_data['faces'], args.preview)
+            result['preview_path'] = args.preview
+        except Exception as e:
+            result['preview_warning'] = str(e)
+
+    return result
+
+
+def _cmd_session_report(args):
+    """Run full pipeline on an image and generate a comprehensive PDF session report."""
+    if not _HAS_SESSION_REPORT:
+        return {'error': 'session_report module not available'}
+
+    if not os.path.exists(args.image):
+        return {'error': f'File not found: {args.image}'}
+
+    import cv2
+    from core.pipeline import full_scan_pipeline
+
+    image_bgr = cv2.imread(args.image)
+    if image_bgr is None:
+        return {'error': f'Could not read image: {args.image}'}
+
+    pipe = full_scan_pipeline(
+        args.image,
+        image_side_path=args.side if args.side and os.path.exists(args.side) else None,
+        image_before_path=args.before if args.before and os.path.exists(args.before) else None,
+        user_weight_kg=args.weight,
+        user_height_cm=args.height,
+        gender=args.gender,
+        muscle_group=args.muscle_group,
+        marker_size_mm=args.marker_size,
+        shape_template=args.template,
+    )
+
+    if 'error' in pipe:
+        return pipe
+
+    scan_results = {
+        'patient_name':    args.patient,
+        'scan_date':       __import__('datetime').datetime.now().strftime('%Y-%m-%d'),
+        'muscle_group':    args.muscle_group,
+        'image_bgr':       image_bgr,
+        'metrics':         pipe.get('metrics', {}),
+        'volume_cm3':      pipe.get('volume_cm3'),
+        'circumference_cm': pipe.get('circumference_cm'),
+        'shape_score':     pipe.get('shape_score'),
+        'shape_grade':     pipe.get('shape_grade'),
+        'definition':      {
+            'overall_definition': pipe.get('definition_score'),
+            'grade': pipe.get('definition_grade'),
+        } if pipe.get('definition_score') is not None else None,
+        'body_composition': pipe.get('body_composition'),
+        'growth_analysis':  pipe.get('growth_analysis'),
+    }
+
+    out = args.output if args.output.endswith('.pdf') else args.output + '.pdf'
+    pdf_path = _gen_session_report(scan_results, output_path=out)
+
+    return {
+        'status': 'Success',
+        'report_path': pdf_path,
+        'volume_cm3': pipe.get('volume_cm3'),
+        'circumference_cm': pipe.get('circumference_cm'),
+        'definition_score': pipe.get('definition_score'),
+        'definition_grade': pipe.get('definition_grade'),
+        'errors': pipe.get('errors', []),
+    }
 
 
 def _output(result, fmt):

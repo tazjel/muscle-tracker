@@ -28,13 +28,48 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('user-name').textContent = name;
 
   if (!token || !customerId) {
-    // Demo mode — render with placeholder data
     renderDemo();
     return;
   }
 
+  // Hide login button when already authenticated
+  document.getElementById('btn-login').style.display = 'none';
   loadAll();
 });
+
+/* ── Login ── */
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const errEl = document.getElementById('login-error');
+  errEl.style.display = 'none';
+  if (!email) { errEl.textContent = 'Email required'; errEl.style.display = 'block'; return; }
+
+  try {
+    const r = await fetch(`${API}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await r.json();
+    if (data.status !== 'success') {
+      errEl.textContent = data.message || 'Login failed';
+      errEl.style.display = 'block';
+      return;
+    }
+    token      = data.token;
+    customerId = data.customer_id;
+    localStorage.setItem('mt_token',         token);
+    localStorage.setItem('mt_customer_id',   String(customerId));
+    localStorage.setItem('mt_customer_name', data.name || 'Athlete');
+    document.getElementById('user-name').textContent = data.name || 'Athlete';
+    document.getElementById('btn-login').style.display = 'none';
+    closeModal('login-modal');
+    loadAll();
+  } catch (e) {
+    errEl.textContent = 'Network error — try again';
+    errEl.style.display = 'block';
+  }
+}
 
 async function loadAll() {
   await Promise.all([loadScans(), loadProgress()]);
@@ -198,11 +233,12 @@ function renderCharts(scans) {
     fill: true, tension: 0.3, pointRadius: 4, pointBackgroundColor: color,
   });
 
-  ['volume', 'circumference', 'shape'].forEach(key => destroyChart(key));
+  ['volume', 'circumference', 'shape', 'definition'].forEach(key => destroyChart(key));
 
-  buildChart('chart-volume', labels, mkDataset(sorted.map(s => s.volume_cm3 ?? null), '#00b4cc'));
+  buildChart('chart-volume',        labels, mkDataset(sorted.map(s => s.volume_cm3       ?? null), '#00b4cc'));
   buildChart('chart-circumference', labels, mkDataset(sorted.map(s => s.circumference_cm ?? null), '#00c866'));
-  buildChart('chart-shape', labels, mkDataset(sorted.map(s => s.shape_score ?? null), '#ffcc00'));
+  buildChart('chart-shape',         labels, mkDataset(sorted.map(s => s.shape_score      ?? null), '#ffcc00'));
+  buildChart('chart-definition',    labels, mkDataset(sorted.map(s => s.definition_score ?? null), '#ff8c00'));
 }
 
 function buildChart(id, labels, dataset) {
@@ -217,11 +253,11 @@ function destroyChart(key) {
 }
 
 function showTab(name) {
-  ['volume', 'circumference', 'shape'].forEach(k => {
+  ['volume', 'circumference', 'shape', 'definition'].forEach(k => {
     document.getElementById(`chart-${k}`).classList.toggle('hidden', k !== name);
   });
   document.querySelectorAll('.tab').forEach((t, i) => {
-    t.classList.toggle('active', ['volume','circumference','shape'][i] === name);
+    t.classList.toggle('active', ['volume', 'circumference', 'shape', 'definition'][i] === name);
   });
 }
 
@@ -246,14 +282,43 @@ function showScanDetail(scan) {
     ['Circumference', scan.circumference_cm != null ? `${scan.circumference_cm.toFixed(1)} cm` : '–'],
     ['Growth', scan.growth_pct != null ? `${scan.growth_pct > 0 ? '+' : ''}${scan.growth_pct.toFixed(1)}%` : '–'],
     ['Shape Score', scan.shape_score != null ? `${scan.shape_score.toFixed(0)}/100 (${scan.shape_grade})` : '–'],
-    ['Definition', scan.definition_grade ?? '–'],
+    ['Definition Grade', scan.definition_grade ?? '–'],
+    ['Definition Score', scan.definition_score != null ? `${scan.definition_score.toFixed(0)}/100` : '–'],
     ['Calibrated', scan.calibrated ? 'Yes' : 'No'],
   ];
+  const downloadBtn = token && customerId
+    ? `<button class="btn btn-primary" style="margin-top:14px;width:100%"
+         onclick="downloadReport(${scan.id})">Download PDF Report</button>`
+    : '';
+
   document.getElementById('modal-body').innerHTML = `
     <div class="detail-grid">
       ${items.map(([l, v]) => `<div class="detail-item"><div class="lbl">${l}</div><div class="val">${v}</div></div>`).join('')}
-    </div>`;
+    </div>
+    ${downloadBtn}`;
   openModal('scan-modal');
+}
+
+/* ── Download Report ── */
+async function downloadReport(scanId) {
+  if (!token || !customerId) return;
+  try {
+    const r = await fetch(`${API}/api/customer/${customerId}/session_report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ scan_id: scanId }),
+    });
+    if (!r.ok) { alert('Report generation failed'); return; }
+    const blob = await r.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `session_report_${scanId}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert(`Download failed: ${e.message}`);
+  }
 }
 
 /* ── Upload Modal ── */

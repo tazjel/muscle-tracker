@@ -20,6 +20,7 @@
   </div>
   <div class="header-right">
     <span id="user-name">–</span>
+    <button id="btn-login" class="btn btn-outline" onclick="openModal('login-modal')">Sign In</button>
     <a href="../dashboard/index.html" class="btn btn-outline">Clinic View</a>
     <button class="btn btn-primary" onclick="showUploadModal()">+ New Scan</button>
   </div>
@@ -67,11 +68,13 @@
       <button class="tab active" onclick="showTab('volume')">Volume</button>
       <button class="tab" onclick="showTab('circumference')">Circumference</button>
       <button class="tab" onclick="showTab('shape')">Shape Score</button>
+      <button class="tab" onclick="showTab('definition')">Definition</button>
     </div>
     <div class="chart-wrap">
       <canvas id="chart-volume"></canvas>
       <canvas id="chart-circumference" class="hidden"></canvas>
       <canvas id="chart-shape" class="hidden"></canvas>
+      <canvas id="chart-definition" class="hidden"></canvas>
     </div>
   </section>
 
@@ -84,7 +87,7 @@
     <div id="scan-cards" class="scan-grid"></div>
   </section>
 
-  <!-- 3D Viewer Link -->
+  <!-- 3D Viewer & Live Camera Links -->
   <section class="card viewer-cta">
     <div class="viewer-cta-inner">
       <div>
@@ -95,9 +98,32 @@
         View in 3D ›
       </a>
     </div>
+    <div class="viewer-cta-inner" style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
+      <div>
+        <h2 style="color:var(--green)">Live Camera</h2>
+        <p>See your measurements in real time — no photo needed</p>
+      </div>
+      <a href="../live/index.html" target="_blank" class="btn btn-primary btn-lg" style="background:var(--green)">
+        Open Live ›
+      </a>
+    </div>
   </section>
 
 </main>
+
+<!-- ── LOGIN MODAL ── -->
+<div id="login-modal" class="modal hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-box" style="max-width:380px">
+    <h2>Sign In</h2>
+    <p style="color:var(--text-dim);margin-bottom:16px;font-size:12px">Enter your email to load your data</p>
+    <input id="login-email" type="email" placeholder="your@email.com"
+           style="width:100%;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:14px;margin-bottom:12px">
+    <div id="login-error" style="color:var(--red);font-size:12px;margin-bottom:8px;display:none"></div>
+    <button class="btn btn-primary" style="width:100%;padding:11px" onclick="doLogin()">Sign In</button>
+    <button class="btn btn-outline" style="width:100%;padding:11px;margin-top:8px" onclick="closeModal('login-modal')">Continue as Demo</button>
+  </div>
+</div>
 
 <!-- ── SCAN DETAIL MODAL ── -->
 <div id="scan-modal" class="modal hidden">

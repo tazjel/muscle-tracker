@@ -103,4 +103,31 @@ db.define_table('audit_log',
     Field('created_at', 'datetime', default=datetime.utcnow),
 )
 
+# 6. BODY COMPOSITION ASSESSMENTS
+db.define_table('body_composition_log',
+    Field('customer_id', 'reference customer'),
+    Field('assessed_on', 'datetime', default=lambda: datetime.now()),
+    Field('bmi', 'double'),
+    Field('body_fat_pct', 'double'),
+    Field('lean_mass_kg', 'double'),
+    Field('waist_hip_ratio', 'double'),
+    Field('classification', 'string', length=32),
+    Field('confidence', 'string', length=16),
+    Field('visual_img', 'string', length=256),
+    Field('notes', 'text'),
+)
+
+# 7. 3D MESH MODELS
+db.define_table('mesh_model',
+    Field('customer_id', 'reference customer'),
+    Field('created_on', 'datetime', default=lambda: datetime.now()),
+    Field('muscle_group', 'string', length=32),
+    Field('obj_path', 'string', length=512),
+    Field('preview_path', 'string', length=512),
+    Field('volume_cm3', 'double'),
+    Field('num_vertices', 'integer'),
+    Field('num_faces', 'integer'),
+    Field('scan_before_id', 'reference mesh_model'),
+)
+
 db.commit()
