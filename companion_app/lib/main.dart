@@ -217,7 +217,11 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   
   Future<void> _initCamera() async {
     if (_cameras.isEmpty) { setState(() => _statusMessage = 'No cameras'); return; }
-    _controller = CameraController(_cameras[0], ResolutionPreset.high, enableAudio: false);
+    final cam = _cameras.firstWhere(
+      (c) => c.lensDirection == CameraLensDirection.back,
+      orElse: () => _cameras.first,
+    );
+    _controller = CameraController(cam, ResolutionPreset.medium, enableAudio: false);
     try { await _controller!.initialize(); if (mounted) setState(() {}); }
     catch (e) { setState(() => _statusMessage = 'Camera error: $e'); }
   }
@@ -1133,6 +1137,9 @@ class _LivePreviewScreenState extends State<LivePreviewScreen> {
         // Metric badges
         if (!_locked && _lastResult != null) _buildMetricBadges(_lastResult!),
         if (_locked && _lockedMetrics != null) _buildMetricBadges(_lockedMetrics!),
+        // No-server hint when no results yet
+        if (_lastResult == null && !_analyzing && !_locked)
+          Positioned(left: 16, bottom: 120, child: _badge('⚡ Connect server for live analysis', Colors.white38)),
 
         // Bottom controls
         Positioned(
