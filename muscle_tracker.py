@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-Muscle Tracker v3.0 — Clinical Muscle Growth Analysis Suite (Final Release)
+Muscle Tracker v5.0 — Personal Vision Analysis Suite
 
 Commands:
-  growth       Compare before/after images for muscle growth
-  volumetrics  Estimate 3D muscle volume from front + side views
-  symmetry     Compare left vs right limbs for imbalance
-  shape-check  Score muscle shape against pro physique templates
-  report       Generate a full clinical report image
+  growth           Compare before/after images for muscle growth
+  volumetrics      Estimate 3D muscle volume from front + side views
+  symmetry         Compare left vs right limbs for imbalance
+  shape-check      Score muscle shape against pro physique templates
+  pose-check       Validate pose and get correction instructions
+  report           Generate a full clinical report image
+  circumference    Estimate limb circumference from a single image
+  definition       Score muscle definition (vascularity/striations)
+  body-composition Estimate body fat and lean mass from a photo
 """
 import sys
 import argparse
@@ -22,6 +26,19 @@ from core.segmentation import score_muscle_shape, AVAILABLE_TEMPLATES
 from core.visualization import generate_growth_heatmap, generate_side_by_side
 from core.report_generator import generate_clinical_report
 from core.pose_analyzer import analyze_pose, POSE_RULES
+from core.circumference import estimate_circumference, estimate_circumference_from_two_views
+
+try:
+    from core.definition_scorer import score_muscle_definition
+    _HAS_DEFINITION = True
+except ImportError:
+    _HAS_DEFINITION = False
+
+try:
+    from core.body_composition import estimate_body_composition, estimate_lean_mass
+    _HAS_BODY_COMP = True
+except ImportError:
+    _HAS_BODY_COMP = False
 
 
 def main():
@@ -78,6 +95,27 @@ def main():
                         choices=list(POSE_RULES.keys()),
                         help='Target muscle group (default: bicep)')
 
+    # --- CIRCUMFERENCE ---
+    circ_p = subparsers.add_parser('circumference', help='Estimate limb circumference from image')
+    circ_p.add_argument('--image', required=True, help='Muscle image path')
+    circ_p.add_argument('--marker-size', type=float, default=20.0)
+    circ_p.add_argument('--method', choices=['elliptical', 'perimeter'], default='elliptical')
+    circ_p.add_argument('--side', help='Side view image for two-view estimate (optional)')
+
+    # --- DEFINITION ---
+    def_p = subparsers.add_parser('definition', help='Score muscle definition (texture/vascularity)')
+    def_p.add_argument('--image', required=True, help='Muscle image path')
+    def_p.add_argument('--muscle-group', default='bicep', help='Muscle group name')
+    def_p.add_argument('--marker-size', type=float, default=20.0)
+    def_p.add_argument('--heatmap', help='Output path for definition heatmap image (optional)')
+
+    # --- BODY COMPOSITION ---
+    comp_p = subparsers.add_parser('body-composition', help='Estimate body fat and lean mass from photo')
+    comp_p.add_argument('--image', required=True, help='Full-body image path')
+    comp_p.add_argument('--weight', type=float, help='Body weight in kg (improves accuracy)')
+    comp_p.add_argument('--height', type=float, help='Height in cm (improves accuracy)')
+    comp_p.add_argument('--gender', choices=['male', 'female'], default='male')
+
     # --- REPORT ---
     report_p = subparsers.add_parser('report', help='Generate clinical report')
     report_p.add_argument('--front', required=True, help='Front view image')
@@ -110,6 +148,9 @@ def main():
         'shape-check': _cmd_shape_check,
         'pose-check': _cmd_pose_check,
         'report': _cmd_report,
+        'circumference': _cmd_circumference,
+        'definition': _cmd_definition,
+        'body-composition': _cmd_body_composition,
     }
 
     result = handlers[args.command](args)
@@ -296,6 +337,109 @@ def _cmd_report(args):
         "volume_cm3": vol_result.get("volume_cm3"),
         "shape_score": shape_result.get("score") if shape_result else None,
     }
+
+
+def _cmd_circumference(args):
+    """Estimate limb circumference from an image."""
+    import cv2
+    if not os.path.exists(args.image):
+        return {"error": f"File not found: {args.image}"}
+
+    res = analyze_muscle_growth(args.image, args.image, args.marker_size, align=False)
+    if "error" in res:
+        return res
+
+    contour = res['raw_data'].get('contour_a')
+    if contour is None:
+        return {"error": "No muscle contour detected"}
+
+    ratio_mm_per_px = res.get('ratio', 1.0)
+    pixels_per_mm = 1.0 / ratio_mm_per_px if ratio_mm_per_px > 0 else 1.0
+
+    result = estimate_circumference(contour, pixels_per_mm, method=args.method)
+
+    if args.side and os.path.exists(args.side):
+        res_s = analyze_muscle_growth(args.side, args.side, args.marker_size, align=False)
+        if "error" not in res_s:
+            unit = "mm" if res.get("calibrated") else "px"
+            width_front = res['metrics'].get(f'width_a_{unit}', 0.0)
+            width_side = res_s['metrics'].get(f'width_a_{unit}', 0.0)
+            two_view = estimate_circumference_from_two_views(width_front, width_side)
+            result['two_view_circumference_mm'] = two_view
+            result['two_view_circumference_cm'] = round(two_view / 10.0, 2)
+
+    result['calibrated'] = res.get('calibrated', False)
+    return result
+
+
+def _cmd_definition(args):
+    """Score muscle definition from texture analysis."""
+    import cv2
+    if not _HAS_DEFINITION:
+        return {"error": "definition_scorer module not available yet (Gemini mission 1.4 pending)"}
+
+    if not os.path.exists(args.image):
+        return {"error": f"File not found: {args.image}"}
+
+    img = cv2.imread(args.image)
+    if img is None:
+        return {"error": f"Could not read image: {args.image}"}
+
+    res = analyze_muscle_growth(args.image, args.image, args.marker_size, align=False)
+    if "error" in res:
+        return res
+
+    contour = res['raw_data'].get('contour_a')
+    if contour is None:
+        return {"error": "No muscle contour detected"}
+
+    result = score_muscle_definition(img, contour, args.muscle_group)
+
+    if args.heatmap:
+        from core.definition_scorer import generate_definition_heatmap
+        heatmap = generate_definition_heatmap(img, contour)
+        if heatmap is not None:
+            cv2.imwrite(args.heatmap, heatmap)
+            result['heatmap_path'] = args.heatmap
+
+    return result
+
+
+def _cmd_body_composition(args):
+    """Estimate body fat and lean mass from a full-body photo."""
+    import cv2
+    if not _HAS_BODY_COMP:
+        return {"error": "body_composition module not available yet (Gemini mission 1.3 pending)"}
+
+    if not os.path.exists(args.image):
+        return {"error": f"File not found: {args.image}"}
+
+    img = cv2.imread(args.image)
+    if img is None:
+        return {"error": f"Could not read image: {args.image}"}
+
+    # Try to get landmarks via body_segmentation if available
+    landmarks = {}
+    try:
+        from core.body_segmentation import segment_body
+        seg = segment_body(img)
+        if seg and 'landmarks' in seg:
+            landmarks = seg['landmarks']
+    except ImportError:
+        pass
+
+    result = estimate_body_composition(
+        landmarks=landmarks,
+        user_weight_kg=args.weight,
+        user_height_cm=args.height,
+        gender=args.gender,
+    )
+
+    if args.weight and result.get('estimated_body_fat_pct'):
+        lean = estimate_lean_mass(args.weight, result['estimated_body_fat_pct'])
+        result.update(lean)
+
+    return result
 
 
 def _output(result, fmt):
