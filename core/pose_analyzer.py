@@ -7,17 +7,28 @@ logger = logging.getLogger(__name__)
 
 try:
     import mediapipe as mp
-    mp_pose = mp.solutions.pose
-    pose_detector = mp_pose.Pose(
-        static_image_mode=True,
-        model_complexity=2,
-        enable_segmentation=True,
-        min_detection_confidence=0.5
-    )
-    HAVE_MEDIAPIPE = True
-except ImportError:
-    logger.warning("Mediapipe not installed. Markerless metrology disabled.")
+    try:
+        import mediapipe.python.solutions.pose as mp_pose
+        pose_detector = mp_pose.Pose(
+            static_image_mode=True,
+            model_complexity=2,
+            enable_segmentation=True,
+            min_detection_confidence=0.5
+        )
+        HAVE_MEDIAPIPE = True
+    except ImportError:
+        from mediapipe.solutions import pose as mp_pose
+        pose_detector = mp_pose.Pose(
+            static_image_mode=True,
+            model_complexity=2,
+            enable_segmentation=True,
+            min_detection_confidence=0.5
+        )
+        HAVE_MEDIAPIPE = True
+except Exception:
+    logger.warning("MediaPipe pose detector unavailable.")
     HAVE_MEDIAPIPE = False
+    pose_detector = None
 
 
 # --- G12: Pose Correction Engine ---

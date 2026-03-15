@@ -5,7 +5,7 @@ import logging
 from core.calibration import get_px_to_mm_ratio
 from core.alignment import align_images
 from core.pose_analyzer import get_muscle_crop
-from core.body_segmentation import segment_body
+from core.body_segmentation import segment_body, get_pose_landmarks, extract_muscle_roi
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +37,15 @@ def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
     if img_b_orig is None:
         return {"error": f"Failed to load image: {img_b_path}"}
 
-    # Optional markerless crop using MediaPipe pose
-    if muscle_group:
-        crop_a, _ = get_muscle_crop(img_a, muscle_group)
+    # ML-powered ROI crop
+    landmarks_a = get_pose_landmarks(img_a)
+    landmarks_b = get_pose_landmarks(img_b_orig)
+    
+    if muscle_group and landmarks_a and landmarks_b:
+        crop_a = extract_muscle_roi(img_a, muscle_group, landmarks_a)
         if crop_a is not None:
             img_a = crop_a
-        crop_b, _ = get_muscle_crop(img_b_orig, muscle_group)
+        crop_b = extract_muscle_roi(img_b_orig, muscle_group, landmarks_b)
         if crop_b is not None:
             img_b_orig = crop_b
 
@@ -99,6 +102,7 @@ def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
         "calibrated": use_mm,
         "aligned": align,
         "verdict": _classify_change(growth_pct),
+        "segmentation_method": res_a.get('method', 'unknown'),
         "confidence": {
             "detection": round(detection_confidence, 1),
             "alignment": round(align_confidence, 1),
@@ -131,11 +135,14 @@ def _extract_muscle_contour(img):
     """
     h, w = img.shape[:2]
     image_area = h * w
+    method = "threshold_fallback"
 
     # 1. Try ML-powered segmentation first
     mask = segment_body(img)
     
-    if mask is None:
+    if mask is not None:
+        method = "mediapipe"
+    else:
         # Fallback: Threshold-based segmentation
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -178,6 +185,7 @@ def _extract_muscle_contour(img):
         "height_px": float(h_box),
         "bbox": (x, y, w_box, h_box),
         "solidity": solidity,
+        "method": method,
     }
 
 
