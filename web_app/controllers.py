@@ -325,67 +325,11 @@ def customer_scans(customer_id):
     return dict(status='success', customer=customer.name, scans=scans)
 
 
-    @action('api/customer/<customer_id:int>/report/<scan_id:int>', method=['GET'])
-    @action.uses(db, cors)
-    def generate_report(customer_id, scan_id):
-    require_api_token()
-    customer = db.customer(customer_id)
-    if not customer:
-        abort(404, "Customer not found")
-
-    scan = db.muscle_scan(scan_id)
-    if not scan or scan.customer_id != customer_id:
-        abort(404, "Scan not found")
-
-    import tempfile
-    fd, temp_path = tempfile.mkstemp(suffix='.png')
-    os.close(fd)
-
-    scan_result = {
-        "status": "Success",
-        "metrics": {
-            "area_a_mm2" if scan.calibrated else "area_a_px2": scan.area_mm2,
-            "width_a_mm" if scan.calibrated else "width_a_px": scan.width_mm,
-            "height_a_mm" if scan.calibrated else "height_a_px": scan.height_mm,
-            "growth_pct": scan.growth_pct
-        },
-        "confidence": {"detection": scan.detection_confidence}
-    }
-
-    volume_result = {
-        "volume_cm3": scan.volume_cm3,
-        "model": scan.volume_model,
-        "height_mm": scan.height_mm
-    }
-
-    shape_result = None
-    if scan.shape_score is not None:
-        shape_result = {
-            "score": scan.shape_score,
-            "grade": scan.shape_grade
-        }
-
-    try:
-        generate_clinical_report(
-            scan_result,
-            volume_result=volume_result,
-            shape_result=shape_result,
-            output_path=temp_path,
-            patient_name=customer.name
-        )
-        response.headers['Content-Type'] = 'image/png'
-        with open(temp_path, 'rb') as f:
-            data = f.read()
-        return data
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-
-    @action('api/customer/<customer_id:int>/progress', method=['GET'])
+@action('api/customer/<customer_id:int>/report/<scan_id:int>', method=['GET'])
 @action.uses(db, cors)
 def generate_report(customer_id, scan_id):
-    require_api_token()
+    """Generate a clinical report PNG for a specific scan."""
+    require_auth()
     customer = db.customer(customer_id)
     if not customer:
         abort(404, "Customer not found")
@@ -398,28 +342,30 @@ def generate_report(customer_id, scan_id):
     fd, temp_path = tempfile.mkstemp(suffix='.png')
     os.close(fd)
 
+    unit_prefix = "mm" if scan.calibrated else "px"
     scan_result = {
         "status": "Success",
+        "verdict": "Stable",
         "metrics": {
-            "area_a_mm2" if scan.calibrated else "area_a_px2": scan.area_mm2,
-            "width_a_mm" if scan.calibrated else "width_a_px": scan.width_mm,
-            "height_a_mm" if scan.calibrated else "height_a_px": scan.height_mm,
-            "growth_pct": scan.growth_pct
+            f"area_a_{unit_prefix}2": scan.area_mm2 or 0,
+            f"width_a_{unit_prefix}": scan.width_mm or 0,
+            f"height_a_{unit_prefix}": scan.height_mm or 0,
+            "growth_pct": scan.growth_pct or 0,
         },
-        "confidence": {"detection": scan.detection_confidence}
+        "confidence": {"detection": scan.detection_confidence or 0},
     }
 
     volume_result = {
-        "volume_cm3": scan.volume_cm3,
-        "model": scan.volume_model,
-        "height_mm": scan.height_mm
+        "volume_cm3": scan.volume_cm3 or 0,
+        "model": scan.volume_model or "elliptical_cylinder",
+        "height_mm": scan.height_mm or 0,
     }
 
     shape_result = None
     if scan.shape_score is not None:
         shape_result = {
             "score": scan.shape_score,
-            "grade": scan.shape_grade
+            "grade": scan.shape_grade,
         }
 
     try:
@@ -428,7 +374,7 @@ def generate_report(customer_id, scan_id):
             volume_result=volume_result,
             shape_result=shape_result,
             output_path=temp_path,
-            patient_name=customer.name
+            patient_name=customer.name,
         )
         response.headers['Content-Type'] = 'image/png'
         with open(temp_path, 'rb') as f:

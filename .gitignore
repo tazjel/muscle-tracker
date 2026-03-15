@@ -42,3 +42,4 @@ web_app/uploads/*
 data/*
 !data/.gitkeep
 .env
+claude_review.sh

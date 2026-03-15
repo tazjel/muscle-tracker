@@ -1,153 +1,236 @@
-# Gemini Task Sheet — Muscle Tracker v2.4 "User Experience"
+# Gemini Autonomous Roadmap — Muscle Tracker v2.5 → v3.0
 
-**Date**: 2026-03-15
-**From**: Claude (Implementation Lead)
-**To**: Gemini CLI
-**Mission**: Make the app usable end-to-end. Right now a user can capture and upload, but they never see their results or history. Fix that.
+**Mode**: AUTONOMOUS — no human in the loop
+**Instructions**: Execute phases sequentially. After each phase, run the review gate. Keep going until you run out of tokens or all phases are complete.
 
 ---
 
-## Current Project State
+## HOW THIS WORKS
 
-- **Version**: v2.3 — 6 commits, 127 tests, clean tree
-- **Flutter app screens**: Login → Camera (with muscle group selector + pose check) → Review → Upload → snackbar
-- **Problem**: After upload, the user sees a snackbar saying "Volume: 157.08 cm³" and that's it. No results breakdown. No history. No progress tracking. The app is a dead end after each scan.
-- **API endpoints available but unused by the app**:
-  - `GET /api/customer/<id>/scans` — returns scan history
-  - `GET /api/customer/<id>/progress` — returns trend analysis
-  - `POST /api/customer/<id>/health_log` — log diet/activity
-  - `GET /api/customer/<id>/health_logs` — get logs
+After completing each phase:
 
----
+1. **Run tests**: `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/ -v`
+2. **Commit** your work with the specified message
+3. **Run the review gate**: Execute this command and read the output:
+```bash
+bash /c/Users/MiEXCITE/Projects/muscle_tracker/claude_review.sh
+```
+4. **Parse the response**:
+   - `CONTINUE` → proceed to the next phase immediately
+   - `FIX: <instructions>` → follow the instructions, re-commit, re-run the review gate
+   - `STOP: <reason>` → halt all work, report the reason
+5. **If the review gate fails to run** (network error, timeout), check that all tests pass. If they do, proceed to the next phase. If not, fix the failing tests first.
 
-## Task 1: Results screen after upload (P0)
-
-**File to modify**: `companion_app/lib/main.dart`
-
-**What to do**: After a successful upload in `_uploadScan()`, instead of showing a snackbar and resetting, navigate to a new `ResultsScreen` that displays the scan results.
-
-**ResultsScreen requirements**:
-- Takes the API response `result` map as a constructor parameter
-- Displays in a clean card layout:
-  - Volume: `result["volume_cm3"]` cm³ (large, prominent)
-  - Muscle group: from `_selectedMuscleGroup`
-  - Shape score + grade: `result["shape_score"]` / `result["shape_grade"]` (if present)
-  - Growth: `result["growth_pct"]`% / `result["volume_delta_cm3"]` cm³ (if present, color green for gain, red for loss)
-  - Calibrated: yes/no badge
-- A "New Scan" button that pops back to the camera screen
-- A "View History" button that navigates to the HistoryScreen (Task 2)
-
-**Constraints**:
-- Replace the snackbar, don't keep both
-- Use the existing dark theme / teal accent colors
-- Do NOT add new packages
+**DO NOT WAIT for human input between phases. Keep going.**
 
 ---
 
-## Task 2: Scan history screen (P0)
+## COMPLETED PHASES (do not redo)
 
-**File to modify**: `companion_app/lib/main.dart`
-
-**What to do**: Add a `HistoryScreen` that fetches and displays past scans.
-
-**How it works**:
-1. On init, call `GET $serverBaseUrl/api/customer/1/scans` with the JWT header (use the existing `_jwtToken` global)
-2. Pass `muscle_group` as a query parameter if the user has one selected
-3. Display results in a `ListView` with cards, each showing:
-   - Date (formatted from `scan_date`)
-   - Muscle group
-   - Volume (cm³)
-   - Growth % (if available, colored)
-   - Shape grade (if available)
-4. Handle empty state: "No scans yet" message
-5. Handle loading state: CircularProgressIndicator
-6. Handle error state: error message with retry button
-
-**Also**: Add a history icon button (📋 `Icons.history`) to the camera screen's top bar so users can access history anytime.
-
-**Constraints**:
-- The customer ID is hardcoded to 1 for now (matching the upload logic at line 362)
-- Do NOT add new packages
-- Do NOT modify Python files
+- ~~Phase 1: User Feedback Loop (v2.4)~~ — DONE (commit fb4ec44)
+  - ResultsScreen, HistoryScreen, ProgressScreen implemented
 
 ---
 
-## Task 3: Add report generation API endpoint (P0)
+## PHASE 2: "Health Tracking" (v2.5)
 
-**File to modify**: `web_app/controllers.py`
+### Task 2.1: Health log entry screen
+**File**: `companion_app/lib/main.dart`
+- New `HealthLogScreen` with form fields: calories, protein (g), carbs (g), fat (g), water (ml), activity type, activity duration (min), sleep hours, body weight (kg), notes
+- On submit, POST to `$serverBaseUrl/api/customer/<customerId>/health_log` with JWT
+- Success/error feedback via SnackBar
+- Add a "Log Health" button accessible from HistoryScreen or camera screen
 
-**What to add**: A new endpoint that generates a clinical report PNG for a given scan.
+### Task 2.2: Health log history view
+**File**: `companion_app/lib/main.dart`
+- New `HealthLogListScreen` — calls `GET $serverBaseUrl/api/customer/<customerId>/health_logs`
+- ListView of cards: date, calories, protein, sleep, activity
+- Accessible from HealthLogScreen or HistoryScreen
 
-**Endpoint**: `GET /api/customer/<customer_id:int>/report/<scan_id:int>`
+### Task 2.3: Display correlation data on ProgressScreen
+**File**: `companion_app/lib/main.dart`
+- If the progress API response contains `correlation` data, show below the trend section:
+  - "Protein vs Growth: strong positive (0.85)"
+  - Color green for positive, red for negative
 
-**Logic**:
-1. Call `require_auth()`
-2. Fetch the scan record from `db.muscle_scan(scan_id)` — verify it belongs to the customer
-3. Build the input dicts that `generate_clinical_report()` expects:
-   - `scan_result`: construct from the scan's stored metrics (area, width, height, growth_pct, detection_confidence)
-   - `volume_result`: construct from volume_cm3, volume_model, height_mm, etc.
-   - `shape_result`: construct from shape_score, shape_grade if present
-4. Call `generate_clinical_report(scan_result, volume_result, shape_result, output_path=temp_path, patient_name=customer.name)`
-5. Return the PNG file using py4web's file response mechanism
-
-**Import needed**: `from core.report_generator import generate_clinical_report`
-
-**Constraints**:
-- Use `tempfile.mktemp(suffix='.png')` for the output path
-- Clean up the temp file after sending (or let the OS handle it)
-- Return 404 if scan not found or doesn't belong to customer
-- Do NOT modify `core/report_generator.py`
-- Do NOT modify any other existing endpoint
-
----
-
-## Task 4: Add progress/trend API call to Flutter (P1)
-
-**File to modify**: `companion_app/lib/main.dart`
-
-**What to do**: Add a `ProgressScreen` accessible from the `HistoryScreen`.
-
-**How it works**:
-1. Add a "View Trends" button at the top of the `HistoryScreen`
-2. On tap, call `GET $serverBaseUrl/api/customer/1/progress?muscle_group=<selected>`
-3. Display the response in a simple layout:
-   - Trend direction: "GAINING" / "LOSING" / "MAINTAINING" (large, colored text)
-   - Total change: `volume_summary.total_change_cm3` cm³ / `volume_summary.total_change_pct`%
-   - Weekly rate: `trend.weekly_rate_cm3` cm³/week
-   - Consistency (R²): `trend.consistency_r2`
-   - 30-day projection: `trend.projected_30d_cm3` cm³
-   - Growth streak: `growth_streak.consecutive_gains` periods
-   - Best period: `best_period.volume_change_cm3` cm³
-4. Handle "Insufficient Data" status (< 2 scans) with a friendly message
-
-**Constraints**:
-- Keep the UI simple — text cards, no charts library
-- Do NOT add new packages
-- Do NOT modify Python files
+### Task 2.4: Commit + Review Gate
+- Run tests, commit: `"feat: health log entry, history, correlation display (v2.5)"`
+- Run: `bash /c/Users/MiEXCITE/Projects/muscle_tracker/claude_review.sh`
+- Act on the response, then proceed to Phase 3
 
 ---
 
-## Task 5: Commit everything (P0 — do this LAST)
+## PHASE 3: "Multi-Customer Support" (v2.6)
 
-**Steps**:
-1. Run the full test suite: `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/ -v`
-2. Confirm all 127+ tests pass
-3. `git add` new and modified files
-4. Commit with message: `"feat: results screen, scan history, progress view, report API endpoint (v2.4)"`
+### Task 3.1: Store customer_id from login
+**File**: `companion_app/lib/main.dart`
+- After JWT login, store `customer_id` from the response in a global variable (like `_jwtToken`)
+- Replace ALL hardcoded `customer/1` and `upload_scan/1` URLs with the stored `_customerId`
 
-**Acceptance**: All tests pass, `git status` is clean.
+### Task 3.2: Customer registration screen
+**File**: `companion_app/lib/main.dart`
+- "Create Account" button on LoginScreen
+- New `RegisterScreen`: name, email, height (cm), weight (kg), gender dropdown
+- POST to `$serverBaseUrl/api/customers` (this endpoint doesn't require auth for registration)
+- On success, auto-login with the new email
+
+### Task 3.3: Profile display
+**File**: `companion_app/lib/main.dart`
+- Profile indicator on camera screen showing customer name
+- Tap → dialog with name, email, height, weight
+- "Logout" button → clear token + customer_id, return to LoginScreen
+
+### Task 3.4: Commit + Review Gate
+- Run tests, commit: `"feat: multi-customer support, registration, profile (v2.6)"`
+- Run: `bash /c/Users/MiEXCITE/Projects/muscle_tracker/claude_review.sh`
+- Act on the response, then proceed to Phase 4
 
 ---
 
-## STRICT Rules for Gemini
+## PHASE 4: "Video Keyframe Extraction" (v2.7)
 
-1. **Do the tasks in order.** Tasks 1-2 are the highest priority.
-2. **Do NOT create proposal documents, roadmaps, or strategy files.** Implementation ONLY.
-3. **Do NOT implement features not listed here.** No 3D reconstruction, no video processing, no research.
-4. **Do NOT refactor existing code** unless a task explicitly says to modify a file.
-5. **Run the full test suite before committing.** All tests must pass.
-6. **Keep changes minimal.** Flutter tasks modify only `main.dart`. The API task modifies only `controllers.py`.
-7. **Do NOT modify these Claude-owned files**: `core/auth.py`, `requirements.txt`, `tests/test_auth.py`, `tests/test_vision_medical.py`, `tests/test_progress.py`, `tests/test_pose.py`, `tests/test_pose_correction.py`.
-8. **Do NOT modify any `core/*.py` module** unless a task explicitly names it.
-9. **When you finish all 5 tasks, STOP.** Report what you did. Do not propose next steps.
-10. **Use this Python**: `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/ -v`
+### Task 4.1: Keyframe extraction module
+**File to create**: `core/keyframe_extractor.py`
+- `extract_keyframes(video_path, num_frames=3)`:
+  - Open video with `cv2.VideoCapture`
+  - Sample frames evenly, score by Laplacian variance (sharpness)
+  - Return the `num_frames` sharpest as BGR numpy arrays
+- `save_keyframes(frames, output_dir)`:
+  - Save each as JPEG, return list of paths
+- Handle: nonexistent file → empty list, video shorter than num_frames → return what's available
+
+### Task 4.2: Tests for keyframe extractor
+**File to create**: `tests/test_keyframe_extractor.py`
+- Create synthetic video with `cv2.VideoWriter` (temp file)
+- Test correct number of frames returned
+- Test frames are valid numpy arrays (3 channels)
+- Test short video (< num_frames)
+- Test nonexistent path → empty list
+- Clean up temp files
+
+### Task 4.3: Video upload API endpoint
+**File**: `web_app/controllers.py`
+- New endpoint: `POST /api/upload_video/<customer_id:int>`
+- Accept video file (`.mp4`, `.mov`, `.avi`) + `muscle_group`
+- Call `extract_keyframes()`, run `analyze_muscle_growth` on extracted frames
+- Return same format as `upload_scan`
+- Add `from core.keyframe_extractor import extract_keyframes, save_keyframes` to imports
+
+### Task 4.4: Video capture in Flutter
+**File**: `companion_app/lib/main.dart`
+- Toggle on camera screen: "Photo" / "Video" mode
+- Video mode: 5-second recording with countdown timer
+- Save video to app directory
+- Upload to `/api/upload_video/<customerId>` instead of `/api/upload_scan/<customerId>`
+- Photo mode remains default
+
+### Task 4.5: Commit + Review Gate
+- Run tests, commit: `"feat: video keyframe extraction, video upload API, video capture (v2.7)"`
+- Run: `bash /c/Users/MiEXCITE/Projects/muscle_tracker/claude_review.sh`
+- Act on the response, then proceed to Phase 5
+
+---
+
+## PHASE 5: "Ghost Overlay" (v2.8)
+
+### Task 5.1: Ghost overlay painter
+**File**: `companion_app/lib/main.dart`
+- New `GhostOverlayPainter` CustomPainter
+- Loads previous scan image from local scans directory at 20% opacity
+- Overlays on camera preview
+- Only active when a previous scan exists for the selected muscle group
+
+### Task 5.2: Toggle + scan fetching
+**File**: `companion_app/lib/main.dart`
+- Ghost icon toggle button on camera screen
+- On enable: check local scans directory for most recent front/side image
+- If not found locally, fetch latest scan info from API and note that no local image is available (show "No previous scan" message)
+- Match overlay to current capture phase (front overlay during front capture, side during side)
+
+### Task 5.3: Commit + Review Gate
+- Run tests, commit: `"feat: ghost overlay for pose alignment (v2.8)"`
+- Run: `bash /c/Users/MiEXCITE/Projects/muscle_tracker/claude_review.sh`
+- Act on the response, then proceed to Phase 6
+
+---
+
+## PHASE 6: "Reporting & Export" (v2.9)
+
+### Task 6.1: Report viewer in Flutter
+**File**: `companion_app/lib/main.dart`
+- "Generate Report" button on ResultsScreen and HistoryScreen
+- Call `GET $serverBaseUrl/api/customer/<id>/report/<scan_id>`
+- Display returned PNG bytes with `Image.memory(responseBodyBytes)`
+- Full-screen viewer with pinch-to-zoom
+
+### Task 6.2: Save report to device
+**File**: `companion_app/lib/main.dart`
+- "Save" button on report viewer
+- Save PNG to app documents directory
+- Show file path in SnackBar
+- If `share_plus` package is available, add a "Share" button too (add to pubspec.yaml if needed)
+
+### Task 6.3: Report badges on history
+**File**: `companion_app/lib/main.dart`
+- On HistoryScreen, add a report icon next to each scan card
+- Tapping generates/views the report for that scan
+
+### Task 6.4: Commit + Review Gate
+- Run tests, commit: `"feat: report viewer, save/share, report badges (v2.9)"`
+- Run: `bash /c/Users/MiEXCITE/Projects/muscle_tracker/claude_review.sh`
+- Act on the response, then proceed to Phase 7
+
+---
+
+## PHASE 7: "Production Polish" (v3.0)
+
+### Task 7.1: Error handling sweep
+**File**: `companion_app/lib/main.dart`
+- Add try/catch with user-friendly messages to every API call
+- Add 10-second timeout to all HTTP requests
+- Handle no internet gracefully (show "No connection" with retry)
+
+### Task 7.2: Loading states
+**File**: `companion_app/lib/main.dart`
+- All list screens: show loading indicator while fetching
+- All form submissions: disable button + show spinner during submit
+
+### Task 7.3: Input validation
+**File**: `companion_app/lib/main.dart`
+- LoginScreen: validate email format
+- RegisterScreen: required fields, positive numbers
+- HealthLogScreen: positive numbers for numeric fields
+
+### Task 7.4: API rate limiting
+**File**: `web_app/controllers.py`
+- Simple in-memory rate limiter: max 30 requests/minute per token
+- Apply to upload/analysis endpoints only
+- Return 429 when exceeded
+
+### Task 7.5: Database indexes
+**File**: `web_app/models.py`
+- Add indexes on frequently queried columns:
+  - `muscle_scan.customer_id`, `muscle_scan.scan_date`, `muscle_scan.muscle_group`
+  - `health_log.customer_id`, `health_log.log_date`
+  - `symmetry_assessment.customer_id`
+
+### Task 7.6: Version bump to v3.0
+**Files**: `muscle_tracker.py` (line 3), `core/report_generator.py` (line 299), `setup.py`
+
+### Task 7.7: Final commit + Review Gate
+- Run tests, commit: `"feat: production polish, rate limiting, indexes, v3.0"`
+- Run: `bash /c/Users/MiEXCITE/Projects/muscle_tracker/claude_review.sh`
+- If CONTINUE → you're done. Report the final project state.
+
+---
+
+## STRICT Rules (ALL phases)
+
+1. **NO human in the loop.** Execute phases continuously. Only stop if: tokens exhausted, review gate says STOP, or all phases complete.
+2. **NO proposal documents.** No `CLAUDE_UPGRADE_PROPOSAL_*.md`. No strategy files. No research. CODE ONLY.
+3. **NO features outside the current phase.**
+4. **Run tests before every commit.** All must pass.
+5. **Protected files — DO NOT MODIFY**: `core/auth.py`, `core/pose_analyzer.py`, `web_app/controllers.py` (except Tasks 4.3 and 7.4 which explicitly name it), `tests/test_auth.py`, `tests/test_vision_medical.py`, `tests/test_progress.py`, `tests/test_pose.py`, `tests/test_pose_correction.py`
+6. **After each commit, run the review gate** (`bash /c/Users/MiEXCITE/Projects/muscle_tracker/claude_review.sh`) and follow its instructions.
+7. **If review gate is unavailable**, self-check: tests pass + git status clean + no protected files touched → proceed.
+8. **When all 7 phases are done or tokens are exhausted, write a final status** to `GEMINI_STATUS.md` with: phases completed, test count, files changed, any issues.
