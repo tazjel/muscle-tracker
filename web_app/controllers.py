@@ -450,15 +450,15 @@ def generate_report(customer_id, scan_id):
         shape_result = {"score": scan.shape_score, "grade": scan.shape_grade}
 
     try:
-        generate_clinical_report(
+        pdf_path = generate_clinical_report(
             scan_result,
             volume_result=volume_result,
             shape_result=shape_result,
             output_path=temp_path,
             patient_name=customer.name,
         )
-        response.headers['Content-Type'] = 'image/png'
-        with open(temp_path, 'rb') as f:
+        response.headers['Content-Type'] = 'application/pdf'
+        with open(pdf_path, 'rb') as f:
             data = f.read()
         
         db.audit_log.insert(
@@ -471,8 +471,11 @@ def generate_report(customer_id, scan_id):
         
         return data
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        # We need to check both temp_path and pdf_path because the generator 
+        # might append .pdf if we didn't include it.
+        for p in (temp_path, temp_path + ".pdf"):
+            if os.path.exists(p):
+                os.remove(p)
 
 
 @action('api/customer/<customer_id:int>/progress', method=['GET'])
