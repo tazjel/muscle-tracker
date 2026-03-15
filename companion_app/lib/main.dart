@@ -161,6 +161,10 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   final List<String> _phaseLabels = ['FRONT VIEW', 'SIDE VIEW'];
   final List<IconData> _phaseIcons = [Icons.person, Icons.person_outline];
 
+  // Selected muscle group
+  String _selectedMuscleGroup = 'bicep';
+  final List<String> _muscleGroups = ['bicep', 'tricep', 'quad', 'calf', 'delt', 'lat'];
+
   // Captured image paths
   String? _frontPath;
   String? _sidePath;
@@ -220,6 +224,55 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   bool get isLevel =>
       _pitch.abs() < _levelTolerance && _roll.abs() < _levelTolerance;
 
+  Future<bool> _runPoseCheck(String imagePath) async {
+    setState(() => _statusMessage = 'Checking pose...');
+    try {
+      var request = http.MultipartRequest('POST', Uri.parse('$serverBaseUrl/api/pose_check'));
+      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
+      request.files.add(await http.MultipartFile.fromPath('image', imagePath));
+      request.fields['muscle_group'] = _selectedMuscleGroup;
+
+      var streamedResponse = await request.send().timeout(const Duration(seconds: 5));
+      var response = await http.Response.fromStream(streamedResponse);
+      
+      if (response.statusCode == 200) {
+        final result = jsonDecode(response.body);
+        if (result['status'] == 'corrections_needed' && result['corrections'] != null) {
+          if (!mounted) return true;
+          
+          List<dynamic> corrections = result['corrections'];
+          String instructions = corrections.map((c) => "• ${c['instruction']}").join("\n");
+          
+          final shouldContinue = await showDialog<bool>(
+            context: context,
+            barrierDismissible: false,
+            builder: (BuildContext context) {
+              return AlertDialog(
+                title: const Text('Pose Correction'),
+                content: Text('Please adjust your pose:\n\n$instructions'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, false), // Retake
+                    child: const Text('Retake'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, true), // Continue anyway
+                    child: const Text('Continue Anyway'),
+                  ),
+                ],
+              );
+            },
+          );
+          return shouldContinue ?? false;
+        }
+      }
+    } catch (e) {
+      // If pose check fails (timeout/network), don't block the user
+      debugPrint('Pose check failed: $e');
+    }
+    return true; // OK or failed check -> proceed
+  }
+
   Future<void> _captureImage() async {
     if (_isCapturing || _controller == null || !_controller!.value.isInitialized) {
       return;
@@ -242,6 +295,20 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       final savePath = '${scanDir.path}/${phase}_$timestamp.jpg';
 
       await File(photo.path).copy(savePath);
+
+      if (_capturePhase == 0) {
+        // Run pose check on front view
+        bool proceed = await _runPoseCheck(savePath);
+        if (!proceed) {
+          // User chose to retake
+          File(savePath).deleteSync();
+          setState(() {
+            _statusMessage = 'Retake Front View';
+            _isCapturing = false;
+          });
+          return;
+        }
+      }
 
       setState(() {
         if (_capturePhase == 0) {
@@ -300,6 +367,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
       request.files.add(await http.MultipartFile.fromPath('front', _frontPath!));
       request.files.add(await http.MultipartFile.fromPath('side', _sidePath!));
+      request.fields['muscle_group'] = _selectedMuscleGroup;
 
       var streamedResponse = await request.send();
       var response = await http.Response.fromStream(streamedResponse);
@@ -434,11 +502,32 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
           children: [
             const Icon(Icons.fitness_center, color: Colors.teal, size: 20),
             const SizedBox(width: 8),
-            const Text('MUSCLE TRACKER',
-                style: TextStyle(
-                    color: Colors.teal,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14)),
+            // Muscle Group Selector
+            DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _selectedMuscleGroup,
+                dropdownColor: Colors.black87,
+                icon: const Icon(Icons.arrow_drop_down, color: Colors.teal),
+                style: const TextStyle(
+                  color: Colors.teal,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+                onChanged: _frontPath != null ? null : (String? newValue) {
+                  if (newValue != null) {
+                    setState(() {
+                      _selectedMuscleGroup = newValue;
+                    });
+                  }
+                },
+                items: _muscleGroups.map<DropdownMenuItem<String>>((String value) {
+                  return DropdownMenuItem<String>(
+                    value: value,
+                    child: Text(value.toUpperCase()),
+                  );
+                }).toList(),
+              ),
+            ),
             const Spacer(),
             // Phase indicator dots
             Row(

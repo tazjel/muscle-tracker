@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Muscle Tracker v2.0 — Clinical Muscle Growth Analysis Suite
+Muscle Tracker v2.3 — Clinical Muscle Growth Analysis Suite
 
 Commands:
   growth       Compare before/after images for muscle growth
