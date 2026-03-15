@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from core.auth import create_token, verify_token as verify_jwt
 from core.vision_medical import analyze_muscle_growth
 from core.volumetrics import estimate_muscle_volume, compare_volumes
+from core.volumetrics_advanced import slice_volume_estimate
 from core.segmentation import score_muscle_shape, AVAILABLE_TEMPLATES
 from core.symmetry import compare_symmetry
 from core.progress import analyze_trend, calculate_correlation
@@ -281,6 +282,10 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
             error_msg = res_f.get("error", "") or res_s.get("error", "")
             return dict(status='error', message=f'Vision analysis failed: {error_msg}')
 
+        # Calibration ratio (px to mm)
+        ratio_mm_per_px = res_f.get('ratio', 1.0)
+        pixels_per_cm = 10.0 / ratio_mm_per_px if ratio_mm_per_px > 0 else 1.0
+
         unit = "mm" if res_f.get("calibrated") else "px"
         area = res_f['metrics'].get(f'area_a_{unit}2', 0.0)
         width = res_f['metrics'].get(f'width_a_{unit}', 0.0)
@@ -288,9 +293,18 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
         area_side = res_s['metrics'].get(f'area_a_{unit}2', 0.0)
         width_side = res_s['metrics'].get(f'width_a_{unit}', 0.0)
 
+        # 3. Calculate volume
         vol_result = estimate_muscle_volume(area, area_side, width, width_side, volume_model)
         vol_cm3 = vol_result.get('volume_cm3', 0.0)
 
+        # Advanced slice-based volume
+        adv_vol = None
+        if res_f.get('calibrated') and 'raw_data' in res_f:
+            contour = res_f['raw_data'].get('contour_a')
+            if contour is not None:
+                adv_vol = slice_volume_estimate(contour, pixels_per_cm)
+
+        # 4. Shape scoring (if template specified)
         shape_score = None
         shape_grade = None
         if shape_template and shape_template in AVAILABLE_TEMPLATES:
@@ -337,6 +351,7 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
             status='success',
             scan_id=scan_id,
             volume_cm3=vol_cm3,
+            advanced_volume=adv_vol,
             area_mm2=area,
             shape_score=shape_score,
             shape_grade=shape_grade,
@@ -554,7 +569,6 @@ def classify_muscle():
     if ext not in ALLOWED_EXTENSIONS:
         return dict(status='error', message=f'Invalid file type: {ext}')
 
-    # Read image into memory for classifier
     file_bytes = np.frombuffer(image_file.file.read(), np.uint8)
     image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     if image is None:
