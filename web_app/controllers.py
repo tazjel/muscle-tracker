@@ -12,15 +12,9 @@ logger = logging.getLogger(__name__)
 # Initialize CORS
 cors = CORS()
 
-API_TOKEN = os.environ.get('MUSCLE_TRACKER_API_TOKEN', 'dev-secret-token')
-
-def require_api_token():
-    token = request.headers.get('Authorization')
-    if not token or token.replace('Bearer ', '') != API_TOKEN:
-        abort(401, "Unauthorized: Invalid or missing API token")
-
 # Add project root to path for core imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from core.auth import create_token, verify_token
 from core.vision_medical import analyze_muscle_growth
 from core.volumetrics import estimate_muscle_volume, compare_volumes
 from core.segmentation import score_muscle_shape, AVAILABLE_TEMPLATES
@@ -28,10 +22,96 @@ from core.symmetry import compare_symmetry
 from core.progress import analyze_trend, calculate_correlation
 from core.pose_analyzer import analyze_pose
 
+# Legacy static token for backward compatibility in dev mode
+_LEGACY_DEV_TOKEN = os.environ.get('MUSCLE_TRACKER_API_TOKEN', 'dev-secret-token')
+
+
+def require_auth():
+    """
+    Authenticate the request via JWT or legacy static token.
+
+    Checks the Authorization header for:
+      1. 'Bearer <jwt>' — verifies and decodes the JWT
+      2. 'Bearer <legacy-token>' — matches against MUSCLE_TRACKER_API_TOKEN (dev only)
+
+    Aborts with 401 if neither succeeds.
+    Sets request._auth_payload to the decoded JWT payload when using JWT.
+    """
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        abort(401, "Unauthorized: Missing Authorization header")
+
+    token = auth_header[7:]  # Strip 'Bearer '
+
+    # Try JWT first
+    payload = verify_token(token)
+    if payload is not None:
+        request._auth_payload = payload
+        return
+
+    # Fall back to legacy static token (dev mode)
+    if token == _LEGACY_DEV_TOKEN:
+        request._auth_payload = {'sub': 'dev', 'role': 'admin'}
+        return
+
+    abort(401, "Unauthorized: Invalid or expired token")
+
+
+# Keep old name as alias so nothing breaks
+require_api_token = require_auth
+
 # File upload constraints
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
 MAX_FILE_SIZE_MB = 15
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+
+# --- AUTH ---
+
+@action('api/auth/token', method=['POST'])
+@action.uses(db, cors)
+def auth_token():
+    """
+    Issue a JWT token. Accepts email or customer_id.
+    Validates that the customer exists and returns a token.
+    """
+    data = request.json or {}
+    email = data.get('email', '').strip()
+    customer_id = data.get('customer_id')
+
+    if email:
+        customer = db(db.customer.email == email).select().first()
+        if not customer:
+            return dict(status='error', message='Customer not found')
+        token = create_token(customer.id, role='user')
+        return dict(status='success', token=token, customer_id=customer.id)
+
+    if customer_id:
+        customer = db.customer(customer_id)
+        if not customer:
+            return dict(status='error', message='Customer not found')
+        token = create_token(customer.id, role='user')
+        return dict(status='success', token=token, customer_id=customer.id)
+
+    return dict(status='error', message='Provide email or customer_id')
+
+
+@action('api/auth/admin_token', method=['POST'])
+@action.uses(cors)
+def auth_admin_token():
+    """
+    Issue an admin JWT token. Requires the admin secret.
+    Set MUSCLE_TRACKER_ADMIN_SECRET env var in production.
+    """
+    data = request.json or {}
+    secret = data.get('admin_secret', '')
+    expected = os.environ.get('MUSCLE_TRACKER_ADMIN_SECRET', 'dev-admin-secret')
+
+    if not secret or secret != expected:
+        abort(401, "Invalid admin secret")
+
+    token = create_token('admin', role='admin')
+    return dict(status='success', token=token, role='admin')
 
 
 # --- DASHBOARD ---

@@ -1,143 +1,156 @@
-# Gemini Task Sheet — Muscle Tracker v2.1+
+# Gemini Task Sheet — Muscle Tracker v2.2+
 
 **Date**: 2026-03-15
 **From**: Claude (Implementation Lead)
 **To**: Gemini CLI
-**Context**: G12 Pose Correction Engine is now implemented and tested (19/19 tests pass). Below are the next tasks, scoped to be immediately actionable with clear acceptance criteria. Do NOT work on anything outside this list.
+**Status**: Previous task sheet COMPLETE. All 5 tasks done. This is the new task sheet.
 
 ---
 
 ## Current Project State
 
-- **Version**: v2.0 code complete, G12 (pose correction) just added
-- **Test coverage**: `tests/test_volumetrics.py` (4 tests), `tests/test_pose.py` (1 test), `tests/test_pose_correction.py` (19 tests) — 24 total
-- **No git history** — nothing is committed yet
-- **No CI/CD, no CORS on API, no deployed database**
-- **Source**: ~2,400 lines Python, ~370 lines Dart, 10 core modules
+- **Version**: v2.2
+- **Git**: 3 commits on `master`, clean working tree
+- **Test coverage**: 105 tests across 8 test files, 100% pass rate (0.31s)
+- **Auth**: JWT auth module (`core/auth.py`) + legacy dev token fallback
+- **API**: CORS enabled, `pose-check` endpoint live, JWT token endpoints added
+- **Core modules tested**: volumetrics, pose, pose_correction, segmentation, symmetry, vision_medical, progress, auth
 
-### What G12 Added (already done — do NOT redo)
-- `core/pose_analyzer.py`: `analyze_pose()` function with angle measurement, 6 muscle group rule sets, natural language correction instructions, pose scoring (0-100)
-- `muscle_tracker.py`: New `pose-check` CLI command
-- `tests/test_pose_correction.py`: 19 tests covering angle math, instruction generation, rule validation, mocked full-pipeline tests
+### What was just added (already done — do NOT redo)
+- `core/auth.py`: JWT create/verify with HS256, env-configurable secret + expiry
+- `tests/test_auth.py`: 14 tests (creation, verification, expiry, wrong secret, roundtrip)
+- `tests/test_vision_medical.py`: 18 tests (contour extraction, classification boundaries, full pipeline mocked)
+- `tests/test_progress.py`: 35 tests (regression, R², streaks, trend analysis, correlation, date parsing)
+- `web_app/controllers.py`: `require_auth()` replaces `require_api_token()` — tries JWT first, falls back to legacy static token. New endpoints: `POST /api/auth/token`, `POST /api/auth/admin_token`
+- `requirements.txt`: Added `PyJWT>=2.8.0`
+
+### Files changed
+| File | Change |
+|------|--------|
+| `core/auth.py` | NEW — JWT module |
+| `web_app/controllers.py` | JWT auth + token endpoints |
+| `requirements.txt` | Added PyJWT |
+| `tests/test_auth.py` | NEW — 14 tests |
+| `tests/test_vision_medical.py` | NEW — 18 tests |
+| `tests/test_progress.py` | NEW — 35 tests |
 
 ---
 
-## Task 1: Git Init & First Commit (P0 — do this FIRST)
-
-**Why**: Nothing is version-controlled. One bad edit destroys everything.
+## Task 1: Commit current changes (P0 — do this FIRST)
 
 **Steps**:
-1. Create a `.gitignore` with standard Python entries: `__pycache__/`, `*.pyc`, `.pytest_cache/`, `*.egg-info/`, `dist/`, `build/`, `.env`, `uploads/`, `companion_app/.dart_tool/`, `companion_app/build/`
-2. `git init` in the project root
-3. `git add` all source files (`.py`, `.dart`, `.md`, `requirements.txt`, `setup.py`)
-4. Commit with message: `"feat: muscle tracker v2.0 with G12 pose correction engine"`
+1. `git add` the new and modified files listed above
+2. Commit with message: `"feat: JWT auth, vision_medical + progress tests (105 total)"`
 
-**Acceptance**: `git log` shows one commit, `git status` is clean.
+**Acceptance**: `git log` shows 4 commits, `git status` is clean.
 
-**Do NOT**: Push to any remote. Do not create branches. Do not configure CI. Just init and commit.
+**Do NOT**: Push to any remote. Do not create branches.
 
 ---
 
-## Task 2: Test Coverage for `core/symmetry.py` (P0)
+## Task 2: Update Flutter app to use JWT auth (P0)
 
-**Why**: `symmetry.py` had a crash bug that was fixed in v2.0. It has zero tests. This module handles left/right limb comparison — getting it wrong has clinical implications.
+**Why**: The Flutter app currently uses a hardcoded `dev-secret-token`. It needs to obtain and use JWT tokens via the new `/api/auth/token` endpoint.
 
-**File to create**: `tests/test_symmetry.py`
-
-**What to test**:
-- `compare_symmetry()` with valid left/right image paths (mock `analyze_muscle_growth` to return known metrics)
-- Composite imbalance percentage calculation
-- Risk level assignment ("Normal", "Watch", "Imbalance")
-- Dominant side detection
-- Edge case: identical left/right metrics → 0% imbalance
-- Edge case: missing/invalid image paths → error dict
-
-**Constraints**:
-- Mock `analyze_muscle_growth` — do NOT require actual image files
-- Follow the same pattern as `tests/test_pose_correction.py` (mock mediapipe at module level if needed)
-- Use `unittest`, not pytest fixtures
-
----
-
-## Task 3: Test Coverage for `core/segmentation.py` (P1)
-
-**File to create**: `tests/test_segmentation.py`
-
-**What to test**:
-- `load_ideal_template()` returns a valid contour for each of the 6 templates
-- Each template contour has correct dtype (`np.int32`) and shape `(N, 1, 2)`
-- `calculate_shape_score()` returns 100 when comparing a template to itself
-- `calculate_shape_score()` returns < 100 for different templates
-- `score_muscle_shape()` with unknown template → error dict
-- `_score_to_grade()` boundary conditions: S >= 90, A >= 75, ..., F < 20
-
-**Constraints**:
-- These tests do NOT need MediaPipe or real images — the template generators create synthetic contours
-- Keep tests fast (< 1 second total)
-
----
-
-## Task 4: Add CORS Headers to Web API (P1)
-
-**Why**: The Flutter companion app cannot call the API without CORS. This blocks any mobile testing.
-
-**File to modify**: `web_app/controllers.py`
+**File to modify**: `companion_app/lib/main.dart`
 
 **What to do**:
-1. Add a py4web `@action.uses(cors)` or manually set CORS headers in a fixture/plugin
-2. If py4web doesn't have built-in CORS, add an `after_request` hook or `OPTIONS` handler that sets:
-   - `Access-Control-Allow-Origin: *` (for dev; production will restrict)
-   - `Access-Control-Allow-Methods: GET, POST, OPTIONS`
-   - `Access-Control-Allow-Headers: Authorization, Content-Type`
-3. Ensure preflight `OPTIONS` requests return 200
+1. Add a login/setup screen that takes a customer email (or customer_id)
+2. On submit, `POST` to `$serverBaseUrl/api/auth/token` with `{"email": email}` or `{"customer_id": id}`
+3. Store the returned JWT token in memory (a class variable is fine — no need for secure storage yet)
+4. Use the JWT token in the `Authorization: Bearer <token>` header for all subsequent API calls (replace the hardcoded `dev-secret-token`)
+5. If a 401 response is received, redirect back to the login screen
 
-**Do NOT**: Add authentication changes. Do not modify any endpoint logic. Do not add new endpoints. CORS headers only.
+**Constraints**:
+- Keep using the `http` package (already imported)
+- Do NOT add new package dependencies
+- Do NOT implement password fields — email-only lookup for now
+- Do NOT implement secure token storage (SharedPreferences, etc.) — just hold in memory
+- Keep the existing camera/capture flow exactly as-is
+- The login screen should be minimal: email text field + "Connect" button
 
 ---
 
-## Task 5: Add `pose-check` Endpoint to Web API (P1)
+## Task 3: Test coverage for `core/calibration.py` (P1)
 
-**Why**: The mobile app needs to call pose analysis. Currently it's CLI-only.
+**File to create**: `tests/test_calibration.py`
 
-**File to modify**: `web_app/controllers.py`
+**What to test**:
+- `get_px_to_mm_ratio()` with `method="auto"` when no markers or pose detected → returns None
+- `get_px_to_mm_ratio()` with `method="green"` on a synthetic image containing a green circle → returns a ratio
+- `_detect_green_marker()` on an image with a green circle → returns correct mm/px ratio
+- `_detect_green_marker()` on an image with no green → returns None
+- `_detect_aruco()` on an image with no ArUco markers → returns None
+- `get_px_to_mm_ratio()` with nonexistent file path → returns None
+- `get_px_to_mm_ratio()` with `method="unknown"` → returns None
 
-**Endpoint**: `POST /api/pose_check`
-
-**Request**: Multipart form with:
-- `image` (file, required)
-- `muscle_group` (string, optional, default "bicep")
-
-**Response**: Return the dict from `analyze_pose()` directly, wrapped in `{"status": "success", ...result}` or `{"status": "error", "message": ...}`.
-
-**What to import**: `from core.pose_analyzer import analyze_pose`
+**How to make synthetic green marker image**:
+```python
+img = np.zeros((500, 500, 3), dtype=np.uint8)
+cv2.circle(img, (250, 250), 50, (0, 200, 0), -1)  # BGR green circle
+```
+The marker_size_mm / detected_pixel_diameter should give a predictable ratio.
 
 **Constraints**:
-- Validate file type (same `ALLOWED_EXTENSIONS` check as `upload_scan`)
-- Validate file size (same `MAX_FILE_SIZE_BYTES` check)
-- Require API token (same `require_api_token()` pattern)
-- Read the image with `cv2.imread()` from the uploaded temp file
-- Do NOT save the image to the database — this is a stateless check
+- Mock mediapipe at module level (same pattern as other test files)
+- Do NOT use real image files
+- The ArUco test only needs to verify "no marker → None" (generating ArUco markers in tests is overkill)
+
+---
+
+## Task 4: Test coverage for `core/alignment.py` (P1)
+
+**File to create**: `tests/test_alignment.py`
+
+**What to test**:
+- `align_images()` with two identical images → returns the image, confidence > 0
+- `align_images()` with two completely different images (e.g., random noise) → returns original image, confidence = 0
+- `align_images()` with `method="unknown"` → returns original image, None matrix, 0 confidence
+- `_align_orb()` returns (None, None, 0.0) when no features are found (uniform image)
+- Verify the returned aligned image has the same shape as the reference image
+
+**Constraints**:
+- Use synthetic images (np.zeros, np.random, drawn shapes)
+- Do NOT use real photos
+- Do NOT mock OpenCV — these tests should exercise the real ORB/SIFT pipeline on synthetic data
+
+---
+
+## Task 5: Update `CLAUDE_STATE_MUSCLE_TRACKER.md` (P1)
+
+**Update the state file to reflect**:
+- Version: v2.2
+- 105 tests, 8 test files
+- JWT auth implemented
+- Auth endpoints: `/api/auth/token`, `/api/auth/admin_token`
+- File tree: add `core/auth.py`
+- Critical issues: update to reflect that auth is now done, CORS is done, tests exist
+- Keep the same format as the existing file
+
+**Do NOT**: Create new proposal documents. Do not modify ROADMAP.md. Do not create strategy files.
 
 ---
 
 ## Rules for Gemini
 
-1. **Do the tasks in order.** Task 1 must be done before anything else.
-2. **Do NOT create proposal documents, roadmaps, or strategy files.** Implementation only.
+1. **Do the tasks in order.** Task 1 (commit) must be done first.
+2. **Do NOT create proposal documents, roadmaps, or strategy files.** Implementation and tests only.
 3. **Do NOT refactor existing code** unless a task explicitly says to modify a file.
-4. **Do NOT add features not listed here.** No LLM coaching, no video processing, no delta reporting.
-5. **Do NOT create or modify README.md, ROADMAP.md, or any documentation files.**
-6. **Run tests after writing them.** If a test fails, fix it before moving on.
-7. **Keep changes minimal.** Each task should touch 1-2 files max.
-8. **If something is unclear, skip it** and note what was unclear rather than guessing.
+4. **Do NOT add features not listed here.** No video processing, no ghost overlay, no LLM coaching, no G16, no G17.
+5. **Run tests after writing them.** Full suite must pass before committing.
+6. **Keep changes minimal.** Each task should touch 1-2 files max.
+7. **If something is unclear, skip it** and note what was unclear rather than guessing.
+8. **Use this Python for running tests**: `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/ -v`
+9. **Do NOT revert, overwrite, or modify files that Claude has changed.** The following files were written by Claude and must not be touched: `core/auth.py`, `web_app/controllers.py`, `requirements.txt`, `tests/test_auth.py`, `tests/test_vision_medical.py`, `tests/test_progress.py`, `tests/test_pose.py`, `tests/test_pose_correction.py`. If you need to import from these files, import — do not rewrite them.
+10. **Do NOT modify `core/pose_analyzer.py`** unless a task explicitly says to. The G16 3D changes were reverted because they broke tests and were not on the task sheet. If you want to propose changes to existing modules, describe them in a comment — do not implement them.
 
 ---
 
 ## What Comes After These Tasks
 
 Once these 5 tasks are done, the next phase will be:
-- G13 video keyframe extraction (requires stable image pipeline first)
-- Flutter ghost overlay feature
-- API authentication hardening
+- G13 video keyframe extraction
+- Flutter ghost overlay (pose alignment assistance)
+- Report generator tests
 
 These are NOT part of this task sheet. Do not start them.
