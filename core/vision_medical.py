@@ -5,6 +5,7 @@ import logging
 from core.calibration import get_px_to_mm_ratio
 from core.alignment import align_images
 from core.pose_analyzer import get_muscle_crop
+from core.body_segmentation import segment_body
 
 logger = logging.getLogger(__name__)
 
@@ -125,30 +126,29 @@ def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
 
 def _extract_muscle_contour(img):
     """
-    Extract the primary muscle contour from an image using adaptive
-    thresholding with morphological noise reduction.
+    Extract the primary muscle contour from an image using ML segmentation
+    with thresholding fallback.
     """
     h, w = img.shape[:2]
     image_area = h * w
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # 1. Try ML-powered segmentation first
+    mask = segment_body(img)
+    
+    if mask is None:
+        # Fallback: Threshold-based segmentation
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+        mask = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV, 15, 3
+        )
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    # CLAHE for better contrast in varying lighting
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-
-    # Adaptive threshold
-    thresh = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV, 15, 3
-    )
-
-    # Morphological cleanup — remove noise, close gaps
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
-
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
 
@@ -161,14 +161,12 @@ def _extract_muscle_contour(img):
             valid_contours.append(cnt)
 
     if not valid_contours:
-        # Fallback: use the largest contour regardless
         valid_contours = [max(contours, key=cv2.contourArea)]
 
     main_contour = max(valid_contours, key=cv2.contourArea)
     area_px = cv2.contourArea(main_contour)
     x, y, w_box, h_box = cv2.boundingRect(main_contour)
 
-    # Solidity = contour area / convex hull area (measure of contour quality)
     hull = cv2.convexHull(main_contour)
     hull_area = cv2.contourArea(hull)
     solidity = area_px / hull_area if hull_area > 0 else 0.0
