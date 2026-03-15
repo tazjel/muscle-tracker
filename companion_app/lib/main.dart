@@ -30,7 +30,7 @@ class AppTheme {
     brightness: Brightness.dark,
     scaffoldBackgroundColor: darkBg,
     colorScheme: ColorScheme.fromSeed(seedColor: primaryTeal, brightness: Brightness.dark, primary: primaryTeal),
-    cardTheme: CardTheme(color: cardBg, elevation: 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+    cardTheme: CardThemeData(color: cardBg, elevation: 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
     appBarTheme: const AppBarTheme(backgroundColor: darkBg, foregroundColor: Colors.white, centerTitle: true, elevation: 0),
     filledButtonTheme: FilledButtonThemeData(style: FilledButton.styleFrom(
       backgroundColor: primaryTeal,
@@ -105,17 +105,21 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color(0xFF004D40), Colors.black])),
-        child: Padding(
-          padding: const EdgeInsets.all(32.0),
+        decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color(0xFF004D40), Color(0xFF001A14)])),
+        child: SingleChildScrollView(
+          child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: MediaQuery.of(context).size.height),
+          child: Padding(
+          padding: EdgeInsets.only(left: 32, right: 32, top: MediaQuery.of(context).padding.top + 16, bottom: 40),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              const Hero(tag: 'logo', child: Icon(Icons.fitness_center, size: 80, color: AppTheme.primaryTeal)),
-              const SizedBox(height: 16),
-              const Text('MUSCLE TRACKER', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: 4, color: Colors.white)),
-              const Text('Clinical Vision Engine v3.0', style: TextStyle(fontSize: 12, color: Colors.white54, letterSpacing: 1.5)),
-              const SizedBox(height: 48),
+              const Hero(tag: 'logo', child: Icon(Icons.fitness_center, size: 56, color: AppTheme.primaryTeal)),
+              const SizedBox(height: 12),
+              const Text('MUSCLE TRACKER', textAlign: TextAlign.center, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: 2, color: Colors.white)),
+              const Text('Clinical Vision Engine v3.0', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: Colors.white54, letterSpacing: 1.5)),
+              const SizedBox(height: 20),
               TextField(
                 controller: _emailController,
                 decoration: InputDecoration(labelText: 'Email Address', errorText: _error, prefixIcon: const Icon(Icons.email, color: AppTheme.primaryTeal)),
@@ -124,11 +128,22 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 32),
               _isLoading ? const CircularProgressIndicator(color: AppTheme.primaryTeal) : Column(children: [
                 SizedBox(width: double.infinity, child: FilledButton(onPressed: _login, child: const Text('CONNECT'))),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
+                SizedBox(width: double.infinity, child: OutlinedButton(
+                  onPressed: () {
+                    _customerId = '1'; _customerName = 'Demo User'; _jwtToken = 'demo';
+                    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const CameraLevelScreen()));
+                  },
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.white54, side: const BorderSide(color: Colors.white24)),
+                  child: const Text('DEMO MODE'),
+                )),
+                const SizedBox(height: 12),
                 TextButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())), child: const Text('CREATE CLINICAL ACCOUNT', style: TextStyle(color: AppTheme.primaryTeal, fontSize: 13))),
               ]),
             ],
           ),
+        ),
+        ),
         ),
       ),
     );
@@ -314,7 +329,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         CameraPreview(_controller!),
         if (_showGhost && _ghostImage != null) CustomPaint(painter: GhostOverlayPainter(image: _ghostImage)),
         CustomPaint(painter: LevelPainter(pitch: _pitch, roll: _roll, color: isLevel ? AppTheme.accentGreen : AppTheme.accentRed)),
-        CustomPaint(painter: BodyGuidePainter(phase: _capturePhase)),
+        CustomPaint(painter: BodyGuidePainter(phase: _capturePhase, muscleGroup: _selectedMuscleGroup)),
         _buildTopBar(),
         _buildCaptureUI(),
         if (_isUploading) _buildUploadOverlay(),
@@ -328,10 +343,16 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       const SizedBox(width: 12),
       DropdownButtonHideUnderline(child: DropdownButton<String>(value: _selectedMuscleGroup, dropdownColor: Colors.black87, icon: const Icon(Icons.arrow_drop_down, color: AppTheme.primaryTeal), style: const TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.bold, fontSize: 14), onChanged: _frontPath != null ? null : (v) => setState(() => _selectedMuscleGroup = v!), items: _muscleIcons.keys.map((m) => DropdownMenuItem(value: m, child: Row(children: [Icon(_muscleIcons[m], size: 16, color: AppTheme.primaryTeal), const SizedBox(width: 8), Text(m.toUpperCase())]))).toList())),
       const Spacer(),
-      IconButton(icon: Icon(_showGhost ? Icons.visibility : Icons.visibility_off, color: _showGhost ? AppTheme.primaryTeal : Colors.white70), onPressed: _toggleGhost),
-      IconButton(icon: const Icon(Icons.history, color: Colors.white), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: _selectedMuscleGroup)))),
-      const SizedBox(width: 8),
-      _phaseDot(0), const SizedBox(width: 4), _phaseDot(1),
+      IconButton(icon: Icon(_showGhost ? Icons.visibility : Icons.visibility_off, color: _showGhost ? AppTheme.primaryTeal : Colors.white70), padding: EdgeInsets.zero, constraints: const BoxConstraints(minWidth: 36, minHeight: 36), onPressed: _toggleGhost),
+      IconButton(icon: const Icon(Icons.history, color: Colors.white), padding: EdgeInsets.zero, constraints: const BoxConstraints(minWidth: 36, minHeight: 36), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: _selectedMuscleGroup)))),
+      // R-6: Live Measure shortcut
+      IconButton(
+        icon: const Icon(Icons.videocam, color: AppTheme.accentGreen, size: 20),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+        tooltip: 'Live Measure',
+        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LivePreviewScreen())),
+      ),
     ])));
   }
 
@@ -340,7 +361,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Widget _buildCaptureUI() {
     return Positioned(bottom: 0, left: 0, right: 0, child: Container(padding: const EdgeInsets.fromLTRB(24, 16, 24, 40), decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Colors.black87, Colors.transparent])), child: Column(mainAxisSize: MainAxisSize.min, children: [
       Container(margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [_modeBtn('PHOTO', !_isRecordingMode), _modeBtn('VIDEO', _isRecordingMode)])),
-      AnimatedSwitcher(duration: const Duration(milliseconds: 300), child: _isRecording ? Text('00:0$_recordingCountdown', key: const ValueKey('timer'), style: const TextStyle(color: AppTheme.accentRed, fontSize: 32, fontWeight: FontWeight.bold)) : Text(_phaseLabels[_capturePhase], key: ValueKey(_capturePhase), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2))),
+      AnimatedSwitcher(duration: const Duration(milliseconds: 300), child: _isRecording ? Text('00:0$_recordingCountdown', key: const ValueKey('timer'), style: const TextStyle(color: AppTheme.accentRed, fontSize: 32, fontWeight: FontWeight.bold)) : Row(mainAxisSize: MainAxisSize.min, children: [_phaseDot(0), const SizedBox(width: 6), Text(_phaseLabels[_capturePhase], key: ValueKey(_capturePhase), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2)), const SizedBox(width: 6), _phaseDot(1)])),
       const SizedBox(height: 12),
       if (_statusMessage != null) Text(_statusMessage!, style: const TextStyle(color: AppTheme.primaryTeal, fontSize: 13, fontWeight: FontWeight.w500)),
       const SizedBox(height: 24),
@@ -359,27 +380,69 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     showDialog(context: context, builder: (c) => AlertDialog(backgroundColor: AppTheme.cardBg, title: Row(children: [const Icon(Icons.account_circle, color: AppTheme.primaryTeal), const SizedBox(width: 12), Text(_customerName ?? 'Profile')]), content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('ID: $_customerId', style: const TextStyle(color: Colors.white70)), const Text('Role: Clinical Data Contributor', style: TextStyle(color: AppTheme.primaryTeal, fontSize: 11))]), actions: [TextButton(onPressed: () { _jwtToken = null; Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false); }, child: const Text('LOGOUT', style: TextStyle(color: AppTheme.accentRed))), TextButton(onPressed: () => Navigator.pop(c), child: const Text('CLOSE'))]));
   }
 
-  Widget _buildUploadOverlay() { return Container(color: Colors.blackDE, child: const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(color: AppTheme.primaryTeal), SizedBox(height: 20), Text('Vision Engine Analysis...', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)), Text('Quantifying muscle metrics', style: TextStyle(color: Colors.white54, fontSize: 12))]))); }
+  Widget _buildUploadOverlay() { return Container(color: Colors.black.withOpacity(0.87), child: const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(color: AppTheme.primaryTeal), SizedBox(height: 20), Text('Vision Engine Analysis...', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)), Text('Quantifying muscle metrics', style: TextStyle(color: Colors.white54, fontSize: 12))]))); }
 }
 
 // --- SUPPORTING UI ---
 
+// R-6: Enhanced BodyGuidePainter with colored joint indicators and guidance text
 class BodyGuidePainter extends CustomPainter {
-  final int phase; BodyGuidePainter({required this.phase});
+  final int phase;
+  final String muscleGroup;
+  BodyGuidePainter({required this.phase, this.muscleGroup = 'bicep'});
+
+  static const _guidanceText = {
+    'bicep':  'Flex arm, elbow ~90°, raise to shoulder',
+    'tricep': 'Extend arm back, elbow straight',
+    'quad':   'Stand straight, legs together',
+    'calf':   'Stand straight, heels on ground',
+    'delt':   'Arms at sides, slight abduction',
+    'lat':    'Arms wide, lat spread pose',
+  };
+
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.white.withOpacity(0.1)..style = PaintingStyle.stroke..strokeWidth = 1.0;
+    final outline = Paint()..color = Colors.white.withOpacity(0.1)..style = PaintingStyle.stroke..strokeWidth = 1.0;
+    final jointPrimary   = Paint()..color = AppTheme.primaryTeal.withOpacity(0.7)..style = PaintingStyle.fill;
+    final jointSecondary = Paint()..color = AppTheme.accentGreen.withOpacity(0.6)..style = PaintingStyle.fill;
     final cx = size.width / 2, cy = size.height / 2;
+
     if (phase == 0) {
-      canvas.drawPath(Path()..moveTo(cx - 50, cy - 100)..lineTo(cx - 70, cy - 60)..lineTo(cx - 40, cy + 100)..lineTo(cx + 40, cy + 100)..lineTo(cx + 70, cy - 60)..lineTo(cx + 50, cy - 100)..close(), paint);
-      canvas.drawCircle(Offset(cx, cy - 130), 25, paint);
+      // Body outline — front
+      canvas.drawPath(Path()..moveTo(cx - 50, cy - 100)..lineTo(cx - 70, cy - 60)..lineTo(cx - 40, cy + 100)..lineTo(cx + 40, cy + 100)..lineTo(cx + 70, cy - 60)..lineTo(cx + 50, cy - 100)..close(), outline);
+      canvas.drawCircle(Offset(cx, cy - 130), 25, outline);
+      // Joint dots: shoulders (primary), elbows (secondary based on muscle), hips (secondary)
+      canvas.drawCircle(Offset(cx - 52, cy - 62), 6, jointPrimary);   // L shoulder
+      canvas.drawCircle(Offset(cx + 52, cy - 62), 6, jointPrimary);   // R shoulder
+      canvas.drawCircle(Offset(cx - 68, cy - 10), 5, jointSecondary); // L elbow
+      canvas.drawCircle(Offset(cx + 68, cy - 10), 5, jointSecondary); // R elbow
+      canvas.drawCircle(Offset(cx - 38, cy + 2),  5, jointSecondary); // L hip
+      canvas.drawCircle(Offset(cx + 38, cy + 2),  5, jointSecondary); // R hip
+      canvas.drawCircle(Offset(cx - 38, cy + 56), 5, jointSecondary); // L knee
+      canvas.drawCircle(Offset(cx + 38, cy + 56), 5, jointSecondary); // R knee
     } else {
-      canvas.drawPath(Path()..moveTo(cx - 15, cy - 100)..lineTo(cx - 25, cy - 60)..lineTo(cx - 20, cy + 100)..lineTo(cx + 20, cy + 100)..lineTo(cx + 35, cy - 60)..lineTo(cx + 15, cy - 100)..close(), paint);
-      canvas.drawCircle(Offset(cx + 5, cy - 130), 24, paint);
+      // Body outline — side
+      canvas.drawPath(Path()..moveTo(cx - 15, cy - 100)..lineTo(cx - 25, cy - 60)..lineTo(cx - 20, cy + 100)..lineTo(cx + 20, cy + 100)..lineTo(cx + 35, cy - 60)..lineTo(cx + 15, cy - 100)..close(), outline);
+      canvas.drawCircle(Offset(cx + 5, cy - 130), 24, outline);
+      canvas.drawCircle(Offset(cx + 20, cy - 62), 6, jointPrimary);   // shoulder (side)
+      canvas.drawCircle(Offset(cx + 32, cy - 8),  5, jointSecondary); // elbow (side)
+      canvas.drawCircle(Offset(cx + 10, cy + 2),  5, jointSecondary); // hip (side)
+      canvas.drawCircle(Offset(cx + 12, cy + 56), 5, jointSecondary); // knee (side)
+    }
+
+    // Guidance text strip at top-left
+    final guidance = _guidanceText[muscleGroup] ?? '';
+    if (guidance.isNotEmpty) {
+      final tp = TextPainter(
+        text: TextSpan(text: guidance, style: const TextStyle(color: Color(0xFFB2EBF2), fontSize: 11, fontWeight: FontWeight.w500)),
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: size.width - 32);
+      tp.paint(canvas, Offset(16, size.height * 0.62));
     }
   }
+
   @override
-  bool shouldRepaint(covariant BodyGuidePainter old) => old.phase != phase;
+  bool shouldRepaint(covariant BodyGuidePainter old) => old.phase != phase || old.muscleGroup != muscleGroup;
 }
 
 class LevelPainter extends CustomPainter {
@@ -434,41 +497,199 @@ class ReviewScreen extends StatelessWidget {
   }
 }
 
-class ResultsScreen extends StatelessWidget {
-  final Map<String, dynamic> result; final String muscleGroup; const ResultsScreen({super.key, required this.result, required this.muscleGroup});
+class ResultsScreen extends StatefulWidget {
+  final Map<String, dynamic> result;
+  final String muscleGroup;
+  const ResultsScreen({super.key, required this.result, required this.muscleGroup});
+  @override
+  State<ResultsScreen> createState() => _ResultsScreenState();
+}
+
+class _ResultsScreenState extends State<ResultsScreen> {
+  bool _downloadingReport = false;
+
+  Future<void> _downloadSessionReport(int scanId) async {
+    setState(() => _downloadingReport = true);
+    try {
+      final res = await http.post(
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/session_report'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${_jwtToken ?? ''}'},
+        body: jsonEncode({'scan_id': scanId}),
+      ).timeout(const Duration(seconds: 30));
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final dir  = await getTemporaryDirectory();
+        final file = File('${dir.path}/session_report_$scanId.pdf');
+        await file.writeAsBytes(res.bodyBytes);
+        await Share.shareXFiles([XFile(file.path)], text: 'Muscle Tracker Session Report');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Report generation failed')));
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    } finally {
+      if (mounted) setState(() => _downloadingReport = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final vol = result['volume_cm3']?.toDouble() ?? 0.0, growth = result['growth_pct']?.toDouble(), delta = result['volume_delta_cm3']?.toDouble(), score = result['shape_score']?.toDouble();
-    final grade = result['shape_grade'], calibrated = result['calibrated'] ?? false, scanId = result['scan_id'];
+    final r          = widget.result;
+    final muscleGroup = widget.muscleGroup;
+    final vol        = r['volume_cm3']?.toDouble()        ?? 0.0;
+    final growth     = r['growth_pct']?.toDouble();
+    final delta      = r['volume_delta_cm3']?.toDouble();
+    final score      = r['shape_score']?.toDouble();
+    final grade      = r['shape_grade'];
+    final calibrated = r['calibrated']  ?? false;
+    final scanId     = r['scan_id'];
+    final circCm     = r['circumference_cm']?.toDouble();
+    final defScore   = r['definition_score']?.toDouble();
+    final defGrade   = r['definition_grade'] as String?;
+    final annUrl     = r['annotated_img_url'] as String?;
+
     return Scaffold(
       appBar: AppBar(title: const Text('Scan Analysis')),
-      body: SingleChildScrollView(padding: const EdgeInsets.all(24), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Card(child: Padding(padding: const EdgeInsets.all(32), child: Column(children: [
-          Text(muscleGroup.toUpperCase(), style: const TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.w900, letterSpacing: 3)),
-          const SizedBox(height: 16),
-          Text('${vol.toStringAsFixed(1)} cm³', style: const TextStyle(fontSize: 56, fontWeight: FontWeight.bold, color: Colors.white)),
-          const Text('QUANTIFIED VOLUME', style: TextStyle(color: Colors.white38, letterSpacing: 1.5)),
-          const SizedBox(height: 20),
-          Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6), decoration: BoxDecoration(color: calibrated ? Colors.green.withOpacity(0.1) : Colors.orange.withOpacity(0.1), borderRadius: BorderRadius.circular(20), border: Border.all(color: calibrated ? AppTheme.accentGreen : Colors.orange, width: 0.5)), child: Text(calibrated ? 'OPTICAL CALIBRATION ACTIVE' : 'ESTIMATED SCALE', style: TextStyle(color: calibrated ? AppTheme.accentGreen : Colors.orange, fontSize: 10, fontWeight: FontWeight.bold))),
-        ]))),
-        const SizedBox(height: 16),
-        if (growth != null) Card(child: Padding(padding: const EdgeInsets.all(20), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          const Text('Growth Delta', style: TextStyle(fontSize: 16)),
-          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Text('${growth > 0 ? "+" : ""}${growth.toStringAsFixed(1)}%', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: growth >= 0 ? AppTheme.accentGreen : AppTheme.accentRed)),
-            Text('${delta! > 0 ? "+" : ""}${delta.toStringAsFixed(1)} cm³', style: const TextStyle(color: Colors.white38, fontSize: 12)),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+
+          // ── Volume hero card ──────────────────────────────────────────
+          Card(child: Padding(padding: const EdgeInsets.all(32), child: Column(children: [
+            Text(muscleGroup.toUpperCase(),
+                style: const TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.w900, letterSpacing: 3)),
+            const SizedBox(height: 16),
+            Text('${vol.toStringAsFixed(1)} cm³',
+                style: const TextStyle(fontSize: 52, fontWeight: FontWeight.bold, color: Colors.white)),
+            const Text('QUANTIFIED VOLUME', style: TextStyle(color: Colors.white38, letterSpacing: 1.5)),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              decoration: BoxDecoration(
+                color: calibrated ? Colors.green.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: calibrated ? AppTheme.accentGreen : Colors.orange, width: 0.5),
+              ),
+              child: Text(
+                calibrated ? 'OPTICAL CALIBRATION ACTIVE' : 'ESTIMATED SCALE',
+                style: TextStyle(color: calibrated ? AppTheme.accentGreen : Colors.orange, fontSize: 10, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ]))),
+          const SizedBox(height: 12),
+
+          // ── Annotated image preview ───────────────────────────────────
+          if (annUrl != null)
+            Card(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Padding(padding: EdgeInsets.fromLTRB(16, 14, 0, 8),
+                  child: Text('ANNOTATED IMAGE', style: TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.bold, fontSize: 11, letterSpacing: 1.2))),
+              ClipRRect(
+                borderRadius: const BorderRadius.only(bottomLeft: Radius.circular(12), bottomRight: Radius.circular(12)),
+                child: Image.network(
+                  '${AppConfig.serverBaseUrl}$annUrl',
+                  headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'},
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                ),
+              ),
+            ])),
+          if (annUrl != null) const SizedBox(height: 12),
+
+          // ── Metrics row (growth + circumference + definition) ─────────
+          Row(children: [
+            if (growth != null) Expanded(child: Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Growth', style: TextStyle(color: Colors.white54, fontSize: 11)),
+              const SizedBox(height: 6),
+              Text('${growth > 0 ? "+" : ""}${growth.toStringAsFixed(1)}%',
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold,
+                      color: growth >= 0 ? AppTheme.accentGreen : AppTheme.accentRed)),
+              if (delta != null) Text('${delta > 0 ? "+" : ""}${delta.toStringAsFixed(1)} cm³',
+                  style: const TextStyle(color: Colors.white38, fontSize: 11)),
+            ])))),
+            if (circCm != null) ...[
+              const SizedBox(width: 10),
+              Expanded(child: Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Circumference', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                const SizedBox(height: 6),
+                Text('${circCm.toStringAsFixed(1)} cm',
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                Text('${(circCm / 2.54).toStringAsFixed(1)} in',
+                    style: const TextStyle(color: Colors.white38, fontSize: 11)),
+              ])))),
+            ],
           ]),
-        ]))),
-        if (score != null) Card(child: Padding(padding: const EdgeInsets.all(20), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          const Text('Morphology Score', style: TextStyle(fontSize: 16)),
-          Row(children: [Text('${score.toStringAsFixed(0)}/100', style: const TextStyle(fontSize: 20, color: Colors.white70)), const SizedBox(width: 12), Container(padding: const EdgeInsets.all(10), decoration: const BoxDecoration(shape: BoxShape.circle, color: AppTheme.primaryTeal), child: Text(grade ?? '-', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black)))]),
-        ]))),
-        const SizedBox(height: 48),
-        if (scanId != null) FilledButton.icon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ReportViewerScreen(scanId: scanId))), icon: const Icon(Icons.picture_as_pdf), label: const Text('GENERATE CLINICAL REPORT'), style: FilledButton.styleFrom(backgroundColor: Colors.white10, foregroundColor: Colors.white)),
-        const SizedBox(height: 12),
-        FilledButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.add_a_photo), label: const Text('NEW SCAN')),
-        TextButton(onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: muscleGroup))), child: const Text('VIEW FULL HISTORY', style: TextStyle(color: AppTheme.primaryTeal))),
-      ])),
+          const SizedBox(height: 10),
+
+          // ── Shape + Definition ────────────────────────────────────────
+          Row(children: [
+            if (score != null) Expanded(child: Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Shape', style: TextStyle(color: Colors.white54, fontSize: 11)),
+              const SizedBox(height: 6),
+              Row(children: [
+                Text('${score.toStringAsFixed(0)}/100',
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white70)),
+                const SizedBox(width: 10),
+                Container(padding: const EdgeInsets.all(8), decoration: const BoxDecoration(shape: BoxShape.circle, color: AppTheme.primaryTeal),
+                    child: Text(grade ?? '-', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black, fontSize: 13))),
+              ]),
+            ])))),
+            if (defScore != null) ...[
+              const SizedBox(width: 10),
+              Expanded(child: Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Definition', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                const SizedBox(height: 6),
+                Row(children: [
+                  Text('${defScore.toStringAsFixed(0)}/100',
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white70)),
+                  if (defGrade != null) ...[
+                    const SizedBox(width: 10),
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(color: Colors.orange.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
+                        child: Text(defGrade, style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 12))),
+                  ],
+                ]),
+              ])))),
+            ],
+          ]),
+          const SizedBox(height: 36),
+
+          // ── Action buttons ────────────────────────────────────────────
+          if (scanId != null) ...[
+            _downloadingReport
+                ? const Center(child: Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator(color: AppTheme.primaryTeal)))
+                : FilledButton.icon(
+                    onPressed: () => _downloadSessionReport(scanId),
+                    icon: const Icon(Icons.picture_as_pdf),
+                    label: const Text('DOWNLOAD SESSION REPORT'),
+                    style: FilledButton.styleFrom(backgroundColor: const Color(0xFF1A3A4A), foregroundColor: Colors.white),
+                  ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ReportViewerScreen(scanId: scanId))),
+              icon: const Icon(Icons.summarize),
+              label: const Text('VIEW CLINICAL REPORT'),
+              style: FilledButton.styleFrom(backgroundColor: Colors.white10, foregroundColor: Colors.white),
+            ),
+            const SizedBox(height: 10),
+          ],
+          FilledButton.icon(
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LivePreviewScreen())),
+            icon: const Icon(Icons.videocam),
+            label: const Text('LIVE MEASURE'),
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF0D3B2A), foregroundColor: AppTheme.accentGreen),
+          ),
+          const SizedBox(height: 10),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.add_a_photo),
+            label: const Text('NEW SCAN'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: muscleGroup))),
+            child: const Text('VIEW FULL HISTORY', style: TextStyle(color: AppTheme.primaryTeal)),
+          ),
+        ]),
+      ),
     );
   }
 }
@@ -722,4 +943,254 @@ class ReportViewerScreen extends StatelessWidget {
       }),
     );
   }
+}
+
+// --- R-5: LIVE PREVIEW SCREEN ---
+
+class LivePreviewScreen extends StatefulWidget {
+  const LivePreviewScreen({super.key});
+  @override
+  State<LivePreviewScreen> createState() => _LivePreviewScreenState();
+}
+
+class _LivePreviewScreenState extends State<LivePreviewScreen> {
+  CameraController? _controller;
+  Timer? _analysisTimer;
+  bool _analyzing = false;
+  bool _locked = false;
+  Map<String, dynamic>? _lastResult;
+  List<List<double>>? _contourPoints;
+  String _selectedMuscleGroup = 'bicep';
+
+  Uint8List? _lockedFrameBytes;
+  List<List<double>>? _lockedContour;
+  Map<String, dynamic>? _lockedMetrics;
+
+  @override
+  void initState() { super.initState(); _initCamera(); }
+
+  Future<void> _initCamera() async {
+    if (_cameras.isEmpty) return;
+    final cam = _cameras.firstWhere(
+      (c) => c.lensDirection == CameraLensDirection.back,
+      orElse: () => _cameras.first,
+    );
+    _controller = CameraController(cam, ResolutionPreset.medium, enableAudio: false);
+    try {
+      await _controller!.initialize();
+      if (mounted) { setState(() {}); _startAnalysis(); }
+    } catch (_) {}
+  }
+
+  void _startAnalysis() {
+    _analysisTimer?.cancel();
+    _analysisTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _analyzeFrame());
+  }
+
+  Future<void> _analyzeFrame() async {
+    if (_analyzing || _locked || _controller == null || !_controller!.value.isInitialized) return;
+    _analyzing = true;
+    try {
+      final XFile img = await _controller!.takePicture();
+      final bytes = await img.readAsBytes();
+      final b64 = base64Encode(bytes);
+      final res = await http.post(
+        Uri.parse('${AppConfig.serverBaseUrl}/api/live_analyze'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${_jwtToken ?? ''}'},
+        body: jsonEncode({'image_b64': b64, 'muscle_group': _selectedMuscleGroup}),
+      ).timeout(const Duration(seconds: 3));
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final rawPts = data['contour_points'] as List<dynamic>?;
+        setState(() {
+          _lastResult = data;
+          _contourPoints = rawPts?.map<List<double>>((p) => [
+            (p[0] as num).toDouble(), (p[1] as num).toDouble(),
+          ]).toList();
+        });
+      }
+    } catch (_) {
+      // timeout / network — skip frame silently
+    } finally {
+      _analyzing = false;
+    }
+  }
+
+  Future<void> _lockFrame() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    try {
+      final XFile img = await _controller!.takePicture();
+      final bytes = await img.readAsBytes();
+      setState(() {
+        _locked = true;
+        _lockedFrameBytes = bytes;
+        _lockedContour = _contourPoints;
+        _lockedMetrics = _lastResult;
+      });
+    } catch (_) {}
+  }
+
+  void _unlock() {
+    setState(() { _locked = false; _lockedFrameBytes = null; _lockedContour = null; _lockedMetrics = null; });
+    _startAnalysis();
+  }
+
+  Future<void> _saveLockedFrame() async {
+    if (_lockedFrameBytes == null) return;
+    try {
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/live_${DateTime.now().millisecondsSinceEpoch}.jpg');
+      await file.writeAsBytes(_lockedFrameBytes!);
+      await Share.shareXFiles([XFile(file.path)], text: 'Muscle Tracker Live Measure');
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Share failed: $e')));
+    }
+  }
+
+  @override
+  void dispose() { _analysisTimer?.cancel(); _controller?.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(fit: StackFit.expand, children: [
+        // Camera preview or locked frame
+        if (_locked && _lockedFrameBytes != null)
+          Image.memory(_lockedFrameBytes!, fit: BoxFit.cover)
+        else if (_controller != null && _controller!.value.isInitialized)
+          CameraPreview(_controller!)
+        else
+          const Center(child: CircularProgressIndicator(color: AppTheme.primaryTeal)),
+
+        // Contour overlay (live)
+        if (!_locked && _contourPoints != null && _contourPoints!.isNotEmpty)
+          CustomPaint(painter: ContourOverlayPainter(points: _contourPoints!)),
+        // Contour overlay (locked — green)
+        if (_locked && _lockedContour != null && _lockedContour!.isNotEmpty)
+          CustomPaint(painter: ContourOverlayPainter(points: _lockedContour!, color: AppTheme.accentGreen)),
+
+        // Top bar
+        Positioned(
+          top: 0, left: 0, right: 0,
+          child: Container(
+            padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top + 8, left: 4, right: 16, bottom: 12),
+            decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black87, Colors.transparent])),
+            child: Row(children: [
+              IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(context)),
+              const Text('LIVE MEASURE', style: TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 13)),
+              const Spacer(),
+              // Scan pulse indicator
+              Container(width: 8, height: 8, margin: const EdgeInsets.only(right: 8),
+                decoration: BoxDecoration(shape: BoxShape.circle, color: _analyzing ? AppTheme.primaryTeal : Colors.white24)),
+              DropdownButtonHideUnderline(child: DropdownButton<String>(
+                value: _selectedMuscleGroup,
+                dropdownColor: Colors.black87,
+                icon: const Icon(Icons.arrow_drop_down, color: AppTheme.primaryTeal),
+                style: const TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.bold, fontSize: 13),
+                onChanged: _locked ? null : (v) => setState(() => _selectedMuscleGroup = v!),
+                items: ['bicep', 'tricep', 'quad', 'calf', 'delt', 'lat'].map((m) =>
+                  DropdownMenuItem(value: m, child: Text(m.toUpperCase())),
+                ).toList(),
+              )),
+            ]),
+          ),
+        ),
+
+        // Metric badges
+        if (!_locked && _lastResult != null) _buildMetricBadges(_lastResult!),
+        if (_locked && _lockedMetrics != null) _buildMetricBadges(_lockedMetrics!),
+
+        // Bottom controls
+        Positioned(
+          bottom: 0, left: 0, right: 0,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 40),
+            decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Colors.black87, Colors.transparent])),
+            child: _locked ? _buildLockedControls() : _buildLiveControls(),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildMetricBadges(Map<String, dynamic> data) {
+    final circ = data['circumference_cm']?.toDouble();
+    final width = data['width_mm']?.toDouble();
+    final area  = data['area_cm2']?.toDouble();
+    return Positioned(
+      left: 16, bottom: 120,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (circ != null)  _badge('⊙ ${circ.toStringAsFixed(1)} cm', AppTheme.primaryTeal),
+        if (width != null) _badge('↔ ${width.toStringAsFixed(1)} mm', Colors.white70),
+        if (area != null)  _badge('□ ${area.toStringAsFixed(1)} cm²', Colors.white54),
+      ]),
+    );
+  }
+
+  Widget _badge(String text, Color color) => Container(
+    margin: const EdgeInsets.only(bottom: 6),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    decoration: BoxDecoration(
+      color: Colors.black54,
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: color.withOpacity(0.5)),
+    ),
+    child: Text(text, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13)),
+  );
+
+  Widget _buildLiveControls() => Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+    GestureDetector(
+      onTap: _lockFrame,
+      child: Container(
+        width: 72, height: 72,
+        decoration: BoxDecoration(shape: BoxShape.circle, color: AppTheme.primaryTeal, border: Border.all(color: Colors.white, width: 3)),
+        child: const Icon(Icons.lock, color: Colors.black, size: 32),
+      ),
+    ),
+    const SizedBox(width: 16),
+    const Text('LOCK & SAVE', style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+  ]);
+
+  Widget _buildLockedControls() => Row(children: [
+    Expanded(child: OutlinedButton.icon(
+      onPressed: _unlock,
+      icon: const Icon(Icons.refresh),
+      label: const Text('CONTINUE'),
+      style: OutlinedButton.styleFrom(foregroundColor: Colors.white70, side: const BorderSide(color: Colors.white24)),
+    )),
+    const SizedBox(width: 12),
+    Expanded(child: FilledButton.icon(
+      onPressed: _saveLockedFrame,
+      icon: const Icon(Icons.share),
+      label: const Text('SHARE'),
+    )),
+  ]);
+}
+
+// --- R-5: CONTOUR OVERLAY PAINTER ---
+
+class ContourOverlayPainter extends CustomPainter {
+  final List<List<double>> points;
+  final Color color;
+  const ContourOverlayPainter({required this.points, this.color = const Color(0xFF00E5FF)});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.isEmpty) return;
+    final stroke = Paint()..color = color.withOpacity(0.85)..style = PaintingStyle.stroke..strokeWidth = 2.0;
+    final fill   = Paint()..color = color.withOpacity(0.07)..style  = PaintingStyle.fill;
+    final path = Path()..moveTo(points[0][0], points[0][1]);
+    for (int i = 1; i < points.length; i++) { path.lineTo(points[i][0], points[i][1]); }
+    path.close();
+    canvas.drawPath(path, fill);
+    canvas.drawPath(path, stroke);
+    // Corner dots
+    final dot = Paint()..color = color..style = PaintingStyle.fill;
+    for (final p in points) { canvas.drawCircle(Offset(p[0], p[1]), 3.0, dot); }
+  }
+
+  @override
+  bool shouldRepaint(covariant ContourOverlayPainter old) => old.points != points || old.color != color;
 }
