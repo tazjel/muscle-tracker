@@ -1,11 +1,16 @@
-from py4web import action, request, abort, URL
+from py4web import action, request, response, abort, URL
+from py4web.utils.cors import CORS
 from .models import db, MUSCLE_GROUPS, VOLUME_MODELS
 import os
 import sys
 import logging
 import json
+import cv2
 
 logger = logging.getLogger(__name__)
+
+# Initialize CORS
+cors = CORS()
 
 API_TOKEN = os.environ.get('MUSCLE_TRACKER_API_TOKEN', 'dev-secret-token')
 
@@ -21,6 +26,7 @@ from core.volumetrics import estimate_muscle_volume, compare_volumes
 from core.segmentation import score_muscle_shape, AVAILABLE_TEMPLATES
 from core.symmetry import compare_symmetry
 from core.progress import analyze_trend, calculate_correlation
+from core.pose_analyzer import analyze_pose
 
 # File upload constraints
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
@@ -41,7 +47,7 @@ def index():
 # --- CUSTOMER MANAGEMENT ---
 
 @action('api/customers', method=['GET'])
-@action.uses(db)
+@action.uses(db, cors)
 def list_customers():
     require_api_token()
     customers = db(db.customer.is_active == True).select().as_list()
@@ -49,7 +55,7 @@ def list_customers():
 
 
 @action('api/customers', method=['POST'])
-@action.uses(db)
+@action.uses(db, cors)
 def create_customer():
     require_api_token()
     name = request.json.get('name', '').strip()
@@ -78,7 +84,7 @@ def create_customer():
 # --- SCAN UPLOAD & PROCESSING ---
 
 @action('api/upload_scan/<customer_id:int>', method=['POST'])
-@action.uses(db)
+@action.uses(db, cors)
 def upload_scan(customer_id):
     require_api_token()
     # Validate customer exists
@@ -216,7 +222,7 @@ def upload_scan(customer_id):
 # --- REPORTS ---
 
 @action('api/customer/<customer_id:int>/scans', method=['GET'])
-@action.uses(db)
+@action.uses(db, cors)
 def customer_scans(customer_id):
     require_api_token()
     customer = db.customer(customer_id)
@@ -239,7 +245,7 @@ def customer_scans(customer_id):
 
 
 @action('api/customer/<customer_id:int>/progress', method=['GET'])
-@action.uses(db)
+@action.uses(db, cors)
 def customer_progress(customer_id):
     require_api_token()
     customer = db.customer(customer_id)
@@ -264,7 +270,7 @@ def customer_progress(customer_id):
 
 
 @action('api/customer/<customer_id:int>/symmetry', method=['POST'])
-@action.uses(db)
+@action.uses(db, cors)
 def customer_symmetry(customer_id):
     require_api_token()
     customer = db.customer(customer_id)
@@ -316,10 +322,55 @@ def customer_symmetry(customer_id):
         return dict(status='error', message='Symmetry analysis failed')
 
 
+# --- POSE ANALYSIS ---
+
+@action('api/pose_check', method=['POST'])
+@action.uses(db, cors)
+def pose_check():
+    require_api_token()
+    
+    image_file = request.files.get('image')
+    if not image_file:
+        return dict(status='error', message='Image file is required')
+
+    ext = os.path.splitext(image_file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return dict(status='error', message=f'Invalid file type: {ext}')
+
+    # Validate file size
+    image_file.file.seek(0, 2)
+    size = image_file.file.tell()
+    image_file.file.seek(0)
+    if size > MAX_FILE_SIZE_BYTES:
+        return dict(status='error', message=f'File too large (max {MAX_FILE_SIZE_MB}MB)')
+
+    muscle_group = request.forms.get('muscle_group', 'bicep')
+
+    # Save temp file for CV2 to read
+    temp_filename = db.muscle_scan.img_front.store(image_file.file, image_file.filename)
+    temp_path = os.path.join('uploads', temp_filename)
+    
+    try:
+        img = cv2.imread(temp_path)
+        if img is None:
+            return dict(status='error', message='Failed to decode image')
+        
+        result = analyze_pose(img, muscle_group)
+        
+        # Cleanup temp file (optional, but keep for now as per upload logic)
+        # os.remove(temp_path)
+        
+        return dict(status='success', **result)
+
+    except Exception as e:
+        logger.exception("Pose check failed")
+        return dict(status='error', message=str(e))
+
+
 # --- HEALTH LOGGING ---
 
 @action('api/customer/<customer_id:int>/health_log', method=['POST'])
-@action.uses(db)
+@action.uses(db, cors)
 def add_health_log(customer_id):
     require_api_token()
     customer = db.customer(customer_id)
@@ -345,7 +396,7 @@ def add_health_log(customer_id):
 
 
 @action('api/customer/<customer_id:int>/health_logs', method=['GET'])
-@action.uses(db)
+@action.uses(db, cors)
 def get_health_logs(customer_id):
     require_api_token()
     customer = db.customer(customer_id)
@@ -360,15 +411,24 @@ def get_health_logs(customer_id):
 # --- REFERENCE DATA ---
 
 @action('api/muscle_groups', method=['GET'])
+@action.uses(cors)
 def get_muscle_groups():
     return dict(muscle_groups=MUSCLE_GROUPS)
 
 
 @action('api/shape_templates', method=['GET'])
+@action.uses(cors)
 def get_shape_templates():
     return dict(templates=AVAILABLE_TEMPLATES)
 
 
 @action('api/volume_models', method=['GET'])
+@action.uses(cors)
 def get_volume_models():
     return dict(models=VOLUME_MODELS)
+
+
+@action('api/<path:path>', method=['OPTIONS'])
+@action.uses(cors)
+def api_options(path):
+    return ""
