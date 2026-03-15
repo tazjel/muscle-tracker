@@ -12,6 +12,8 @@ late List<CameraDescription> _cameras;
 // Server configuration — change for production
 const String serverBaseUrl = 'http://10.0.2.2:8000'; // Android emulator → host
 String? _jwtToken;
+String? _customerId;
+String? _customerName;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -72,6 +74,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (response.statusCode == 200 && data['status'] == 'success') {
         _jwtToken = data['token'];
+        _customerId = data['customer_id']?.toString() ?? '1';
+        _customerName = data['name'] ?? 'User';
         if (!mounted) return;
         Navigator.pushReplacement(
           context,
@@ -124,13 +128,25 @@ class _LoginScreenState extends State<LoginScreen> {
                 ? const CircularProgressIndicator(color: Colors.teal)
                 : SizedBox(
                     width: double.infinity,
-                    child: FilledButton(
-                      onPressed: _login,
-                      style: FilledButton.styleFrom(
-                        backgroundColor: Colors.teal,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                      ),
-                      child: const Text('CONNECT', style: TextStyle(letterSpacing: 1.5)),
+                    child: Column(
+                      children: [
+                        FilledButton(
+                          onPressed: _login,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.teal,
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            minimumSize: const Size(double.infinity, 50),
+                          ),
+                          child: const Text('CONNECT', style: TextStyle(letterSpacing: 1.5)),
+                        ),
+                        const SizedBox(height: 16),
+                        TextButton(
+                          onPressed: () {
+                            Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen()));
+                          },
+                          child: const Text('CREATE ACCOUNT', style: TextStyle(color: Colors.teal)),
+                        ),
+                      ],
                     ),
                   ),
           ],
@@ -359,7 +375,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
     try {
       // NOTE: Uploading to customer ID 1 for now (to match existing logic)
-      final uri = Uri.parse('$serverBaseUrl/api/upload_scan/1');
+      final uri = Uri.parse('$serverBaseUrl/api/upload_scan/');
       var request = http.MultipartRequest('POST', uri);
       
       // Add authentication token from memory
@@ -484,6 +500,47 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     );
   }
 
+  void _showProfileDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.grey.shade900,
+        title: Row(
+          children: [
+            const Icon(Icons.account_circle, color: Colors.teal),
+            const SizedBox(width: 8),
+            Text(_customerName ?? 'Profile', style: const TextStyle(color: Colors.white)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Customer ID: ', style: const TextStyle(color: Colors.white70)),
+            const SizedBox(height: 8),
+            const Text('Role: Clinical User', style: TextStyle(color: Colors.teal, fontSize: 12)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _jwtToken = null;
+              _customerId = null;
+              _customerName = null;
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginScreen()),
+                (route) => false,
+              );
+            },
+            child: const Text('LOGOUT', style: TextStyle(color: Colors.redAccent)),
+          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CLOSE')),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTopBar() {
     return Positioned(
       top: 0,
@@ -505,7 +562,14 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         ),
         child: Row(
           children: [
-            const Icon(Icons.fitness_center, color: Colors.teal, size: 20),
+            GestureDetector(
+              onTap: () => _showProfileDialog(context),
+              child: Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.teal, width: 1.5)),
+                child: const Icon(Icons.person, color: Colors.teal, size: 20),
+              ),
+            ),
             const SizedBox(width: 8),
             // Muscle Group Selector
             DropdownButtonHideUnderline(
@@ -1077,7 +1141,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     });
 
     try {
-      String url = '$serverBaseUrl/api/customer/1/scans';
+      String url = '$serverBaseUrl/api/customer//scans';
       if (widget.muscleGroup != null) {
         url += '?muscle_group=${widget.muscleGroup}';
       }
@@ -1222,7 +1286,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
     });
 
     try {
-      String url = '$serverBaseUrl/api/customer/1/progress';
+      String url = '$serverBaseUrl/api/customer//progress';
       if (widget.muscleGroup != null) {
         url += '?muscle_group=${widget.muscleGroup}';
       }
@@ -1373,7 +1437,7 @@ class _HealthLogScreenState extends State<HealthLogScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse('/api/customer/1/health_log'),
+        Uri.parse('/api/customer//health_log'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ',
@@ -1544,7 +1608,7 @@ class _HealthLogListScreenState extends State<HealthLogListScreen> {
 
     try {
       final response = await http.get(
-        Uri.parse('/api/customer/1/health_logs'),
+        Uri.parse('/api/customer//health_logs'),
         headers: {'Authorization': 'Bearer '},
       );
 
@@ -1654,6 +1718,152 @@ class _HealthLogListScreenState extends State<HealthLogListScreen> {
         Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         Text(unit, style: const TextStyle(color: Colors.white54, fontSize: 10)),
       ],
+    );
+  }
+}
+
+// --- REGISTER SCREEN ---
+class RegisterScreen extends StatefulWidget {
+  const RegisterScreen({super.key});
+
+  @override
+  State<RegisterScreen> createState() => _RegisterScreenState();
+}
+
+class _RegisterScreenState extends State<RegisterScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _heightController = TextEditingController();
+  final _weightController = TextEditingController();
+  String _gender = 'Male';
+  bool _isLoading = false;
+
+  Future<void> _register() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final response = await http.post(
+        Uri.parse('/api/customers'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'name': _nameController.text.trim(),
+          'email': _emailController.text.trim(),
+          'height_cm': double.tryParse(_heightController.text) ?? 0.0,
+          'weight_kg': double.tryParse(_weightController.text) ?? 0.0,
+          'gender': _gender,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        // Auto-login after registration
+        final loginResponse = await http.post(
+          Uri.parse('/api/auth/token'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'email': _emailController.text.trim()}),
+        );
+        final loginData = jsonDecode(loginResponse.body);
+        if (loginResponse.statusCode == 200) {
+          _jwtToken = loginData['token'];
+          _customerId = loginData['customer_id']?.toString() ?? '1';
+          _customerName = loginData['name'] ?? _nameController.text;
+          if (!mounted) return;
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (_) => const CameraLevelScreen()),
+            (route) => false,
+          );
+        }
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(data['message'] ?? 'Registration failed')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Network error: ')),
+      );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('Create Account'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.teal,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              _buildField(_nameController, 'Full Name', Icons.person),
+              const SizedBox(height: 16),
+              _buildField(_emailController, 'Email Address', Icons.email, keyboardType: TextInputType.emailAddress),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(child: _buildField(_heightController, 'Height (cm)', Icons.height, keyboardType: TextInputType.number)),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildField(_weightController, 'Weight (kg)', Icons.monitor_weight, keyboardType: TextInputType.number)),
+                ],
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: _gender,
+                dropdownColor: Colors.grey.shade900,
+                decoration: const InputDecoration(
+                  labelText: 'Gender',
+                  prefixIcon: Icon(Icons.people, color: Colors.teal),
+                  enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+                  focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.teal)),
+                ),
+                style: const TextStyle(color: Colors.white),
+                items: ['Male', 'Female', 'Other'].map((g) => DropdownMenuItem(value: g, child: Text(g))).toList(),
+                onChanged: (val) => setState(() => _gender = val!),
+              ),
+              const SizedBox(height: 32),
+              _isLoading
+                ? const CircularProgressIndicator(color: Colors.teal)
+                : SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: _register,
+                      style: FilledButton.styleFrom(backgroundColor: Colors.teal, padding: const EdgeInsets.symmetric(vertical: 16)),
+                      child: const Text('REGISTER & START'),
+                    ),
+                  ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildField(TextEditingController controller, String label, IconData icon, {TextInputType? keyboardType}) {
+    return TextFormField(
+      controller: controller,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon, color: Colors.teal),
+        enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+        focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.teal)),
+      ),
+      style: const TextStyle(color: Colors.white),
+      keyboardType: keyboardType,
+      validator: (val) => val == null || val.isEmpty ? 'Required' : null,
     );
   }
 }
