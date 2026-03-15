@@ -56,11 +56,11 @@ def score_muscle_definition(image_bgr, contour, muscle_group='bicep'):
     
     return {
         'overall_definition': round(overall, 1),
-        'edge_density_score': round(norm_edge, 1),
+        'edge_density': round(norm_edge, 1),
         'contrast_score': round(norm_contrast, 1),
-        'striation_score': round(norm_striation, 1),
+        'texture_score': round(norm_striation, 1),
         'grade': grade,
-        'muscle_group': muscle_group
+        'muscle_group': muscle_group,
     }
 
 def generate_definition_heatmap(image_bgr, contour):

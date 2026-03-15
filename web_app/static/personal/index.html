@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Muscle Tracker — Personal Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ── HEADER ── -->
+<header class="header">
+  <div class="header-left">
+    <div class="logo">MT</div>
+    <div>
+      <h1>Muscle Tracker</h1>
+      <p id="last-scan-label">Loading...</p>
+    </div>
+  </div>
+  <div class="header-right">
+    <span id="user-name">–</span>
+    <a href="../dashboard/index.html" class="btn btn-outline">Clinic View</a>
+    <button class="btn btn-primary" onclick="showUploadModal()">+ New Scan</button>
+  </div>
+</header>
+
+<!-- ── MAIN GRID ── -->
+<main class="grid">
+
+  <!-- Quick Stats -->
+  <section class="card stats-row" id="stats-row">
+    <div class="stat"><span class="stat-val" id="stat-scans">–</span><span class="stat-lbl">Total Scans</span></div>
+    <div class="stat"><span class="stat-val" id="stat-muscles">–</span><span class="stat-lbl">Muscle Groups</span></div>
+    <div class="stat"><span class="stat-val accent" id="stat-growth">–</span><span class="stat-lbl">Best Growth</span></div>
+    <div class="stat"><span class="stat-val" id="stat-streak">–</span><span class="stat-lbl">Day Streak</span></div>
+    <div class="stat"><span class="stat-val" id="stat-days">–</span><span class="stat-lbl">Days Active</span></div>
+  </section>
+
+  <!-- Body Map -->
+  <section class="card" id="body-map-section">
+    <div class="card-header">
+      <h2>Body Map</h2>
+      <span class="badge">Latest Scores</span>
+    </div>
+    <div class="body-map-wrap">
+      <svg id="body-svg" viewBox="0 0 200 420" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="muscle-detail" class="muscle-detail hidden">
+        <h3 id="detail-name">–</h3>
+        <p id="detail-volume">Volume: –</p>
+        <p id="detail-score">Score: –</p>
+        <p id="detail-growth">Growth: –</p>
+        <p id="detail-circ">Circumference: –</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Progress Charts -->
+  <section class="card charts-section">
+    <div class="card-header">
+      <h2>Progress</h2>
+      <select id="chart-muscle" onchange="refreshCharts()">
+        <option value="">All</option>
+      </select>
+    </div>
+    <div class="chart-tabs">
+      <button class="tab active" onclick="showTab('volume')">Volume</button>
+      <button class="tab" onclick="showTab('circumference')">Circumference</button>
+      <button class="tab" onclick="showTab('shape')">Shape Score</button>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="chart-volume"></canvas>
+      <canvas id="chart-circumference" class="hidden"></canvas>
+      <canvas id="chart-shape" class="hidden"></canvas>
+    </div>
+  </section>
+
+  <!-- Recent Scans -->
+  <section class="card scans-section">
+    <div class="card-header">
+      <h2>Recent Scans</h2>
+      <button class="btn btn-sm" onclick="loadScans()">Refresh</button>
+    </div>
+    <div id="scan-cards" class="scan-grid"></div>
+  </section>
+
+  <!-- 3D Viewer Link -->
+  <section class="card viewer-cta">
+    <div class="viewer-cta-inner">
+      <div>
+        <h2>3D Model Viewer</h2>
+        <p>Rotate, zoom and inspect your latest 3D muscle model</p>
+      </div>
+      <a id="btn-3d" href="../viewer3d/index.html" target="_blank" class="btn btn-primary btn-lg">
+        View in 3D ›
+      </a>
+    </div>
+  </section>
+
+</main>
+
+<!-- ── SCAN DETAIL MODAL ── -->
+<div id="scan-modal" class="modal hidden">
+  <div class="modal-backdrop" onclick="closeModal('scan-modal')"></div>
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('scan-modal')">✕</button>
+    <h2 id="modal-title">Scan Detail</h2>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
