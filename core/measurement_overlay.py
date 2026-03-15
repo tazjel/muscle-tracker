@@ -1,5 +1,25 @@
 import cv2
 import numpy as np
+import math
+
+
+def _draw_arrow_line(img, pt1, pt2, color, thickness=2, arrow_len=10, arrow_width=6):
+    """Draw a line with filled triangular arrowheads at both ends."""
+    cv2.line(img, pt1, pt2, color, thickness)
+    for tip, base in [(pt1, pt2), (pt2, pt1)]:
+        dx = base[0] - tip[0]
+        dy = base[1] - tip[1]
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            continue
+        ux, uy = dx / dist, dy / dist
+        bx = tip[0] + int(ux * arrow_len)
+        by = tip[1] + int(uy * arrow_len)
+        px = int(-uy * arrow_width / 2)
+        py = int(ux * arrow_width / 2)
+        pts = np.array([[tip[0], tip[1]], [bx + px, by + py], [bx - px, by - py]], np.int32)
+        cv2.fillPoly(img, [pts], color)
+
 
 def draw_measurement_overlay(image_bgr, contour, metrics, calibrated=True):
     if image_bgr is None or contour is None:
@@ -16,11 +36,11 @@ def draw_measurement_overlay(image_bgr, contour, metrics, calibrated=True):
         cv2.line(annotated, (x, i), (x, min(i+gap, y+h)), (255, 255, 255), 1)
         cv2.line(annotated, (x+w, i), (x+w, min(i+gap, y+h)), (255, 255, 255), 1)
     mid_y = y + h // 2
-    cv2.line(annotated, (x, mid_y), (x + w, mid_y), (0, 255, 255), 2)
+    _draw_arrow_line(annotated, (x, mid_y), (x + w, mid_y), (0, 255, 255))
     width_val = metrics.get('width_a_' + unit, float(w))
     cv2.putText(annotated, 'Width: {:.1f} {}'.format(width_val, unit), (x + 5, mid_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
     mid_x = x + w // 2
-    cv2.line(annotated, (mid_x, y), (mid_x, y + h), (0, 255, 255), 2)
+    _draw_arrow_line(annotated, (mid_x, y), (mid_x, y + h), (0, 255, 255))
     height_val = metrics.get('height_a_' + unit, float(h))
     cv2.putText(annotated, 'Height: {:.1f} {}'.format(height_val, unit), (mid_x + 10, y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
     area_val = metrics.get('area_a_' + unit + '2', float(cv2.contourArea(contour)))

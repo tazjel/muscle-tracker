@@ -27,6 +27,13 @@ from core.pose_analyzer import analyze_pose
 from core.report_generator import generate_clinical_report
 from core.keyframe_extractor import extract_keyframes, save_keyframes
 from core.muscle_classifier import classify_with_confidence
+from core.circumference import estimate_circumference
+from core.measurement_overlay import draw_measurement_overlay
+try:
+    from core.definition_scorer import score_muscle_definition
+    _HAS_DEFINITION_SCORER = True
+except ImportError:
+    _HAS_DEFINITION_SCORER = False
 
 # File upload constraints
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
@@ -316,6 +323,45 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
             shape_score = shape_result.get('score')
             shape_grade = shape_result.get('grade')
 
+        # 5. Circumference estimate
+        circumference_cm = None
+        contour_front = res_f.get('raw_data', {}).get('contour_a') if 'raw_data' in res_f else None
+        pixels_per_mm = 1.0 / ratio_mm_per_px if ratio_mm_per_px > 0 else 1.0
+        if contour_front is not None and pixels_per_mm > 0:
+            circ_result = estimate_circumference(contour_front, pixels_per_mm)
+            circumference_cm = circ_result.get('circumference_cm')
+
+        # 6. Definition score
+        definition_score = None
+        definition_grade = None
+        if _HAS_DEFINITION_SCORER and contour_front is not None:
+            try:
+                front_img = cv2.imread(front_path)
+                if front_img is not None:
+                    def_result = score_muscle_definition(front_img, contour_front, muscle_group)
+                    definition_score = def_result.get('overall_definition')
+                    definition_grade = def_result.get('grade')
+            except Exception:
+                logger.warning("Definition scoring failed, skipping", exc_info=True)
+
+        # 7. Measurement overlay — save annotated image
+        annotated_filename = None
+        if contour_front is not None:
+            try:
+                front_img = cv2.imread(front_path)
+                if front_img is not None:
+                    annotated = draw_measurement_overlay(
+                        front_img, contour_front,
+                        res_f.get('metrics', {}),
+                        calibrated=res_f.get('calibrated', False)
+                    )
+                    ann_name = 'ann_' + front_filename
+                    ann_path = os.path.join('uploads', ann_name)
+                    cv2.imwrite(ann_path, annotated)
+                    annotated_filename = ann_name
+            except Exception:
+                logger.warning("Measurement overlay failed, skipping", exc_info=True)
+
         growth_pct = None
         volume_delta = None
         prev_scan = db(
@@ -347,6 +393,10 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
             growth_pct=growth_pct,
             volume_delta_cm3=volume_delta,
             detection_confidence=detection_conf,
+            circumference_cm=circumference_cm,
+            definition_score=definition_score,
+            definition_grade=definition_grade,
+            annotated_img=annotated_filename,
         )
         db.commit()
 
@@ -361,6 +411,11 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
             growth_pct=round(growth_pct, 2) if growth_pct else None,
             volume_delta_cm3=round(volume_delta, 2) if volume_delta else None,
             calibrated=res_f.get('calibrated', False),
+            circumference_cm=round(circumference_cm, 2) if circumference_cm else None,
+            circumference_inches=round(circumference_cm / 2.54, 2) if circumference_cm else None,
+            definition_score=definition_score,
+            definition_grade=definition_grade,
+            annotated_img_url=f'/uploads/{annotated_filename}' if annotated_filename else None,
         )
     except Exception:
         logger.exception("Scan processing failed for customer %d", customer_id)

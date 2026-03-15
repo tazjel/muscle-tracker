@@ -55,6 +55,11 @@ db.define_table('muscle_scan',
     # Quality
     Field('detection_confidence', 'double'),
     Field('alignment_confidence', 'double'),
+    # v5 metrics
+    Field('circumference_cm', 'double'),
+    Field('definition_score', 'double'),
+    Field('definition_grade', 'string', length=16),
+    Field('annotated_img', 'string', length=256),
     # Metadata
     Field('notes', 'text'),
     Field('device_info', 'string', length=256),
