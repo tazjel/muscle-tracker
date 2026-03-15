@@ -15,8 +15,10 @@ try:
         min_detection_confidence=0.5
     )
     HAVE_MEDIAPIPE = True
-except ImportError:
-    logger.warning("Mediapipe not installed. Markerless metrology disabled.")
+except (ImportError, AttributeError, Exception):
+    logger.warning("Mediapipe unavailable or broken. Markerless metrology disabled.")
+    mp_pose = None
+    pose_detector = None
     HAVE_MEDIAPIPE = False
 
 

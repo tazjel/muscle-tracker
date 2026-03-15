@@ -17,7 +17,7 @@ try:
     MEDIAPIPE_AVAILABLE = True
     _mp_selfie = mp_selfie
     _mp_pose = mp_pose
-except ImportError:
+except (ImportError, AttributeError, Exception):
     try:
         from mediapipe.solutions import selfie_segmentation as mp_selfie
         from mediapipe.solutions import pose as mp_pose
