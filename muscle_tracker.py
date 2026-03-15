@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Muscle Tracker v2.3 — Clinical Muscle Growth Analysis Suite
+Muscle Tracker v3.0 — Clinical Muscle Growth Analysis Suite (Final Release)
 
 Commands:
   growth       Compare before/after images for muscle growth
@@ -26,7 +26,7 @@ from core.pose_analyzer import analyze_pose, POSE_RULES
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Muscle Tracker v2.0 — Clinical Muscle Growth Analysis Suite',
+        description='Muscle Tracker v3.0 — Clinical Muscle Growth Analysis Suite',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
