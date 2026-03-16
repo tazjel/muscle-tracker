@@ -197,6 +197,7 @@ def upload_scan(customer_id):
     marker_size = float(request.forms.get('marker_size', '20.0'))
     volume_model = request.forms.get('volume_model', 'elliptical_cylinder')
     shape_template = request.forms.get('shape_template')
+    camera_distance_cm = float(request.forms.get('camera_distance_cm', '0') or '0') or None
 
     if muscle_group not in MUSCLE_GROUPS:
         return dict(status='error', message=f'Invalid muscle group. Options: {MUSCLE_GROUPS}')
@@ -207,7 +208,7 @@ def upload_scan(customer_id):
     front_path = os.path.join('uploads', front_filename)
     side_path = os.path.join('uploads', side_filename)
 
-    res = _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template)
+    res = _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template, camera_distance_cm=camera_distance_cm)
     
     if res.get('status') == 'success':
         db.audit_log.insert(
@@ -219,6 +220,116 @@ def upload_scan(customer_id):
         db.commit()
     
     return res
+
+
+@action('api/upload_quad_scan/<customer_id:int>', method=['POST'])
+@action.uses(db, cors)
+def upload_quad_scan(customer_id):
+    """Accept 4 images (front, back, left_side, right_side) from dual-device scan."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    customer = db.customer(customer_id)
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    front = request.files.get('front')
+    back = request.files.get('back')
+    left_side = request.files.get('left_side')
+    right_side = request.files.get('right_side')
+
+    if not all([front, back, left_side, right_side]):
+        return dict(status='error', message='All 4 images required: front, back, left_side, right_side')
+
+    for f in (front, back, left_side, right_side):
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            return dict(status='error', message=f'Invalid file type: {ext}')
+        f.file.seek(0, 2)
+        size = f.file.tell()
+        f.file.seek(0)
+        if size > MAX_FILE_SIZE_BYTES:
+            return dict(status='error', message=f'File too large: {size // (1024*1024)}MB (max {MAX_FILE_SIZE_MB}MB)')
+
+    muscle_group = request.forms.get('muscle_group', 'quadricep')
+    camera_distance_cm = float(request.forms.get('camera_distance_cm', '0') or '0') or None
+    scan_side = request.forms.get('side', 'front')
+    marker_size = float(request.forms.get('marker_size', '20.0'))
+    volume_model = request.forms.get('volume_model', 'elliptical_cylinder')
+    shape_template = request.forms.get('shape_template')
+
+    if muscle_group not in MUSCLE_GROUPS:
+        return dict(status='error', message=f'Invalid muscle group. Options: {MUSCLE_GROUPS}')
+
+    # Store all 4 images
+    front_fn = db.muscle_scan.img_front.store(front.file, front.filename)
+    left_fn = db.muscle_scan.img_side.store(left_side.file, left_side.filename)
+    back_fn = db.muscle_scan.img_front.store(back.file, back.filename)
+    right_fn = db.muscle_scan.img_side.store(right_side.file, right_side.filename)
+
+    front_path = os.path.join('uploads', front_fn)
+    left_path = os.path.join('uploads', left_fn)
+    back_path = os.path.join('uploads', back_fn)
+    right_path = os.path.join('uploads', right_fn)
+
+    # Process Pair A: front + left_side
+    res_a = _process_and_save_scan(customer, customer_id, front_path, left_path,
+                                    front_fn, left_fn, muscle_group, scan_side,
+                                    marker_size, volume_model, shape_template,
+                                    camera_distance_cm=camera_distance_cm)
+
+    # Process Pair B: back + right_side
+    res_b = _process_and_save_scan(customer, customer_id, back_path, right_path,
+                                    back_fn, right_fn, muscle_group, 'back',
+                                    marker_size, volume_model, shape_template,
+                                    camera_distance_cm=camera_distance_cm)
+
+    # Average results from both pairs for higher confidence
+    if res_a.get('status') == 'success' and res_b.get('status') == 'success':
+        avg_vol = (res_a.get('volume_cm3', 0) + res_b.get('volume_cm3', 0)) / 2
+        avg_circ = None
+        if res_a.get('circumference_cm') and res_b.get('circumference_cm'):
+            avg_circ = (res_a['circumference_cm'] + res_b['circumference_cm']) / 2
+
+        db.audit_log.insert(
+            customer_id=customer_id,
+            action='upload_quad_scan',
+            resource_id=f"{res_a.get('scan_id')},{res_b.get('scan_id')}",
+            ip_address=request.environ.get('REMOTE_ADDR', 'unknown')
+        )
+        db.commit()
+
+        return dict(
+            status='success',
+            scan_mode='quad',
+            scan_id_front=res_a.get('scan_id'),
+            scan_id_back=res_b.get('scan_id'),
+            volume_cm3=round(avg_vol, 2),
+            volume_front_cm3=res_a.get('volume_cm3'),
+            volume_back_cm3=res_b.get('volume_cm3'),
+            circumference_cm=round(avg_circ, 2) if avg_circ else res_a.get('circumference_cm'),
+            calibrated=res_a.get('calibrated', False),
+            shape_score=res_a.get('shape_score'),
+            shape_grade=res_a.get('shape_grade'),
+            growth_pct=res_a.get('growth_pct'),
+            definition_score=res_a.get('definition_score'),
+            definition_grade=res_a.get('definition_grade'),
+            annotated_img_url=res_a.get('annotated_img_url'),
+        )
+    elif res_a.get('status') == 'success':
+        return dict(**res_a, scan_mode='quad_partial', note='Back pair failed, using front pair only')
+    elif res_b.get('status') == 'success':
+        return dict(**res_b, scan_mode='quad_partial', note='Front pair failed, using back pair only')
+    else:
+        return dict(status='error', message='Both scan pairs failed')
 
 
 @action('api/upload_video/<customer_id:int>', method=['POST'])
@@ -267,9 +378,10 @@ def upload_video(customer_id):
     marker_size = float(request.forms.get('marker_size', '20.0'))
     volume_model = request.forms.get('volume_model', 'elliptical_cylinder')
     shape_template = request.forms.get('shape_template')
+    camera_distance_cm = float(request.forms.get('camera_distance_cm', '0') or '0') or None
 
-    res = _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template)
-    
+    res = _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template, camera_distance_cm=camera_distance_cm)
+
     if res.get('status') == 'success':
         db.audit_log.insert(
             customer_id=customer_id,
@@ -282,14 +394,14 @@ def upload_video(customer_id):
     return res
 
 
-def _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template):
+def _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template, camera_distance_cm=None):
     try:
         user_height_cm = customer.height_cm
-        res_f = analyze_muscle_growth(front_path, front_path, marker_size, align=False, muscle_group=muscle_group, user_height_cm=user_height_cm)
-        res_s = analyze_muscle_growth(side_path, side_path, marker_size, align=False, muscle_group=muscle_group, user_height_cm=user_height_cm)
+        res_f = analyze_muscle_growth(front_path, front_path, marker_size, align=False, muscle_group=muscle_group, user_height_cm=user_height_cm, camera_distance_cm=camera_distance_cm)
+        res_s = analyze_muscle_growth(side_path, side_path, marker_size, align=False, muscle_group=muscle_group, user_height_cm=user_height_cm, camera_distance_cm=camera_distance_cm)
 
-        if "error" in res_f or "error" in res_s:
-            error_msg = res_f.get("error", "") or res_s.get("error", "")
+        if "error" in res_f:
+            error_msg = res_f.get("error", "")
             return dict(status='error', message=f'Vision analysis failed: {error_msg}')
 
         # Calibration ratio (px to mm)
@@ -300,8 +412,18 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
         area = res_f['metrics'].get(f'area_a_{unit}2', 0.0)
         width = res_f['metrics'].get(f'width_a_{unit}', 0.0)
         height = res_f['metrics'].get(f'height_a_{unit}', 0.0)
-        area_side = res_s['metrics'].get(f'area_a_{unit}2', 0.0)
-        width_side = res_s['metrics'].get(f'width_a_{unit}', 0.0)
+
+        # Side view — if analysis failed (no person), estimate depth as 65% of front
+        side_ok = "error" not in res_s
+        if side_ok:
+            area_side = res_s['metrics'].get(f'area_a_{unit}2', 0.0)
+            width_side = res_s['metrics'].get(f'width_a_{unit}', 0.0)
+            if width_side <= 0:
+                side_ok = False
+        if not side_ok:
+            width_side = width * 0.65
+            area_side = area * 0.65
+            logger.info("Side view unusable — estimating depth as 65%% of front width")
 
         # 3. Calculate volume
         vol_result = estimate_muscle_volume(area, area_side, width, width_side, volume_model)
@@ -323,13 +445,18 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
             shape_score = shape_result.get('score')
             shape_grade = shape_result.get('grade')
 
-        # 5. Circumference estimate
+        # 5. Circumference estimate — prefer two-view elliptical from calibrated widths
         circumference_cm = None
         contour_front = res_f.get('raw_data', {}).get('contour_a') if 'raw_data' in res_f else None
-        pixels_per_mm = 1.0 / ratio_mm_per_px if ratio_mm_per_px > 0 else 1.0
-        if contour_front is not None and pixels_per_mm > 0:
-            circ_result = estimate_circumference(contour_front, pixels_per_mm)
-            circumference_cm = circ_result.get('circumference_cm')
+        if res_f.get('calibrated') and width > 0 and width_side > 0:
+            from core.circumference import estimate_circumference_from_two_views
+            circ_mm = estimate_circumference_from_two_views(width, width_side)
+            circumference_cm = round(circ_mm / 10.0, 2) if circ_mm > 0 else None
+        elif contour_front is not None:
+            pixels_per_mm = 1.0 / ratio_mm_per_px if ratio_mm_per_px > 0 else 1.0
+            if pixels_per_mm > 0:
+                circ_result = estimate_circumference(contour_front, pixels_per_mm)
+                circumference_cm = circ_result.get('circumference_cm')
 
         # 6. Definition score
         definition_score = None
@@ -1006,6 +1133,7 @@ def reconstruct_3d(customer_id):
 
     muscle_group = request.forms.get('muscle_group', 'bicep')
     marker_size  = float(request.forms.get('marker_size', '20.0'))
+    camera_distance_cm = float(request.forms.get('camera_distance_cm', '0') or '0') or None
 
     front_fn = db.muscle_scan.img_front.store(front_file.file, front_file.filename)
     side_fn  = db.muscle_scan.img_front.store(side_file.file, side_file.filename)
@@ -1017,8 +1145,8 @@ def reconstruct_3d(customer_id):
         from core.mesh_reconstruction import reconstruct_mesh_from_silhouettes, export_obj, generate_mesh_preview_image
         from core.mesh_volume import compute_mesh_volume_cm3
 
-        res_f = analyze_muscle_growth(front_path, front_path, marker_size, align=False, muscle_group=muscle_group)
-        res_s = analyze_muscle_growth(side_path,  side_path,  marker_size, align=False, muscle_group=muscle_group)
+        res_f = analyze_muscle_growth(front_path, front_path, marker_size, align=False, muscle_group=muscle_group, camera_distance_cm=camera_distance_cm)
+        res_s = analyze_muscle_growth(side_path,  side_path,  marker_size, align=False, muscle_group=muscle_group, camera_distance_cm=camera_distance_cm)
 
         if 'error' in res_f or 'error' in res_s:
             return dict(status='error', message='Vision analysis failed on one or both images')

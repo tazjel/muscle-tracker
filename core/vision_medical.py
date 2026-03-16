@@ -9,13 +9,40 @@ from core.body_segmentation import segment_body, get_pose_landmarks, extract_mus
 
 logger = logging.getLogger(__name__)
 
+
+def _auto_orient(image_path):
+    """Load image with correct EXIF orientation applied."""
+    try:
+        from PIL import Image as PILImage, ImageOps
+        pil = PILImage.open(image_path)
+        pil = ImageOps.exif_transpose(pil)
+        rgb = np.array(pil)
+        if len(rgb.shape) == 3 and rgb.shape[2] == 3:
+            return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        return rgb
+    except Exception:
+        return cv2.imread(image_path)
+
 # Contour filtering thresholds
 MIN_CONTOUR_AREA_RATIO = 0.005   # Minimum 0.5% of image area
 MAX_CONTOUR_AREA_RATIO = 0.90    # Maximum 90% of image area
 
+# Max realistic width (mm) per muscle group — used to sanity-check calibration
+# when no ROI crop was applied (full-body in frame).
+# Typical muscle width (mm) per muscle group — used to scale contour
+# when no ROI crop was possible (full-body in frame, no pose landmarks).
+_MAX_MUSCLE_WIDTH_MM = {
+    'bicep': 130, 'tricep': 130, 'forearm': 100,
+    'quadricep': 200, 'hamstring': 180, 'calf': 150,
+    'glute': 320, 'deltoid': 180, 'lat': 350,
+    'chest': 350,
+}
+_DEFAULT_MAX_WIDTH_MM = 200
+
 
 def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
-                          align=True, muscle_group=None, user_height_cm=None):
+                          align=True, muscle_group=None, user_height_cm=None,
+                          camera_distance_cm=None):
     """
     High-precision muscle growth analysis between two images.
 
@@ -29,17 +56,33 @@ def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
 
     Returns dict with status, metrics, raw_data, and confidence scores.
     """
-    img_a = cv2.imread(img_a_path)
-    img_b_orig = cv2.imread(img_b_path)
+    img_a = _auto_orient(img_a_path)
+    img_b_orig = _auto_orient(img_b_path)
 
     if img_a is None:
         return {"error": f"Failed to load image: {img_a_path}"}
     if img_b_orig is None:
         return {"error": f"Failed to load image: {img_b_path}"}
 
-    # ML-powered ROI crop
+    # ML-powered ROI crop — try original, if no pose try 90° rotations
     landmarks_a = get_pose_landmarks(img_a)
+    if landmarks_a is None:
+        for rot in [cv2.ROTATE_90_COUNTERCLOCKWISE, cv2.ROTATE_90_CLOCKWISE]:
+            rotated = cv2.rotate(img_a, rot)
+            landmarks_a = get_pose_landmarks(rotated)
+            if landmarks_a is not None:
+                img_a = rotated
+                logger.info("Image A: pose detected after rotation")
+                break
     landmarks_b = get_pose_landmarks(img_b_orig)
+    if landmarks_b is None:
+        for rot in [cv2.ROTATE_90_COUNTERCLOCKWISE, cv2.ROTATE_90_CLOCKWISE]:
+            rotated = cv2.rotate(img_b_orig, rot)
+            landmarks_b = get_pose_landmarks(rotated)
+            if landmarks_b is not None:
+                img_b_orig = rotated
+                logger.info("Image B: pose detected after rotation")
+                break
     
     if muscle_group and landmarks_a and landmarks_b:
         crop_a = extract_muscle_roi(img_a, muscle_group, landmarks_a)
@@ -59,8 +102,8 @@ def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
         align = False
 
     # Calibration
-    ratio_a = get_px_to_mm_ratio(img_a_path, marker_size_mm, user_height_cm=user_height_cm)
-    ratio_b = get_px_to_mm_ratio(img_b_path, marker_size_mm, user_height_cm=user_height_cm)
+    ratio_a = get_px_to_mm_ratio(img_a_path, marker_size_mm, user_height_cm=user_height_cm, camera_distance_cm=camera_distance_cm)
+    ratio_b = get_px_to_mm_ratio(img_b_path, marker_size_mm, user_height_cm=user_height_cm, camera_distance_cm=camera_distance_cm)
     use_mm = (ratio_a is not None and ratio_b is not None)
 
     if not use_mm:
@@ -88,6 +131,23 @@ def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
     height_a = res_a['height_px'] * (ratio_a if use_mm else 1.0)
     height_b = res_b['height_px'] * (ratio_b if use_mm else 1.0)
 
+    # Sanity clamp: if no ROI crop happened (no pose landmarks), the contour
+    # likely covers the whole body. Scale down to realistic muscle dimensions.
+    roi_cropped = (landmarks_a is not None or landmarks_b is not None)
+    if use_mm and not roi_cropped and muscle_group:
+        max_w = _MAX_MUSCLE_WIDTH_MM.get(muscle_group, _DEFAULT_MAX_WIDTH_MM)
+        raw_width = max(width_a, width_b)
+        if raw_width > max_w * 1.5:
+            scale = max_w / raw_width
+            logger.info("Sanity clamp: width %.0fmm > max %.0fmm for %s, scale=%.2f",
+                        raw_width, max_w, muscle_group, scale)
+            width_a *= scale
+            width_b *= scale
+            height_a *= scale
+            height_b *= scale
+            area_a *= scale * scale
+            area_b *= scale * scale
+
     delta_area = area_b - area_a
     delta_width = width_b - width_a
     unit = "mm" if use_mm else "px"
@@ -100,6 +160,7 @@ def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
     return {
         "status": "Success",
         "calibrated": use_mm,
+        "ratio": ratio_a if use_mm else None,
         "aligned": align,
         "verdict": _classify_change(growth_pct),
         "segmentation_method": res_a.get('method', 'unknown'),

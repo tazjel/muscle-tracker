@@ -23,7 +23,13 @@ ERROR_RED = colors.Color(0.9, 0.2, 0.2)
 def generate_clinical_report(scan_result, volume_result=None,
                               symmetry_result=None, shape_result=None,
                               trend_result=None, output_path="report.pdf",
-                              patient_name="Patient", scan_date=None):
+                              patient_name="Patient", scan_date=None,
+                              # v5 extras (all optional)
+                              circumference_cm=None,
+                              definition_result=None,
+                              body_composition=None,
+                              annotated_image_bgr=None,
+                              mesh_preview_path=None):
     """
     Generates a professional clinical report in PDF format.
     """
@@ -141,14 +147,103 @@ def generate_clinical_report(scan_result, volume_result=None,
         c.drawString(2 * cm, y, symmetry_result.get("verdict", ""))
         y -= 1.2 * cm
 
+    # --- Annotated Photo ---
+    if annotated_image_bgr is not None:
+        y = _check_page(c, y, height, width)
+        y = _draw_section_header(c, "ANNOTATED SCAN IMAGE", y, width)
+        try:
+            import cv2
+            import io
+            from reportlab.lib.utils import ImageReader
+            _, buf = cv2.imencode('.jpg', annotated_image_bgr,
+                                  [cv2.IMWRITE_JPEG_QUALITY, 85])
+            img_io  = io.BytesIO(buf.tobytes())
+            img_rdr = ImageReader(img_io)
+            img_w, img_h = 7 * cm, 8 * cm
+            c.drawImage(img_rdr, 1.5 * cm, y - img_h,
+                        width=img_w, height=img_h, preserveAspectRatio=True)
+            y -= img_h + 0.5 * cm
+        except Exception:
+            logger.debug("Annotated image embed failed", exc_info=True)
+
+    # --- Circumference ---
+    if circumference_cm is not None:
+        y = _check_page(c, y, height, width)
+        y = _draw_section_header(c, "CIRCUMFERENCE ESTIMATE", y, width)
+        inches = circumference_cm / 2.54
+        c.setFont("Helvetica-Bold", 14)
+        c.setFillColor(colors.black)
+        c.drawString(2 * cm, y, f"{circumference_cm:.1f} cm  /  {inches:.1f} in")
+        y -= 1.2 * cm
+
+    # --- Definition Score ---
+    if definition_result:
+        y = _check_page(c, y, height, width)
+        y = _draw_section_header(c, "MUSCLE DEFINITION", y, width)
+        score = definition_result.get('overall_definition', 0) or 0
+        grade = definition_result.get('grade', 'N/A')
+        d_color = SUCCESS_GREEN if score >= 65 else colors.orange if score >= 40 else ERROR_RED
+        c.setFont("Helvetica-Bold", 20)
+        c.setFillColor(d_color)
+        c.drawString(2 * cm, y, grade)
+        c.setFont("Helvetica-Bold", 12)
+        c.setFillColor(colors.black)
+        c.drawString(3.5 * cm, y + 0.2 * cm, f"Score: {score:.0f}/100")
+        _draw_mini_bar(c, 7 * cm, y + 0.2 * cm, 6 * cm, 0.45 * cm, score / 100.0)
+        y -= 1.4 * cm
+
+    # --- Body Composition ---
+    if body_composition:
+        y = _check_page(c, y, height, width)
+        y = _draw_section_header(c, "BODY COMPOSITION", y, width)
+        items = [
+            ('BMI',            body_composition.get('bmi')),
+            ('Body Fat %',     body_composition.get('estimated_body_fat_pct')),
+            ('Lean Mass',      f"{body_composition.get('lean_mass_kg', '–')} kg"
+                               if body_composition.get('lean_mass_kg') else None),
+            ('Classification', body_composition.get('classification')),
+            ('W/H Ratio',      body_composition.get('waist_to_hip_ratio')),
+            ('Confidence',     body_composition.get('confidence')),
+        ]
+        col = 0
+        for label, val in items:
+            if val is None:
+                continue
+            val_str = f"{val:.1f}" if isinstance(val, float) else str(val)
+            if label == 'Body Fat %' and isinstance(val, float):
+                val_str = f"{val:.1f}%"
+            c.setFont("Helvetica", 10)
+            c.setFillColor(colors.black)
+            c.drawString(2 * cm + (col % 2) * 8 * cm, y, f"{label}: {val_str}")
+            if col % 2 == 1:
+                y -= 0.5 * cm
+            col += 1
+        if col % 2 != 0:
+            y -= 0.5 * cm
+        y -= 0.7 * cm
+
+    # --- 3D Mesh Preview ---
+    if mesh_preview_path and os.path.exists(mesh_preview_path):
+        y = _check_page(c, y, height, width)
+        y = _draw_section_header(c, "3D MESH PREVIEW", y, width)
+        try:
+            from reportlab.lib.utils import ImageReader
+            img_w, img_h = 8 * cm, 7 * cm
+            c.drawImage(ImageReader(mesh_preview_path),
+                        width / 2 - img_w / 2, y - img_h,
+                        width=img_w, height=img_h, preserveAspectRatio=True)
+            y -= img_h + 0.5 * cm
+        except Exception:
+            logger.debug("Mesh preview embed failed", exc_info=True)
+
     # --- Footer ---
     c.setStrokeColor(colors.lightgrey)
     c.setLineWidth(0.5)
     c.line(1 * cm, 1.5 * cm, width - 1 * cm, 1.5 * cm)
-    
+
     c.setFont("Helvetica", 8)
     c.setFillColor(TEXT_DIM)
-    c.drawString(1.5 * cm, 1.1 * cm, "Generated by Muscle Tracker Engine v4.0 | Clinical Grade Metrology")
+    c.drawString(1.5 * cm, 1.1 * cm, "Generated by Muscle Tracker Engine v5.0 | Clinical Grade Metrology")
     c.drawRightString(width - 1.5 * cm, 1.1 * cm, datetime.now().strftime("%Y-%m-%d %H:%M"))
 
     c.showPage()
@@ -156,6 +251,21 @@ def generate_clinical_report(scan_result, volume_result=None,
     
     logger.info(f"Clinical PDF report saved: {output_path}")
     return output_path
+
+
+def _check_page(c, y, height, width):
+    """Start a new page if less than 5 cm remaining."""
+    if y < 5 * cm:
+        _draw_footer_line(c, width)
+        c.showPage()
+        return height - 2 * cm
+    return y
+
+
+def _draw_footer_line(c, width):
+    c.setStrokeColor(colors.lightgrey)
+    c.setLineWidth(0.5)
+    c.line(1 * cm, 1.5 * cm, width - 1 * cm, 1.5 * cm)
 
 
 def _draw_section_header(c, title, y, width):

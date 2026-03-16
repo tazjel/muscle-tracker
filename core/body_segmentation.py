@@ -1,51 +1,78 @@
 """
-ML-powered body segmentation using MediaPipe.
-Falls back to existing threshold-based method if MediaPipe unavailable.
+ML-powered body segmentation and pose detection using MediaPipe Tasks API (0.10.x+).
+Falls back to threshold-based method if MediaPipe unavailable.
 """
 import cv2
 import numpy as np
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
+_MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
+_POSE_MODEL = os.path.join(_MODELS_DIR, 'pose_landmarker.task')
+_SEG_MODEL = os.path.join(_MODELS_DIR, 'selfie_segmenter.tflite')
+
+MEDIAPIPE_AVAILABLE = False
+
 try:
     import mediapipe as mp
-    # Check if the specific submodules we need are actually available
-    # Some environments have broken mediapipe installations
-    import mediapipe.python.solutions.selfie_segmentation as mp_selfie
-    import mediapipe.python.solutions.pose as mp_pose
-    MEDIAPIPE_AVAILABLE = True
-    _mp_selfie = mp_selfie
-    _mp_pose = mp_pose
-except (ImportError, AttributeError, Exception):
-    try:
-        from mediapipe.solutions import selfie_segmentation as mp_selfie
-        from mediapipe.solutions import pose as mp_pose
+    from mediapipe.tasks.python import vision, BaseOptions
+    from mediapipe.tasks.python.vision import (
+        ImageSegmenter, ImageSegmenterOptions,
+        PoseLandmarker, PoseLandmarkerOptions,
+    )
+    if os.path.exists(_POSE_MODEL) and os.path.exists(_SEG_MODEL):
         MEDIAPIPE_AVAILABLE = True
-        _mp_selfie = mp_selfie
-        _mp_pose = mp_pose
-    except ImportError:
-        logger.warning("MediaPipe solutions not found. ML segmentation disabled.")
-        MEDIAPIPE_AVAILABLE = False
+        logger.info("MediaPipe Tasks API loaded (v%s)", mp.__version__)
+    else:
+        logger.warning("MediaPipe model files not found in %s", _MODELS_DIR)
+except (ImportError, Exception) as e:
+    logger.warning("MediaPipe Tasks API unavailable: %s", e)
 
 
 def segment_body(image_bgr: np.ndarray) -> np.ndarray:
     """
     Returns a binary mask (uint8, 0 or 255) of the person in the image.
-    Uses MediaPipe SelfieSegmentation if available, else returns None
-    so the caller can fall back to existing methods.
+    Uses MediaPipe ImageSegmenter if available, else returns None.
     """
     if not MEDIAPIPE_AVAILABLE:
         return None
     try:
-        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        with _mp_selfie.SelfieSegmentation(model_selection=1) as seg:
-            result = seg.process(rgb)
-            mask = (result.segmentation_mask > 0.5).astype(np.uint8) * 255
-        return mask
-    except Exception as e:
-        logger.error(f"MediaPipe segmentation failed: {e}")
+        options = ImageSegmenterOptions(
+            base_options=BaseOptions(model_asset_path=_SEG_MODEL),
+            output_category_mask=False,
+        )
+        with ImageSegmenter.create_from_options(options) as segmenter:
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB,
+                                data=cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
+            result = segmenter.segment(mp_image)
+            if result.confidence_masks:
+                mask_raw = result.confidence_masks[0].numpy_view()
+                # Squeeze to 2D if needed
+                if mask_raw.ndim == 3:
+                    mask_raw = mask_raw[:, :, 0]
+                # Use low threshold — muscle close-ups have lower confidence
+                mask = (mask_raw > 0.1).astype(np.uint8) * 255
+                # If mask covers < 5% of image, ML didn't detect a body — return None for fallback
+                if mask.sum() / 255 < (mask_raw.shape[0] * mask_raw.shape[1] * 0.05):
+                    return None
+                return mask
         return None
+    except Exception as e:
+        logger.error("MediaPipe segmentation failed: %s", e)
+        return None
+
+
+# Pose landmark name mapping (Tasks API uses index-based access)
+_POSE_LANDMARK_NAMES = {
+    'LEFT_SHOULDER': 11, 'RIGHT_SHOULDER': 12,
+    'LEFT_ELBOW': 13, 'RIGHT_ELBOW': 14,
+    'LEFT_WRIST': 15, 'RIGHT_WRIST': 16,
+    'LEFT_HIP': 23, 'RIGHT_HIP': 24,
+    'LEFT_KNEE': 25, 'RIGHT_KNEE': 26,
+    'LEFT_ANKLE': 27, 'RIGHT_ANKLE': 28,
+}
 
 
 def get_pose_landmarks(image_bgr: np.ndarray) -> dict | None:
@@ -57,29 +84,26 @@ def get_pose_landmarks(image_bgr: np.ndarray) -> dict | None:
         return None
     try:
         h, w = image_bgr.shape[:2]
-        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        with _mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5) as pose:
-            result = pose.process(rgb)
-            if not result.pose_landmarks:
+        options = PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=_POSE_MODEL),
+            num_poses=1,
+            min_pose_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        with PoseLandmarker.create_from_options(options) as landmarker:
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB,
+                                data=cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
+            result = landmarker.detect(mp_image)
+            if not result.pose_landmarks or len(result.pose_landmarks) == 0:
                 return None
-            mp_names = [
-                'LEFT_SHOULDER', 'RIGHT_SHOULDER',
-                'LEFT_ELBOW', 'RIGHT_ELBOW',
-                'LEFT_WRIST', 'RIGHT_WRIST',
-                'LEFT_HIP', 'RIGHT_HIP',
-                'LEFT_KNEE', 'RIGHT_KNEE',
-                'LEFT_ANKLE', 'RIGHT_ANKLE',
-            ]
-            lm = result.pose_landmarks.landmark
-            mp_enum = _mp_pose.PoseLandmark
-            return {
-                name: (int(lm[mp_enum[name].value].x * w),
-                       int(lm[mp_enum[name].value].y * h))
-                for name in mp_names
-                if lm[mp_enum[name].value].visibility > 0.5
-            }
+            lm = result.pose_landmarks[0]
+            landmarks = {}
+            for name, idx in _POSE_LANDMARK_NAMES.items():
+                if idx < len(lm) and lm[idx].visibility > 0.5:
+                    landmarks[name] = (int(lm[idx].x * w), int(lm[idx].y * h))
+            return landmarks if landmarks else None
     except Exception as e:
-        logger.error(f"MediaPipe pose detection failed: {e}")
+        logger.error("MediaPipe pose detection failed: %s", e)
         return None
 
 
@@ -92,15 +116,19 @@ def extract_muscle_roi(image_bgr: np.ndarray, muscle_group: str,
     if not landmarks:
         return None
     h, w = image_bgr.shape[:2]
-    pad = 40  # pixels of padding around the ROI
+    pad = 40
 
     rois = {
         'bicep': ('LEFT_SHOULDER', 'LEFT_ELBOW'),
         'tricep': ('LEFT_SHOULDER', 'LEFT_ELBOW'),
-        'quad': ('LEFT_HIP', 'LEFT_KNEE'),
+        'quadricep': ('LEFT_HIP', 'LEFT_KNEE'),
         'hamstring': ('LEFT_HIP', 'LEFT_KNEE'),
         'calf': ('LEFT_KNEE', 'LEFT_ANKLE'),
-        'shoulder': ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
+        'deltoid': ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
+        'glute': ('LEFT_HIP', 'RIGHT_HIP'),
+        'lat': ('LEFT_SHOULDER', 'LEFT_HIP'),
+        'chest': ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
+        'forearm': ('LEFT_ELBOW', 'LEFT_WRIST'),
     }
     if muscle_group not in rois:
         return None

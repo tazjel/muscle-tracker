@@ -49,6 +49,9 @@ String? _customerName;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Full immersive kiosk mode — hide nav bar and status bar permanently
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   _cameras = await availableCameras();
   // Auto-login with demo account; fall back to local demo if server unreachable
   try {
@@ -215,6 +218,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   final List<String> _phaseLabels = ['FRONT VIEW', 'SIDE VIEW'];
   final List<IconData> _phaseIcons = [Icons.person, Icons.person_outline];
   String _selectedMuscleGroup = 'quadricep';
+  double _cameraDistanceCm = 100.0; // default 1 meter
   final Map<String, IconData> _muscleIcons = {
     'bicep': Icons.fitness_center, 'tricep': Icons.fitness_center,
     'quadricep': Icons.accessibility_new, 'hamstring': Icons.accessibility_new,
@@ -231,7 +235,13 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   static const double _smoothingFactor = 0.15;
   bool _torchOn = false;
   // Auto-capture mode
-  bool _isAutoMode = false;
+  bool _isAutoMode = true;
+  // Dual-device mode
+  bool _isDualMode = false;
+  String _dualRole = 'front';
+  String _dualStatus = 'READY';
+  int _dualCaptureCount = 0;
+  Timer? _triggerPollTimer;
   // Profile Builder (Auto Mode 2)
   bool _isProfileMode = false;
   bool _profileRunning = false;
@@ -250,7 +260,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Timer? _autoTimer;
 
   @override
-  void initState() { super.initState(); _initCamera(); _initSensors(); }
+  void initState() { super.initState(); _loadDualRole().then((_) => _initCamera()); _initSensors(); }
   
   Future<void> _initCamera() async {
     if (_cameras.isEmpty) { setState(() => _statusMessage = 'No cameras'); return; }
@@ -259,8 +269,105 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       orElse: () => _cameras.first,
     );
     _controller = CameraController(cam, ResolutionPreset.medium, enableAudio: false);
-    try { await _controller!.initialize(); if (mounted) setState(() {}); }
+    try {
+      await _controller!.initialize();
+      if (mounted) {
+        setState(() {});
+        Future.delayed(const Duration(seconds: 4), () {
+          if (mounted && !_autoRunning && !_isCapturing && !_isDualMode) _startAutoCapture();
+        });
+      }
+    }
     catch (e) { setState(() => _statusMessage = 'Camera error: $e'); }
+  }
+
+  Future<void> _loadDualRole() async {
+    // Try multiple paths — /sdcard/ (needs permissions) and app data dir
+    final paths = [
+      '/data/local/tmp/muscle_tracker_role.json',
+      '/sdcard/muscle_tracker_role.json',
+    ];
+    try {
+      final docsDir = await getApplicationDocumentsDirectory();
+      paths.insert(0, '${docsDir.path}/muscle_tracker_role.json');
+    } catch (_) {}
+    for (final path in paths) {
+      try {
+        final file = File(path);
+        if (await file.exists()) {
+          final data = jsonDecode(await file.readAsString());
+          setState(() {
+            _dualRole = data['role'] ?? 'front';
+            _isDualMode = true;
+            _isAutoMode = false;
+            _isRecordingMode = false;
+            _isProfileMode = false;
+          });
+          _startTriggerPolling();
+          return;
+        }
+      } catch (_) {}
+    }
+  }
+
+  void _startTriggerPolling() {
+    _triggerPollTimer?.cancel();
+    _triggerPollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) async {
+      final paths = [
+        '/data/local/tmp/muscle_tracker_trigger',
+        '/sdcard/muscle_tracker_trigger',
+      ];
+      for (final path in paths) {
+        try {
+          final trigger = File(path);
+          if (await trigger.exists()) {
+            await trigger.delete();
+            _dualCapture();
+            return;
+          }
+        } catch (_) {}
+      }
+    });
+  }
+
+  Future<void> _dualCapture() async {
+    if (_isCapturing || _controller == null || !_controller!.value.isInitialized) return;
+    setState(() { _dualStatus = 'CAPTURING'; _isCapturing = true; });
+    try {
+      // Use app temp dir (always writable) — desktop script pulls via run-as or adb
+      final tmpDir = await getTemporaryDirectory();
+      final dualDir = Directory('${tmpDir.path}/muscle_dual');
+      if (!await dualDir.exists()) await dualDir.create(recursive: true);
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      _dualCaptureCount++;
+      // Burst 4 frames, pick sharpest
+      final frames = <String>[];
+      for (int i = 0; i < 4; i++) {
+        try {
+          if (_controller!.value.isTakingPicture) { await Future.delayed(const Duration(milliseconds: 100)); continue; }
+          final XFile img = await _controller!.takePicture();
+          frames.add(img.path);
+        } catch (_) { await Future.delayed(const Duration(milliseconds: 200)); }
+      }
+      if (frames.isNotEmpty) {
+        String best = frames.first;
+        int bestSize = 0;
+        for (final path in frames) {
+          final size = await File(path).length();
+          if (size > bestSize) { bestSize = size; best = path; }
+        }
+        final dest = '${dualDir.path}/${_dualRole}_${_dualCaptureCount}_$timestamp.jpg';
+        await File(best).copy(dest);
+      }
+      setState(() { _dualStatus = 'DONE'; _isCapturing = false; });
+      // Reset to READY after brief green flash
+      await Future.delayed(const Duration(seconds: 2));
+      if (mounted) setState(() => _dualStatus = 'READY');
+    } catch (e) {
+      setState(() { _dualStatus = 'ERROR'; _isCapturing = false; });
+      await Future.delayed(const Duration(seconds: 2));
+      if (mounted) setState(() => _dualStatus = 'READY');
+    }
   }
 
   void _initSensors() {
@@ -297,6 +404,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     _magSub?.cancel();
     _countdownTimer?.cancel();
     _profileTimer?.cancel();
+    _triggerPollTimer?.cancel();
     super.dispose();
   }
 
@@ -348,6 +456,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       request.files.add(await http.MultipartFile.fromPath('front', _frontPath!));
       request.files.add(await http.MultipartFile.fromPath('side', _sidePath!));
       request.fields['muscle_group'] = _selectedMuscleGroup;
+      request.fields['camera_distance_cm'] = _cameraDistanceCm.round().toString();
       var streamedResponse = await request.send().timeout(const Duration(seconds: 30));
       var response = await http.Response.fromStream(streamedResponse);
       if (!mounted) return;
@@ -383,6 +492,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
       request.files.add(await http.MultipartFile.fromPath('video', file.path));
       request.fields['muscle_group'] = _selectedMuscleGroup;
+      request.fields['camera_distance_cm'] = _cameraDistanceCm.round().toString();
       var streamedResponse = await request.send().timeout(const Duration(seconds: 30));
       var response = await http.Response.fromStream(streamedResponse);
       final result = jsonDecode(response.body);
@@ -404,30 +514,58 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Future<void> _startAutoCapture() async {
     if (_autoRunning || _isCapturing) return;
     _resetCapture();
-    // Enable torch automatically
-    if (!_torchOn) await _toggleTorch();
     setState(() { _autoRunning = true; _isAutoMode = true; });
-    // Phase 0: front
-    await _autoShowStep('FRONT VIEW', 3);
+    // Phase 0: front — burst capture, pick sharpest
+    setState(() { _autoInstruction = 'FRONT — CAPTURING...'; _autoCountdown = 0; });
+    final frontBest = await _burstCaptureBest(8);
+    if (!mounted || !_autoRunning || frontBest == null) return;
+    _frontPath = frontBest;
+    await _saveLatestScan(frontBest, 'front');
+    setState(() { _capturePhase = 1; });
+    // Rotate prompt — brief
+    setState(() { _autoInstruction = 'ROTATE 90°'; });
+    await Future.delayed(const Duration(seconds: 2));
     if (!mounted || !_autoRunning) return;
-    await _autoCapturePhoto();
-    if (!mounted || !_autoRunning) return;
-    // Turn prompt
-    await _autoShowStep('ROTATE 90°', 4);
-    if (!mounted || !_autoRunning) return;
-    // Phase 1: side
-    await _autoShowStep('SIDE VIEW', 3);
-    if (!mounted || !_autoRunning) return;
-    await _autoCapturePhoto();
-    if (!mounted || !_autoRunning) return;
+    // Phase 1: side — burst capture, pick sharpest
+    setState(() { _autoInstruction = 'SIDE — CAPTURING...'; });
+    final sideBest = await _burstCaptureBest(8);
+    if (!mounted || !_autoRunning || sideBest == null) return;
+    _sidePath = sideBest;
+    await _saveLatestScan(sideBest, 'side');
+    // Upload best pair
     setState(() { _autoInstruction = 'Uploading...'; });
     await _uploadScan();
-    if (_torchOn) await _toggleTorch();
     if (mounted) setState(() { _autoRunning = false; _autoInstruction = ''; });
+  }
+
+  /// Burst-capture [count] frames rapidly, return path of the largest file (sharpest).
+  Future<String?> _burstCaptureBest(int count) async {
+    if (_controller == null || !_controller!.value.isInitialized) return null;
+    final frames = <String>[];
+    for (int i = 0; i < count; i++) {
+      try {
+        if (_controller!.value.isTakingPicture) { await Future.delayed(const Duration(milliseconds: 100)); continue; }
+        final XFile img = await _controller!.takePicture();
+        frames.add(img.path);
+        setState(() { _autoInstruction = 'BURST ${frames.length}/$count'; });
+      } catch (_) {
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+    }
+    if (frames.isEmpty) return null;
+    // Pick largest file — higher JPEG size = more detail/sharpness
+    String best = frames.first;
+    int bestSize = 0;
+    for (final path in frames) {
+      final size = await File(path).length();
+      if (size > bestSize) { bestSize = size; best = path; }
+    }
+    return best;
   }
 
   Future<void> _autoShowStep(String label, int seconds) async {
     setState(() { _autoInstruction = label; _autoCountdown = seconds; });
+    if (seconds <= 0) return;
     final completer = Completer<void>();
     _autoTimer?.cancel();
     _autoTimer = Timer.periodic(const Duration(seconds: 1), (t) {
@@ -438,28 +576,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     return completer.future;
   }
 
-  Future<void> _autoCapturePhoto() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    setState(() { _isCapturing = true; });
-    try {
-      final XFile image = await _controller!.takePicture();
-      if (_capturePhase == 0) {
-        _frontPath = image.path;
-        await _saveLatestScan(image.path, 'front');
-        setState(() { _capturePhase = 1; _isCapturing = false; });
-      } else {
-        _sidePath = image.path;
-        await _saveLatestScan(image.path, 'side');
-        setState(() { _isCapturing = false; });
-      }
-    } catch (e) {
-      setState(() { _isCapturing = false; _autoRunning = false; _autoInstruction = ''; _statusMessage = 'Error: $e'; });
-    }
-  }
-
   void _cancelAuto() {
     _autoTimer?.cancel();
-    if (_torchOn) _toggleTorch();
     setState(() { _autoRunning = false; _autoInstruction = ''; _autoCountdown = 0; });
     _resetCapture();
   }
@@ -514,6 +632,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         'POST', Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/upload_session'));
       request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
       request.fields['muscle_group'] = _selectedMuscleGroup;
+      request.fields['camera_distance_cm'] = _cameraDistanceCm.round().toString();
       request.fields['sensor_log'] = jsonEncode(_sensorLog);
       for (final path in framePaths) {
         final fname = path.split('/').last;
@@ -579,7 +698,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         CustomPaint(painter: BodyGuidePainter(phase: _capturePhase, muscleGroup: _selectedMuscleGroup)),
         _buildTopBar(),
         _buildCaptureUI(),
-        if (_autoRunning) _buildAutoOverlay(),
+        if (_autoRunning) Positioned.fill(child: AbsorbPointer(absorbing: true, child: _buildAutoOverlay())),
+        if (_isDualMode) _buildDualOverlay(),
         if (_profileLocked) _buildProfileLockScreen(),
         if (_isUploading && !_autoRunning) _buildUploadOverlay(),
       ]),
@@ -589,13 +709,24 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Widget _buildTopBar() {
     return Positioned(top: 0, left: 0, right: 0, child: Container(padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top + 8, left: 16, right: 16, bottom: 8), decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black87, Colors.transparent])), child: Row(children: [
       GestureDetector(onTap: () => _showProfile(), child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: AppTheme.primaryTeal, width: 1.5)), child: const Icon(Icons.person, color: AppTheme.primaryTeal, size: 20))),
-      const SizedBox(width: 12),
-      DropdownButtonHideUnderline(child: DropdownButton<String>(value: _selectedMuscleGroup, dropdownColor: Colors.black87, icon: const Icon(Icons.arrow_drop_down, color: AppTheme.primaryTeal), style: const TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.bold, fontSize: 14), onChanged: _frontPath != null ? null : (v) => setState(() => _selectedMuscleGroup = v!), items: _muscleIcons.keys.map((m) => DropdownMenuItem(value: m, child: Row(children: [Icon(_muscleIcons[m], size: 16, color: AppTheme.primaryTeal), const SizedBox(width: 8), Text(m.toUpperCase())]))).toList())),
+      const SizedBox(width: 8),
+      Flexible(child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: _selectedMuscleGroup, dropdownColor: Colors.black87, icon: const Icon(Icons.arrow_drop_down, color: AppTheme.primaryTeal, size: 18), style: const TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.bold, fontSize: 13), isDense: true, onChanged: _frontPath != null ? null : (v) => setState(() => _selectedMuscleGroup = v!), items: _muscleIcons.keys.map((m) => DropdownMenuItem(value: m, child: Row(children: [Icon(_muscleIcons[m], size: 14, color: AppTheme.primaryTeal), const SizedBox(width: 6), Text(m.toUpperCase())]))).toList()))),
+      GestureDetector(
+        onTap: _showDistancePicker,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(color: Colors.white12, borderRadius: BorderRadius.circular(12)),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.straighten, color: Colors.white70, size: 14),
+            const SizedBox(width: 4),
+            Text('${_cameraDistanceCm.round()}cm', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+          ]),
+        ),
+      ),
       const Spacer(),
       IconButton(icon: Icon(_torchOn ? Icons.flashlight_on : Icons.flashlight_off, color: _torchOn ? Colors.yellow : Colors.white70), padding: EdgeInsets.zero, constraints: const BoxConstraints(minWidth: 36, minHeight: 36), onPressed: _toggleTorch),
       IconButton(icon: Icon(_showGhost ? Icons.visibility : Icons.visibility_off, color: _showGhost ? AppTheme.primaryTeal : Colors.white70), padding: EdgeInsets.zero, constraints: const BoxConstraints(minWidth: 36, minHeight: 36), onPressed: _toggleGhost),
       IconButton(icon: const Icon(Icons.history, color: Colors.white), padding: EdgeInsets.zero, constraints: const BoxConstraints(minWidth: 36, minHeight: 36), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: _selectedMuscleGroup)))),
-      // R-6: Live Measure shortcut
       IconButton(
         icon: const Icon(Icons.videocam, color: AppTheme.accentGreen, size: 20),
         padding: EdgeInsets.zero,
@@ -606,12 +737,64 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     ])));
   }
 
+  void _showDistancePicker() {
+    double tempDist = _cameraDistanceCm;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.grey[900],
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setSheetState) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Camera Distance', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text('${tempDist.round()} cm', style: TextStyle(color: AppTheme.primaryTeal, fontSize: 32, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Row(children: [
+            const Text('30', style: TextStyle(color: Colors.white54, fontSize: 12)),
+            Expanded(child: Slider(
+              value: tempDist, min: 30, max: 300, divisions: 27,
+              activeColor: AppTheme.primaryTeal,
+              label: '${tempDist.round()} cm',
+              onChanged: (v) => setSheetState(() => tempDist = v),
+            )),
+            const Text('300', style: TextStyle(color: Colors.white54, fontSize: 12)),
+          ]),
+          const SizedBox(height: 4),
+          const Text('Set to the distance between phone and body', style: TextStyle(color: Colors.white54, fontSize: 12)),
+          const SizedBox(height: 16),
+          Row(children: [
+            for (final preset in [60, 100, 150, 200])
+              Expanded(child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(color: tempDist == preset.toDouble() ? AppTheme.primaryTeal : Colors.white24),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                  ),
+                  onPressed: () => setSheetState(() => tempDist = preset.toDouble()),
+                  child: Text('${preset}cm', style: const TextStyle(fontSize: 12)),
+                ),
+              )),
+          ]),
+          const SizedBox(height: 16),
+          SizedBox(width: double.infinity, child: ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryTeal, padding: const EdgeInsets.symmetric(vertical: 14)),
+            onPressed: () { setState(() => _cameraDistanceCm = tempDist); Navigator.pop(ctx); },
+            child: const Text('SET DISTANCE', style: TextStyle(fontWeight: FontWeight.bold)),
+          )),
+        ]),
+      )),
+    );
+  }
+
   Widget _phaseDot(int p) { return Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: _capturePhase == p ? AppTheme.primaryTeal : ((p == 0 ? _frontPath != null : _sidePath != null) ? AppTheme.accentGreen : Colors.white24))); }
 
   Widget _buildCaptureUI() {
     final bottomPad = MediaQuery.of(context).padding.bottom + 24;
     return Positioned(bottom: 0, left: 0, right: 0, child: Container(padding: EdgeInsets.fromLTRB(24, 16, 24, bottomPad), decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Colors.black87, Colors.transparent])), child: Column(mainAxisSize: MainAxisSize.min, children: [
-      Container(margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [_modeBtn('PHOTO', !_isRecordingMode && !_isAutoMode && !_isProfileMode), _modeBtn('VIDEO', _isRecordingMode && !_isAutoMode && !_isProfileMode), _modeBtn('AUTO', _isAutoMode && !_isProfileMode), _modeBtn('PROFILE', _isProfileMode)])),
+      Container(margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [_modeBtn('PHOTO', !_isRecordingMode && !_isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('VIDEO', _isRecordingMode && !_isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('AUTO', _isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('PROFILE', _isProfileMode), _modeBtn('DUAL', _isDualMode)])),
       AnimatedSwitcher(duration: const Duration(milliseconds: 300), child: _isRecording ? Text('00:0$_recordingCountdown', key: const ValueKey('timer'), style: const TextStyle(color: AppTheme.accentRed, fontSize: 32, fontWeight: FontWeight.bold)) : Row(mainAxisSize: MainAxisSize.min, children: [_phaseDot(0), const SizedBox(width: 6), Text(_phaseLabels[_capturePhase], key: ValueKey(_capturePhase), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2)), const SizedBox(width: 6), _phaseDot(1)])),
       const SizedBox(height: 12),
       if (_statusMessage != null) Text(_statusMessage!, style: const TextStyle(color: AppTheme.primaryTeal, fontSize: 13, fontWeight: FontWeight.w500)),
@@ -620,7 +803,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         if (_frontPath != null) IconButton(onPressed: _resetCapture, icon: const Icon(Icons.refresh, color: Colors.white54)),
         const SizedBox(width: 24),
         GestureDetector(
-          onTap: (_isCapturing || _profileRunning) ? null : (_isProfileMode ? _startProfileCapture : (_isAutoMode ? _startAutoCapture : (_isRecordingMode ? _toggleRecording : _captureImage))),
+          onTap: (_isCapturing || _profileRunning) ? null : (_isDualMode ? _dualCapture : (_isProfileMode ? _startProfileCapture : (_isAutoMode ? _startAutoCapture : (_isRecordingMode ? _toggleRecording : _captureImage)))),
           child: Container(width: 76, height: 76, decoration: BoxDecoration(shape: BoxShape.circle, color: _profileRunning ? AppTheme.accentRed : (_isRecording ? AppTheme.accentRed : AppTheme.primaryTeal), border: Border.all(color: Colors.white, width: 4)),
             child: _isCapturing || (_isUploading && _isRecordingMode) ? const Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: Colors.black, strokeWidth: 3))
               : Icon(_isProfileMode ? (_profileRunning ? Icons.stop : Icons.person_search) : (_isAutoMode ? Icons.play_arrow : (_isRecordingMode ? (_isRecording ? Icons.stop : Icons.videocam) : _phaseIcons[_capturePhase])), color: Colors.black, size: 36))),
@@ -635,7 +818,15 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         _isRecordingMode = l == 'VIDEO';
         _isAutoMode = l == 'AUTO';
         _isProfileMode = l == 'PROFILE';
+        _isDualMode = l == 'DUAL';
         _statusMessage = null;
+        if (_isDualMode) {
+          _dualStatus = 'READY';
+          _dualCaptureCount = 0;
+          _startTriggerPolling();
+        } else {
+          _triggerPollTimer?.cancel();
+        }
       }),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -643,6 +834,52 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         child: Text(l, style: TextStyle(color: a ? Colors.black : Colors.white70, fontWeight: FontWeight.bold, fontSize: 11)),
       ),
     );
+  }
+
+  Widget _buildDualOverlay() {
+    final statusColor = _dualStatus == 'READY' ? Colors.blue
+        : _dualStatus == 'CAPTURING' ? Colors.amber
+        : _dualStatus == 'DONE' ? AppTheme.accentGreen
+        : AppTheme.accentRed;
+    final roleLabel = _dualRole == 'front' ? 'FRONT CAMERA' : 'BACK CAMERA';
+    return Positioned.fill(child: AbsorbPointer(
+      // Allow center tap for phone ADB trigger
+      absorbing: false,
+      child: Stack(children: [
+        // Role label top-center
+        Positioned(top: MediaQuery.of(context).padding.top + 16, left: 0, right: 0, child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(8)),
+            child: Text(roleLabel, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2)),
+          ),
+        )),
+        // Status center
+        Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (_dualStatus == 'DONE') const Icon(Icons.check_circle, color: AppTheme.accentGreen, size: 72)
+          else if (_dualStatus == 'CAPTURING') const SizedBox(width: 60, height: 60, child: CircularProgressIndicator(color: Colors.amber, strokeWidth: 5))
+          else Container(width: 72, height: 72, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.blue, width: 3)),
+              child: const Icon(Icons.radio_button_unchecked, color: Colors.blue, size: 36)),
+          const SizedBox(height: 16),
+          Text(_dualStatus, style: TextStyle(color: statusColor, fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 3)),
+          const SizedBox(height: 8),
+          Text('Captures: $_dualCaptureCount', style: const TextStyle(color: Colors.white54, fontSize: 13)),
+        ])),
+        // Hidden center tap target for ADB tap trigger (phone only)
+        Positioned(
+          top: MediaQuery.of(context).size.height / 2 - 50,
+          left: MediaQuery.of(context).size.width / 2 - 50,
+          child: GestureDetector(
+            onTap: _dualCapture,
+            child: Container(width: 100, height: 100, color: Colors.transparent),
+          ),
+        ),
+        // Bottom info
+        Positioned(bottom: MediaQuery.of(context).padding.bottom + 20, left: 0, right: 0, child: Center(
+          child: Text('Controlled by desktop script', style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 11)),
+        )),
+      ]),
+    ));
   }
 
   Widget _buildAutoOverlay() {
@@ -656,8 +893,6 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
             Text('$_autoCountdown', style: const TextStyle(color: AppTheme.primaryTeal, fontSize: 96, fontWeight: FontWeight.bold)),
           if (_autoCountdown == 0 && _isCapturing)
             const Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: AppTheme.primaryTeal, strokeWidth: 4)),
-          const SizedBox(height: 40),
-          TextButton.icon(onPressed: _cancelAuto, icon: const Icon(Icons.close, color: Colors.white54), label: const Text('Cancel', style: TextStyle(color: Colors.white54))),
         ]),
       ),
     );
