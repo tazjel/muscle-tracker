@@ -1,247 +1,369 @@
-# Sonnet Task List — Muscle Tracker v5.0 Integration & Enhancement
+# Sonnet Task List — Muscle Tracker v6.0
+## Updated: 2026-03-16 | Informed by real device testing & git history
 
-> **Role**: Integration engineer, quality enforcer, advanced features
-> **Context**: Gemini writes standalone `core/*.py` modules. Sonnet wires them into the API, CLI, reports, and Flutter app — making them usable end-to-end.
-> **Priority**: Run these AFTER Gemini has committed each phase's modules.
+> **Role**: Integration engineer, quality enforcer, bug fixer, feature wiring
+> **Context**: Most Phase A–D code has been written. **Nothing has been verified working end-to-end on the actual device.** The #1 priority is making existing code work, not writing more.
 
 ---
 
-## PHASE 0: QUALITY FIXES (Run Now — Before Gemini Continues)
+## STATUS: What's Done vs. What's Broken
 
-### S-0.1 — Fix Mission 1.1 Measurement Overlay (Arrow Heads)
-**File**: `core/measurement_overlay.py`
-**Problem**: Width/height dimension lines have no arrowheads. Spec required arrow-headed dimension lines like engineering drawings.
+### Code Written (committed, but NOT verified on device)
+| Area | Status | Commits |
+|------|--------|---------|
+| Scan pipeline (circumference, definition, overlay) | ✅ Written | `77d043e` |
+| Body composition endpoint | ✅ Written | `b10c106` |
+| 3D mesh API (reconstruct, compare, serve OBJ) | ✅ Written | `b10c106` |
+| Dashboard API (body_map, quick_stats, progress_summary) | ✅ Written | `b10c106` |
+| Live camera endpoint + Flutter LivePreviewScreen | ✅ Written | `b10c106` |
+| Session report endpoint | ✅ Written | `b10c106` |
+| Export endpoint (CSV/JSON) | ✅ Written | `b10c106` |
+| CLI commands (circumference, body-comp, definition) | ✅ Written | `1f5b077` |
+| Unified `core/pipeline.py` | ✅ Written | `b10c106` |
+| PROFILE mode (Auto Mode 2) with screen lock | ✅ Written | `0418899` |
+| 196 tests passing | ✅ Verified | All green |
+
+### NOT Working / NOT Verified
+| Issue | Severity | Evidence |
+|-------|----------|----------|
+| **No scan has EVER shown results on phone** | 🔴 CRITICAL | History screen always "No data found" |
+| **PROFILE mode crashes at ~70% upload** | 🔴 HIGH | 20-image multipart times out at 60s |
+| **PROFILE coverage always low** | 🟡 MEDIUM | Samsung A24 magnetometer unreliable |
+| **PROFILE progress not cumulative** | 🟡 MEDIUM | Each 20s session analyzed in isolation |
+| **ResultsScreen may crash or show empty** | 🔴 HIGH | Never tested with real server response |
+| **AI Coach module doesn't exist** | ⚪ NOT STARTED | `core/ai_coach.py` is MISSING |
+| **report_generator.py has uncommitted changes** | 🟡 MEDIUM | +113 lines in git diff |
+
+---
+
+## PHASE 0: MAKE IT WORK (Do This First — Nothing Else Matters)
+
+> **Goal**: ONE successful scan → results visible on phone. Without this, the app has zero value.
+
+### S-0.1 — Verify Scan Pipeline End-to-End 🔴 CRITICAL
+**Type**: Debug / Integration test
+**Steps**:
+1. Start server: `py4web run apps --host 0.0.0.0 --port 8000`
+2. Deploy app: `python C:/Users/MiEXCITE/Desktop/GTDdebug/gtddebug.py deploy muscle-debug`
+3. Select QUADRICEP → PHOTO mode → take front + side → confirm → check ResultsScreen
+4. If ResultsScreen crashes or shows nothing:
+   - Check `server.log` for Python tracebacks
+   - Check `_process_and_save_scan()` in `controllers.py` (grep for it — line ~159-420)
+   - Common failures: URL mismatch, JWT expired, muscle group name validation, cv2 import error
+5. Check HistoryScreen loads saved scan
+
+**Files to debug**: `web_app/controllers.py` (upload_scan → _process_and_save_scan), `companion_app/lib/main.dart` (ResultsScreen ~line 826)
+**Success**: Photo taken → metrics shown on phone → scan appears in History
+
+### S-0.2 — Fix ResultsScreen Data Binding
+**Type**: Bug fix
+**File**: `companion_app/lib/main.dart` (~line 826-1024)
+**Problem**: ResultsScreen reads from a `result` map returned by the server. If the server response structure doesn't match what the Flutter code expects, the screen shows nothing or crashes.
 **Fix**:
-- Add `_draw_arrow_line(img, pt1, pt2, color, thickness)` helper that draws a line with triangular arrowheads at both ends
-- Replace `cv2.line` calls for width/height dimension lines with the arrow version
-- Use `cv2.fillPoly` for arrowhead triangles (6px wide, 10px long)
-**Test**: Existing `tests/test_measurement_overlay.py` should still pass
+1. Grep for `result[` and `result['` in ResultsScreen to see what keys it expects
+2. Grep for `return dict(` in `upload_scan` endpoint to see what keys the server sends
+3. Make them match — either fix server response or fix Flutter parsing
+4. Add null-safety: if a key is missing, show "N/A" instead of crashing
 
-### S-0.2 — Commit Pre-Written Test Files
-**Action**: Stage and commit all 8 test files written by Sonnet as a single commit
-```
-git add tests/test_body_composition.py tests/test_definition_scorer.py \
-       tests/test_mesh_reconstruction.py tests/test_mesh_comparison.py \
-       tests/test_body_map.py tests/test_timelapse.py \
-       tests/test_video_analyzer.py tests/test_session_report.py
-git commit -m "test: add TDD test suite for v5 missions 1.3-4.2"
-```
+**Test**: Deploy, scan, confirm all metric cards show data (even if values seem wrong — showing SOMETHING is the goal)
+
+### S-0.3 — Fix PROFILE Mode Upload Crash 🔴 HIGH
+**Type**: Bug fix
+**File**: `companion_app/lib/main.dart` (~line 467-570)
+**Problem**: 20-image multipart upload times out at 60s over WiFi
+**Fix** (pick one or both):
+1. Change burst interval from 1s to 2s in `_startProfileCapture()` → only 10 images
+2. Increase upload timeout from 60s to 120s in `_finishProfileCapture()`
+3. Compress images before upload (quality: 70 instead of 100)
+
+**Test**: PROFILE mode → 20 seconds → upload completes → ProfileProgressScreen shows zone coverage
 
 ---
 
-## PHASE 1: API INTEGRATION (After Gemini Completes Phase 1 Missions)
+## PHASE 1: MAKE IT RELIABLE (Fix known bugs before new features)
 
-### S-1.1 — Wire Body Composition into API
+### S-1.1 — PROFILE Magnetometer Fallback
+**Type**: Bug fix
+**File**: `core/session_analyzer.py`
+**Problem**: Samsung A24 magnetometer gives unreliable compass headings → all frames map to same zone → coverage stays low
+**Fix**: In `analyze_session()`, if all compass readings are 0/None/identical, distribute frames evenly across zones based on frame order (assume user is slowly rotating)
+**Test**: Run session_analyzer with mock data where compass=0 → should still give ~50% coverage credit
+
+### S-1.2 — PROFILE Cumulative Progress
+**Type**: Feature fix
+**File**: `web_app/controllers.py` (upload_session endpoint, ~line 1589)
+**Problem**: Each 20s PROFILE session is analyzed independently. Previous coverage is lost.
+**Fix**:
+1. In `upload_session`: before analyzing, load all previous session logs for this customer + muscle_group
+2. Merge `covered_zones` from previous sessions with current session
+3. Return cumulative coverage % so progress builds toward 100% over multiple runs
+**Test**: Upload 3 sessions → coverage should accumulate, not reset each time
+
+### S-1.3 — Commit Uncommitted report_generator.py Changes
+**Type**: Housekeeping
+**File**: `core/report_generator.py` (+113 lines uncommitted)
+**Action**: Review the changes, run tests, commit if clean
+
+---
+
+## PHASE 2: POLISH RESULTS DISPLAY (User sees value)
+
+### S-2.1 — Rich ResultsScreen in Flutter
+**Type**: Enhancement
+**File**: `companion_app/lib/main.dart` (ResultsScreen ~line 826)
+**Show all available metrics from server response**:
+- Volume (cm³) with icon
+- Circumference (cm / inches)
+- Definition score + letter grade (S/A/B/C/D/F) with color coding
+- Shape score with star rating
+- Growth % vs previous scan (if exists)
+- "View Annotated Photo" button → opens `annotated_img_url`
+- "View Report" button → opens PDF report endpoint
+**Key**: Only show cards for metrics that are non-null in the response. Don't crash on missing data.
+
+### S-2.2 — HistoryScreen Improvements
+**Type**: Enhancement
+**File**: `companion_app/lib/main.dart` (HistoryScreen ~line 1141)
+**Current state**: Shows list or "No data found"
+**Improvements**:
+- Show scan thumbnail + date + muscle group + key metric (volume or circumference)
+- Tap to open full ResultsScreen for that scan
+- Pull-to-refresh
+- Filter by muscle group dropdown
+
+### S-2.3 — Dashboard Login Flow
+**Type**: Bug fix
+**Files**: `web_app/static/personal/app.js`, `web_app/controllers.py`
+**Problem**: Personal dashboard runs in demo mode because auth flow is incomplete
+**Fix**: Ensure `POST /api/auth/token` returns `customer_id` alongside the JWT, and `app.js` stores and uses it for all subsequent API calls instead of hardcoded demo data
+
+---
+
+## PHASE 3: AI COACH (New Feature — Claude API)
+
+### S-3.1 — Create `core/ai_coach.py` ⚪ NOT STARTED
+**Type**: New module
+**File**: New `core/ai_coach.py`
+**Feature**: Use Anthropic Claude API to generate personalized advice from scan data
+```python
+from anthropic import Anthropic
+
+def generate_training_recommendations(scan_history, body_composition=None, symmetry_data=None):
+    """
+    Build structured prompt from scan metrics → call claude-sonnet-4-6 → return:
+    {
+        'priority_muscles': ['left_bicep', 'hamstring'],
+        'recommended_exercises': [{'muscle': 'bicep', 'exercise': 'Hammer Curl', 'sets': '4x8', 'reason': '...'}],
+        'symmetry_fix': '...',
+        'weekly_goal': '...',
+        'summary': '3-sentence plain English interpretation'
+    }
+    """
+
+def interpret_scan_result(scan_metrics, previous_scan=None):
+    """
+    Generate 2-3 sentence natural language summary of what a scan means.
+    E.g.: "Your left bicep grew 3.2% this week — excellent progress.
+           Definition dropped slightly, suggesting muscle growth with water retention."
+    """
+```
+**Dependencies**: `pip install anthropic` (or make it optional with try/except)
+**Test**: `tests/test_ai_coach.py` with mocked API responses
+
+### S-3.2 — Wire AI Coach into API
+**Type**: Integration
 **File**: `web_app/controllers.py`
 **Add endpoint**:
-```python
-POST /api/customer/<customer_id>/body_composition
 ```
-- Accept: `image` (file upload) + optional JSON body: `weight_kg`, `height_cm`, `gender`
-- Pipeline: `body_segmentation.segment()` → get landmarks → `body_composition.estimate_body_composition()` → return JSON
-- Also call `generate_composition_visual()` and save annotated image
-**DB**: Add `body_fat_pct`, `lean_mass_kg`, `waist_hip_ratio` columns to `muscle_scan` table
-
-### S-1.2 — Wire Circumference into Scan Pipeline
-**File**: `web_app/controllers.py` — modify `_process_and_save_scan()`
-**Change**: After volume estimation, also call `circumference.estimate_circumference()` and store result
-**DB**: Add `circumference_cm` column to `muscle_scan` table
-**API response**: Include `circumference_cm` and `circumference_inches` in scan result JSON
-
-### S-1.3 — Wire Definition Scorer into Scan Pipeline
-**File**: `web_app/controllers.py` — modify `_process_and_save_scan()`
-**Change**: After shape scoring, call `definition_scorer.score_muscle_definition()` and store result
-**DB**: Add `definition_score`, `definition_grade` columns to `muscle_scan` table
-
-### S-1.4 — Wire Measurement Overlay into Scan Pipeline
-**File**: `web_app/controllers.py` — modify `_process_and_save_scan()`
-**Change**: After all analysis, call `measurement_overlay.draw_measurement_overlay()` and save annotated image alongside original
-**Storage**: Save as `{scan_id}_annotated.png` in uploads/
-
-### S-1.5 — Add CLI Commands for New Features
-**File**: `muscle_tracker.py`
-**Add commands**:
+GET /api/customer/<customer_id>/recommendations
+  → Fetch last 30 days of scans + body comp + symmetry
+  → Call ai_coach.generate_training_recommendations()
+  → Return JSON
 ```
-muscle_tracker.py circumference --image <img> [--marker-size 20.0] [--method elliptical|perimeter]
-muscle_tracker.py body-composition --image <img> [--weight 80] [--height 180] [--gender male]
-muscle_tracker.py definition --image <img> [--muscle-group bicep]
-```
+**Also**: Add `interpret_scan_result()` call to `_process_and_save_scan()` → include `ai_interpretation` text in scan result JSON
+
+### S-3.3 — Progress Insight Alerts
+**Type**: Enhancement
+**File**: `web_app/controllers.py` (quick_stats endpoint, ~line 1210)
+**Add `alerts` array** to quick_stats response, detecting:
+- New personal best (volume, circumference, definition)
+- Symmetry imbalance > 10%
+- Growth streak (5+ improving scans)
+- Plateau (3+ scans with < 0.5% change)
+- Body fat trend reversal
 
 ---
 
-## PHASE 2: 3D INTEGRATION (After Gemini Completes Phase 2 Missions)
+## PHASE 4: ENHANCED REPORTING
 
-### S-2.1 — Wire 3D Mesh into API
-**File**: `web_app/controllers.py`
-**Add endpoints**:
-```python
-POST /api/customer/<customer_id>/reconstruct_3d
-  → Accept front + side images
-  → Call mesh_reconstruction.reconstruct_mesh_from_silhouettes()
-  → Save OBJ file, generate preview PNG
-  → Return: { mesh_url, preview_url, volume_cm3, num_vertices, num_faces }
-
-GET /api/customer/<customer_id>/mesh/<scan_id>.obj
-  → Serve OBJ file for Three.js viewer
-
-POST /api/customer/<customer_id>/compare_3d
-  → Accept two scan IDs
-  → Load meshes, call mesh_comparison.compare_meshes()
-  → Export colored OBJ, return displacement stats
-```
-
-### S-2.2 — 3D Volume from Mesh (More Accurate)
-**File**: `core/volumetrics.py` or new `core/mesh_volume.py`
-**Feature**: Use the actual mesh vertices/faces to compute precise volume via divergence theorem, replacing the 2D estimation when 3D data is available
-**Integration**: If both front+side images exist, prefer 3D mesh volume over 2D cylinder estimate
-
-### S-2.3 — Embed 3D Preview in PDF Reports
+### S-4.1 — Comprehensive PDF Report
+**Type**: Enhancement
 **File**: `core/report_generator.py`
-**Change**: If 3D mesh data exists for a scan, call `mesh_reconstruction.generate_mesh_preview_image()` and embed the wireframe render in the PDF report as an additional section
-
-### S-2.4 — Add 3D CLI Command
-**File**: `muscle_tracker.py`
-**Add command**:
-```
-muscle_tracker.py reconstruct-3d --front <img> --side <img> [--marker-size 20.0] [--output mesh.obj] [--preview preview.png]
-```
-
----
-
-## PHASE 3: DASHBOARD & REPORTING (After Gemini Completes Phase 3 Missions)
-
-### S-3.1 — Dashboard API Endpoints
-**File**: `web_app/controllers.py`
-**Add endpoints** that the personal dashboard (`web_app/static/personal/app.js`) expects:
-```python
-GET /api/customer/<customer_id>/body_map
-  → Aggregate latest scan per muscle group
-  → Return: { muscle_groups: [ { name, side, volume_cm3, shape_score, growth_pct, definition_grade } ] }
-
-GET /api/customer/<customer_id>/quick_stats
-  → Return: { total_scans, active_muscle_groups, best_growth_pct, best_muscle,
-              symmetry_score, days_since_first_scan, current_streak }
-
-GET /api/customer/<customer_id>/circumference_history
-  → Return: [ { scan_date, muscle_group, circumference_cm } ]
-```
-
-### S-3.2 — Enhanced PDF Report (All-in-One)
-**File**: `core/report_generator.py`
-**Enhance** `generate_clinical_report()` to include:
-- Measurement overlay image (from `measurement_overlay.py`)
+**Add sections** to `generate_clinical_report()`:
+- Measurement overlay image (from `annotated_img`)
 - Circumference estimate
-- Definition score + heatmap
-- Body composition section (if data available)
-- 3D mesh preview (if data available)
-- Body map thumbnail (if multiple muscle groups scanned)
-This makes the existing report endpoint (`GET /api/customer/<id>/report/<scan_id>`) automatically richer
+- Definition score with grade
+- Body composition section (if available)
+- 3D mesh wireframe preview (if mesh data exists)
+- AI interpretation text (if ai_coach available)
+- Mini body map thumbnail (if multi-muscle data)
 
-### S-3.3 — Progress API Enhancement
-**File**: `web_app/controllers.py` — modify progress endpoint
-**Add**: circumference trend, definition score trend, body composition trend to the existing progress response
-
----
-
-## PHASE 4: FLUTTER APP UPDATE (After Phases 1-3)
-
-### S-4.1 — Add New Scan Results to Flutter
-**File**: `companion_app/lib/main.dart`
-**Change**: After scan upload, display new metrics:
-- Circumference reading
-- Definition score + grade
-- Body composition card (if full-body shot)
-- "View in 3D" button that opens web viewer URL
-
-### S-4.2 — Add Body Composition Screen
-**File**: `companion_app/lib/main.dart` (or new file)
-**Feature**: Full-body photo capture mode that:
-- Guides user to stand in T-pose
-- Captures front photo
-- Calls `POST /api/customer/<id>/body_composition`
-- Displays: BMI, body fat %, lean mass, WHR, classification
-- Shows composition visual overlay on the photo
-
-### S-4.3 — Add 3D Scan Flow
-**File**: `companion_app/lib/main.dart`
-**Feature**: Guided two-photo flow:
-- Step 1: "Take front photo" with pose overlay
-- Step 2: "Take side photo" with pose overlay
-- Upload both → `POST /api/customer/<id>/reconstruct_3d`
-- Show 3D preview image + "Open 3D Viewer" button (launches web viewer)
+### S-4.2 — 3D Preview in PDF
+**Type**: Enhancement
+**File**: `core/report_generator.py`
+**If** mesh data exists for a scan, embed `mesh_reconstruction.generate_mesh_preview_image()` wireframe
 
 ---
 
-## PHASE 5: END-TO-END PIPELINE (Final Polish)
+## PHASE 5: BUSINESS FOUNDATIONS (v6.0 — only if customer funds it)
 
-### S-5.1 — Single-Scan Pipeline Function
-**File**: New `core/pipeline.py`
-**Feature**: One function that runs EVERYTHING on a scan:
-```python
-def full_scan_pipeline(image_front, image_side=None, image_before=None,
-                       user_weight_kg=None, user_height_cm=None, gender='male'):
-    """
-    Run complete analysis pipeline:
-    1. Calibrate (if ArUco markers present)
-    2. Segment body + detect muscle group
-    3. Extract contours + metrics
-    4. Estimate circumference
-    5. Score shape + definition
-    6. Estimate volume (2D or 3D if side view available)
-    7. Compare with before (if provided)
-    8. Estimate body composition (if full body)
-    9. Generate all overlays
-    10. Return comprehensive result dict
-    """
-```
-**Why**: Currently the API endpoint chains ~8 function calls manually. This consolidates the pipeline so both API and CLI share the same flow.
+### S-5.1 — Multi-Tenant Architecture
+**Files**: `web_app/models.py`, `web_app/controllers.py`
+- Add `clinic` table (name, logo, subdomain, settings)
+- Role expansion: `superadmin`, `clinic_admin`, `trainer`, `athlete`
+- Row-level isolation: scope all queries by `clinic_id`
 
-### S-5.2 — Scan History Export
-**File**: `web_app/controllers.py`
-**Add endpoint**:
-```python
-GET /api/customer/<customer_id>/export
-  → Generate CSV of all scan data (date, muscle, volume, circumference, score, etc.)
-  → Also option for JSON export
-```
+### S-5.2 — Trainer Dashboard
+**Files**: New `web_app/static/trainer/`
+- Patient list with most recent metrics
+- Side-by-side multi-patient comparison
+- Bulk report generation
+- Alert feed for concerning trends
 
-### S-5.3 — Regression Test for Full Pipeline
-**File**: `tests/test_pipeline_integration.py`
-**Feature**: End-to-end test that:
-- Creates a synthetic image with known contour
-- Runs full_scan_pipeline()
-- Verifies all output keys present
-- Verifies metrics are in reasonable ranges
-- Verifies overlay images are generated
+### S-5.3 — Cloud Deployment Prep
+**Files**: New `deploy/`, `Dockerfile`
+- Cloud Run config (auto-scaling)
+- Cloud Storage for images (replace local uploads/)
+- Cloud SQL adapter (replace SQLite)
+- Async vision processing queue
 
 ---
 
 ## TASK PRIORITY ORDER
 
-| Rank | Task | Why | Depends On |
-|------|------|-----|-----------|
-| 1 | S-0.1 | Fix visible bug in shipped code | Nothing |
-| 2 | S-0.2 | Commit test files so Gemini can use them | Nothing |
-| 3 | S-1.2 | Circumference in scan pipeline — most practical | Gemini 1.2 (done) |
-| 4 | S-1.4 | Overlay in scan pipeline — visible to customer | Gemini 1.1 (done) |
-| 5 | S-1.1 | Body composition API | Gemini 1.3 |
-| 6 | S-1.3 | Definition scorer in pipeline | Gemini 1.4 |
-| 7 | S-1.5 | CLI commands | Gemini Phase 1 |
-| 8 | S-2.1 | 3D API endpoints | Gemini 2.1 |
-| 9 | S-2.3 | 3D in PDF reports | Gemini 2.1 |
-| 10 | S-3.1 | Dashboard API | Gemini 3.3 |
-| 11 | S-3.2 | Enhanced PDF report | All Phase 1-2 modules |
-| 12 | S-5.1 | Pipeline consolidation | All core modules |
-| 13 | S-4.1 | Flutter updates | API endpoints done |
-| 14 | S-5.3 | Integration test | Pipeline function |
+| Rank | Task | Type | Why | Time Est |
+|------|------|------|-----|----------|
+| **1** | **S-0.1** | Debug | **Nothing works without this** — verify scan pipeline | 2-4 hrs |
+| **2** | **S-0.2** | Bug fix | ResultsScreen must show data | 1-2 hrs |
+| **3** | **S-0.3** | Bug fix | PROFILE mode is the flagship feature | 1 hr |
+| **4** | **S-1.1** | Bug fix | Magnetometer fallback for Samsung A24 | 1 hr |
+| **5** | **S-1.2** | Feature | Cumulative PROFILE progress | 2 hrs |
+| **6** | **S-1.3** | Housekeeping | Commit report_generator changes | 15 min |
+| **7** | **S-2.1** | Enhancement | Rich ResultsScreen — customer sees value | 2-3 hrs |
+| **8** | **S-2.2** | Enhancement | HistoryScreen shows real data | 2 hrs |
+| **9** | **S-2.3** | Bug fix | Dashboard exits demo mode | 1 hr |
+| **10** | **S-3.1** | New feature | AI Coach module | 3-4 hrs |
+| **11** | **S-3.2** | Integration | Wire AI Coach into API | 1 hr |
+| **12** | **S-3.3** | Enhancement | Progress alerts | 2 hrs |
+| **13** | **S-4.1** | Enhancement | Rich PDF report | 3 hrs |
+| **14** | **S-4.2** | Enhancement | 3D in PDF | 1 hr |
+| 15+ | Phase 5 | Business | Only if funded | Days |
 
 ---
 
-## NOTES FOR SONNET
+## RULES FOR SONNET
 
-- **Protected files you CAN modify**: `controllers.py`, `muscle_tracker.py`, `models.py`, `report_generator.py`, `__init__.py` — these are YOUR domain
-- **Protected files Gemini cannot touch**: Everything above. You own integration.
-- **Pattern**: Import from `core.*`, add `@action` route, handle auth, call function, return JSON
-- **DB migrations**: py4web auto-migrates on model changes. Just add fields to `models.py`.
-- **Existing tests must pass**: Run `python -m pytest tests/ -v` after each change
-- **Token tip**: Tasks S-1.2 and S-1.4 can be done NOW since Gemini already shipped missions 1.1 and 1.2
+### Token Budget (MANDATORY)
+- **Do NOT read `main.dart` or `controllers.py` in full** — use Grep to find the exact function
+- **Do NOT run `flutter analyze`** — never
+- **Do NOT explore sibling projects** (baloot-ai, GTDdebug, tazjel)
+- **Do NOT add features beyond what is asked**
+- **Run tests after every change**: `C:/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/ -q`
+- **Stop if tests drop below 196** — you broke something, fix it
+- **One task at a time** — finish it, test it, commit it, move on
+
+### File Ownership
+- **Sonnet owns**: `controllers.py`, `models.py`, `muscle_tracker.py`, `report_generator.py`, `companion_app/`
+- **Gemini owns**: `core/*.py` (vision modules) — import from them, do NOT rewrite them
+- Exception: `core/ai_coach.py` is Sonnet's to create (it doesn't exist yet)
+
+### Key Patterns
+```python
+# Adding a py4web endpoint
+@action('api/customer/<customer_id>/my_endpoint', method=['POST'])
+@action.uses(db, auth)
+def my_endpoint(customer_id):
+    require_auth()  # JWT check — always call this
+    data = request.json or {}
+    return dict(status='ok', result={})
+
+# DB column (py4web auto-migrates — no migration files needed)
+Field('new_column', 'double'),
+```
+
+### Deploy & Test on Device
+```bash
+# Start server
+cd C:/Users/MiEXCITE/Projects/muscle_tracker
+py4web run apps --host 0.0.0.0 --port 8000
+
+# Deploy to phone (WiFi ADB at 192.168.100.8:5555)
+python C:/Users/MiEXCITE/Desktop/GTDdebug/gtddebug.py deploy muscle-debug
+
+# Screenshot phone
+python C:/Users/MiEXCITE/Desktop/GTDdebug/gtddebug.py screen
+
+# Check crash log
+python C:/Users/MiEXCITE/Desktop/GTDdebug/gtddebug.py crash muscle-debug
+
+# Check server health
+curl -s http://localhost:8000/web_app/api/health
+```
+
+### Git Workflow
+```bash
+git add web_app/controllers.py web_app/models.py
+git commit -m "feat|fix|test(scope): short description (S-X.Y)"
+```
+
+### Valid Muscle Group Names
+`bicep`, `tricep`, `quadricep`, `hamstring`, `calf`, `glute`, `deltoid`, `lat`, `forearm`, `chest`
+(Server rejects old names like `quad`, `delt`)
+
+---
+
+## KEY LINE NUMBERS (as of commit 0418899)
+
+### `companion_app/lib/main.dart`
+| Feature | Line |
+|---------|------|
+| AppConfig.serverBaseUrl | ~18 |
+| CameraLevelScreen state | ~210-250 |
+| _captureImage() | ~295 |
+| _uploadScan() | ~318 |
+| _startAutoCapture() | ~365 |
+| _startProfileCapture() | ~467 |
+| _finishProfileCapture() | ~510 |
+| ResultsScreen | ~826 |
+| ProfileProgressScreen | ~1025 |
+| HistoryScreen | ~1141 |
+| LivePreviewScreen | ~1394 |
+
+### `web_app/controllers.py`
+| Endpoint | Line |
+|----------|------|
+| upload_scan | ~159 |
+| upload_video | ~224 |
+| customer scans | ~427 |
+| report | ~458 |
+| progress | ~578 |
+| body_composition | ~884 |
+| reconstruct_3d | ~980 |
+| body_map | ~1168 |
+| quick_stats | ~1210 |
+| live_analyze | ~1522 |
+| upload_session (PROFILE) | ~1589 |
+| profile_status | ~1698 |
+
+---
+
+## SUCCESS CRITERIA
+
+| Phase | Customer Can Say |
+|-------|-----------------|
+| Phase 0 | "I took a photo and it showed me my muscle measurements!" |
+| Phase 1 | "PROFILE mode works reliably and remembers my progress" |
+| Phase 2 | "I can see my history and track my gains over time" |
+| Phase 3 | "It tells me which muscles to focus on and what exercises to do" |
+| Phase 4 | "I can download a professional PDF report of my scan" |
+| Phase 5 | "My trainer can see all my clients' progress in one dashboard" |
