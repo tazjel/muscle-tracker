@@ -504,6 +504,42 @@ def generate_report(customer_id, scan_id):
     if scan.shape_score is not None:
         shape_result = {"score": scan.shape_score, "grade": scan.shape_grade}
 
+    # v5 extras
+    annotated_bgr = None
+    if scan.annotated_img:
+        ann_path = os.path.join('uploads', scan.annotated_img)
+        if os.path.exists(ann_path):
+            annotated_bgr = cv2.imread(ann_path)
+
+    definition_result = None
+    if scan.definition_score is not None:
+        definition_result = {'overall_definition': scan.definition_score,
+                             'grade': scan.definition_grade}
+
+    # Latest body composition for this customer
+    body_comp_row = db(
+        db.body_composition_log.customer_id == customer_id
+    ).select(orderby=~db.body_composition_log.assessed_on, limitby=(0, 1)).first()
+    body_comp_data = None
+    if body_comp_row:
+        body_comp_data = {
+            'bmi': body_comp_row.bmi,
+            'estimated_body_fat_pct': body_comp_row.body_fat_pct,
+            'lean_mass_kg': body_comp_row.lean_mass_kg,
+            'waist_to_hip_ratio': body_comp_row.waist_hip_ratio,
+            'classification': body_comp_row.classification,
+            'confidence': body_comp_row.confidence,
+        }
+
+    # Latest mesh preview for this customer + muscle group
+    mesh_prev_path = None
+    mesh_row = db(
+        (db.mesh_model.customer_id == customer_id) &
+        (db.mesh_model.muscle_group == scan.muscle_group)
+    ).select(orderby=~db.mesh_model.created_on, limitby=(0, 1)).first()
+    if mesh_row and mesh_row.preview_path and os.path.exists(mesh_row.preview_path):
+        mesh_prev_path = mesh_row.preview_path
+
     try:
         pdf_path = generate_clinical_report(
             scan_result,
@@ -511,6 +547,12 @@ def generate_report(customer_id, scan_id):
             shape_result=shape_result,
             output_path=temp_path,
             patient_name=customer.name,
+            scan_date=str(scan.scan_date)[:10],
+            circumference_cm=scan.circumference_cm,
+            definition_result=definition_result,
+            body_composition=body_comp_data,
+            annotated_image_bgr=annotated_bgr,
+            mesh_preview_path=mesh_prev_path,
         )
         response.headers['Content-Type'] = 'application/pdf'
         with open(pdf_path, 'rb') as f:
@@ -564,7 +606,68 @@ def customer_progress(customer_id):
     if len(health_logs) >= 3:
         correlation = calculate_correlation(scans, health_logs)
 
-    return dict(status='success', trend=trend, correlation=correlation)
+    # ── Circumference trend ──────────────────────────────────────────────────
+    circumference_trend = [
+        {
+            'date':          str(s.get('scan_date', ''))[:10],
+            'muscle_group':  s.get('muscle_group'),
+            'circumference_cm': s.get('circumference_cm'),
+        }
+        for s in scans if s.get('circumference_cm') is not None
+    ]
+
+    # Circumference regression projection (same logic as volume)
+    circ_projection = None
+    if len(circumference_trend) >= 2:
+        from core.progress import _linear_regression, _parse_date
+        circ_dates  = [_parse_date(r['date']) for r in circumference_trend]
+        circ_vals   = [r['circumference_cm'] for r in circumference_trend]
+        day0        = circ_dates[0]
+        offsets     = [(d - day0).days for d in circ_dates]
+        slope, _    = _linear_regression(offsets, circ_vals)
+        circ_latest = circ_vals[-1]
+        circ_projection = {
+            'direction':      'gaining' if slope > 0.001 else 'losing' if slope < -0.001 else 'stable',
+            'daily_rate_cm':  round(slope, 4),
+            'projected_30d_cm': round(circ_latest + slope * 30, 2),
+        }
+
+    # ── Definition trend ─────────────────────────────────────────────────────
+    definition_trend = [
+        {
+            'date':           str(s.get('scan_date', ''))[:10],
+            'muscle_group':   s.get('muscle_group'),
+            'definition_score': s.get('definition_score'),
+            'definition_grade': s.get('definition_grade'),
+        }
+        for s in scans if s.get('definition_score') is not None
+    ]
+
+    # ── Body composition trend ───────────────────────────────────────────────
+    comp_logs = db(
+        db.body_composition_log.customer_id == customer_id
+    ).select(orderby=db.body_composition_log.assessed_on).as_list()
+
+    body_composition_trend = [
+        {
+            'date':           str(c.get('assessed_on', ''))[:10],
+            'body_fat_pct':   c.get('body_fat_pct'),
+            'lean_mass_kg':   c.get('lean_mass_kg'),
+            'bmi':            c.get('bmi'),
+            'classification': c.get('classification'),
+        }
+        for c in comp_logs
+    ]
+
+    return dict(
+        status='success',
+        trend=trend,
+        correlation=correlation,
+        circumference_trend=circumference_trend,
+        circumference_projection=circ_projection,
+        definition_trend=definition_trend,
+        body_composition_trend=body_composition_trend,
+    )
 
 
 @action('api/customer/<customer_id:int>/symmetry', method=['POST'])
@@ -1479,3 +1582,146 @@ def live_analyze():
 @action.uses(cors)
 def api_options(path):
     return ""
+
+
+# --- AUTO MODE 2: GUIDED SESSION UPLOAD ---
+
+@action('api/customer/<customer_id:int>/upload_session', method=['POST'])
+@action.uses(db, cors)
+def upload_session(customer_id):
+    """
+    Receives a burst session from Auto Mode 2:
+    - Multiple image files (frame_000.jpg, frame_001.jpg, ...)
+    - JSON field 'sensor_log': list of per-frame sensor readings
+    - Field 'muscle_group'
+    Returns coverage analysis + progress % + next instructions.
+    """
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    requesting_customer_id = payload.get('customer_id') or payload.get('sub')
+    if requesting_customer_id != 'admin' and str(requesting_customer_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    customer = db.customer(customer_id)
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    import tempfile, shutil
+    from core.session_analyzer import analyze_session
+
+    muscle_group = request.forms.get('muscle_group', 'quadricep')
+
+    # Parse sensor log
+    sensor_log_raw = request.forms.get('sensor_log', '[]')
+    try:
+        frames_with_sensors = json.loads(sensor_log_raw)
+    except Exception:
+        frames_with_sensors = []
+
+    # Save all uploaded frames to a temp directory
+    tmp_dir = tempfile.mkdtemp(prefix='session_')
+    image_paths = {}
+    try:
+        saved_count = 0
+        for key in request.files:
+            f = request.files[key]
+            if not f or not f.filename:
+                continue
+            ext = os.path.splitext(f.filename)[1].lower()
+            if ext not in ALLOWED_EXTENSIONS:
+                continue
+            dest = os.path.join(tmp_dir, f.filename)
+            f.file.seek(0)
+            with open(dest, 'wb') as out:
+                out.write(f.file.read())
+            image_paths[f.filename] = dest
+            saved_count += 1
+
+        if saved_count == 0:
+            return dict(status='error', message='No valid image frames received')
+
+        # If sensor log is empty or short, synthesize minimal entries
+        if not frames_with_sensors:
+            frames_with_sensors = [
+                {'filename': fname, 'compass_deg': None, 'pitch_deg': None,
+                 'accel_x': 0, 'accel_y': 0, 'accel_z': 9.8,
+                 'gyro_x': 0, 'gyro_y': 0, 'gyro_z': 0,
+                 'mag_x': 0, 'mag_y': 0, 'mag_z': 0}
+                for fname in image_paths
+            ]
+
+        # Run coverage analysis
+        result = analyze_session(frames_with_sensors, image_paths)
+
+        # Persist session summary in DB (health_log reused as session log)
+        try:
+            db.health_log.insert(
+                customer_id=customer_id,
+                log_date=datetime.now(),
+                notes=json.dumps({
+                    'type': 'auto2_session',
+                    'muscle_group': muscle_group,
+                    'progress_pct': result['progress_pct'],
+                    'covered_zones': result['covered_zones'],
+                    'frames': saved_count,
+                })
+            )
+            db.commit()
+        except Exception:
+            pass  # Don't fail the request if logging fails
+
+        return dict(
+            status='success',
+            progress_pct=result['progress_pct'],
+            is_complete=result['is_complete'],
+            covered_zones=result['covered_zones'],
+            missing_required=result['missing_required'],
+            missing_bonus=result['missing_bonus'],
+            instructions=result['instructions'],
+            detail=result['detail'],
+            priority_zone=result['priority_zone'],
+            frame_stats=result['frame_stats'],
+            muscle_group=muscle_group,
+        )
+
+    except Exception:
+        logger.exception('Session analysis failed for customer %d', customer_id)
+        return dict(status='error', message='Session analysis failed')
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@action('api/customer/<customer_id:int>/profile_status', method=['GET'])
+@action.uses(db, cors)
+def profile_status(customer_id):
+    """Returns the latest Auto Mode 2 session progress for a customer."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+
+    rows = db(
+        (db.health_log.customer_id == customer_id) &
+        (db.health_log.notes.contains('"type": "auto2_session"'))
+    ).select(orderby=~db.health_log.id, limitby=(0, 1))
+
+    if not rows:
+        return dict(status='success', has_session=False, progress_pct=0)
+
+    try:
+        data = json.loads(rows[0].notes)
+        return dict(
+            status='success',
+            has_session=True,
+            progress_pct=data.get('progress_pct', 0),
+            covered_zones=data.get('covered_zones', []),
+            muscle_group=data.get('muscle_group', ''),
+        )
+    except Exception:
+        return dict(status='success', has_session=False, progress_pct=0)

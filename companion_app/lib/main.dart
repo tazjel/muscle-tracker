@@ -214,11 +214,12 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   int _capturePhase = 0;
   final List<String> _phaseLabels = ['FRONT VIEW', 'SIDE VIEW'];
   final List<IconData> _phaseIcons = [Icons.person, Icons.person_outline];
-  String _selectedMuscleGroup = 'bicep';
+  String _selectedMuscleGroup = 'quadricep';
   final Map<String, IconData> _muscleIcons = {
     'bicep': Icons.fitness_center, 'tricep': Icons.fitness_center,
-    'quad': Icons.accessibility_new, 'calf': Icons.accessibility_new,
-    'delt': Icons.sports_gymnastics, 'lat': Icons.sports_gymnastics,
+    'quadricep': Icons.accessibility_new, 'hamstring': Icons.accessibility_new,
+    'calf': Icons.accessibility_new, 'glute': Icons.sports_gymnastics,
+    'deltoid': Icons.sports_gymnastics, 'lat': Icons.sports_gymnastics,
   };
   String? _frontPath, _sidePath;
   bool _isCapturing = false, _isUploading = false, _isRecordingMode = false, _isRecording = false, _showGhost = false;
@@ -228,6 +229,25 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   ui.Image? _ghostImage;
   double _filteredPitch = 0.0, _filteredRoll = 0.0;
   static const double _smoothingFactor = 0.15;
+  bool _torchOn = false;
+  // Auto-capture mode
+  bool _isAutoMode = false;
+  // Profile Builder (Auto Mode 2)
+  bool _isProfileMode = false;
+  bool _profileRunning = false;
+  bool _profileLocked = false;
+  bool _isTakingProfileFrame = false;
+  int _profileSecondsLeft = 20;
+  int _profileFrameCount = 0;
+  Timer? _profileTimer;
+  final List<Map<String, dynamic>> _sensorLog = [];
+  Map<String, dynamic> _latestSensor = {};
+  StreamSubscription? _gyroSub;
+  StreamSubscription? _magSub;
+  bool _autoRunning = false;
+  int _autoCountdown = 0;
+  String _autoInstruction = '';
+  Timer? _autoTimer;
 
   @override
   void initState() { super.initState(); _initCamera(); _initSensors(); }
@@ -249,11 +269,36 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       _filteredPitch += (event.y - _filteredPitch) * _smoothingFactor;
       _filteredRoll += (event.x - _filteredRoll) * _smoothingFactor;
       setState(() { _pitch = _filteredPitch; _roll = _filteredRoll; });
+      _latestSensor['accel_x'] = event.x;
+      _latestSensor['accel_y'] = event.y;
+      _latestSensor['accel_z'] = event.z;
     });
+    try {
+      _gyroSub = gyroscopeEventStream().listen((event) {
+        _latestSensor['gyro_x'] = event.x;
+        _latestSensor['gyro_y'] = event.y;
+        _latestSensor['gyro_z'] = event.z;
+      });
+    } catch (_) {}
+    try {
+      _magSub = magnetometerEventStream().listen((event) {
+        _latestSensor['mag_x'] = event.x;
+        _latestSensor['mag_y'] = event.y;
+        _latestSensor['mag_z'] = event.z;
+      });
+    } catch (_) {}
   }
 
   @override
-  void dispose() { _controller?.dispose(); _sensorSubscription?.cancel(); _countdownTimer?.cancel(); super.dispose(); }
+  void dispose() {
+    _controller?.dispose();
+    _sensorSubscription?.cancel();
+    _gyroSub?.cancel();
+    _magSub?.cancel();
+    _countdownTimer?.cancel();
+    _profileTimer?.cancel();
+    super.dispose();
+  }
 
   bool get isLevel => _pitch.abs() < _levelTolerance && _roll.abs() < _levelTolerance;
 
@@ -348,6 +393,156 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     } catch (e) { setState(() { _statusMessage = 'Error: $e'; _isUploading = false; }); }
   }
 
+  Future<void> _toggleTorch() async {
+    try {
+      _torchOn = !_torchOn;
+      await _controller!.setFlashMode(_torchOn ? FlashMode.torch : FlashMode.off);
+      setState(() {});
+    } catch (_) {}
+  }
+
+  Future<void> _startAutoCapture() async {
+    if (_autoRunning || _isCapturing) return;
+    _resetCapture();
+    // Enable torch automatically
+    if (!_torchOn) await _toggleTorch();
+    setState(() { _autoRunning = true; _isAutoMode = true; });
+    // Phase 0: front
+    await _autoShowStep('FRONT VIEW', 3);
+    if (!mounted || !_autoRunning) return;
+    await _autoCapturePhoto();
+    if (!mounted || !_autoRunning) return;
+    // Turn prompt
+    await _autoShowStep('ROTATE 90°', 4);
+    if (!mounted || !_autoRunning) return;
+    // Phase 1: side
+    await _autoShowStep('SIDE VIEW', 3);
+    if (!mounted || !_autoRunning) return;
+    await _autoCapturePhoto();
+    if (!mounted || !_autoRunning) return;
+    setState(() { _autoInstruction = 'Uploading...'; });
+    await _uploadScan();
+    if (_torchOn) await _toggleTorch();
+    if (mounted) setState(() { _autoRunning = false; _autoInstruction = ''; });
+  }
+
+  Future<void> _autoShowStep(String label, int seconds) async {
+    setState(() { _autoInstruction = label; _autoCountdown = seconds; });
+    final completer = Completer<void>();
+    _autoTimer?.cancel();
+    _autoTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); completer.complete(); return; }
+      if (_autoCountdown <= 1) { t.cancel(); setState(() => _autoCountdown = 0); completer.complete(); }
+      else { setState(() => _autoCountdown--); }
+    });
+    return completer.future;
+  }
+
+  Future<void> _autoCapturePhoto() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    setState(() { _isCapturing = true; });
+    try {
+      final XFile image = await _controller!.takePicture();
+      if (_capturePhase == 0) {
+        _frontPath = image.path;
+        await _saveLatestScan(image.path, 'front');
+        setState(() { _capturePhase = 1; _isCapturing = false; });
+      } else {
+        _sidePath = image.path;
+        await _saveLatestScan(image.path, 'side');
+        setState(() { _isCapturing = false; });
+      }
+    } catch (e) {
+      setState(() { _isCapturing = false; _autoRunning = false; _autoInstruction = ''; _statusMessage = 'Error: $e'; });
+    }
+  }
+
+  void _cancelAuto() {
+    _autoTimer?.cancel();
+    if (_torchOn) _toggleTorch();
+    setState(() { _autoRunning = false; _autoInstruction = ''; _autoCountdown = 0; });
+    _resetCapture();
+  }
+
+  Future<void> _startProfileCapture() async {
+    if (_profileRunning) return;
+    _sensorLog.clear();
+    final framePaths = <String>[];
+    final dir = await getTemporaryDirectory();
+    final sessionDir = Directory('${dir.path}/profile_session_${DateTime.now().millisecondsSinceEpoch}');
+    await sessionDir.create(recursive: true);
+    // No torch in profile mode — user should use good ambient lighting
+    setState(() { _profileRunning = true; _profileLocked = true; _profileSecondsLeft = 20; _profileFrameCount = 0; });
+    // Capture 1 frame per second for 20 seconds
+    int tick = 0;
+    _profileTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+      if (!mounted || !_profileRunning) { timer.cancel(); return; }
+      setState(() => _profileSecondsLeft = 20 - tick);
+      if (tick >= 20) {
+        timer.cancel();
+        await _finishProfileCapture(framePaths, sessionDir);
+        return;
+      }
+      // Capture frame — guard against concurrent captures
+      if (_isTakingProfileFrame) { tick++; return; }
+      try {
+        if (_controller != null && _controller!.value.isInitialized && !_controller!.value.isTakingPicture) {
+          _isTakingProfileFrame = true;
+          final XFile img = await _controller!.takePicture();
+          final fname = 'frame_${tick.toString().padLeft(3, '0')}.jpg';
+          final dest = File('${sessionDir.path}/$fname');
+          await File(img.path).copy(dest.path);
+          framePaths.add(dest.path);
+          // Log sensor snapshot
+          _sensorLog.add({
+            'filename': fname,
+            'timestamp': DateTime.now().millisecondsSinceEpoch / 1000.0,
+            ..._latestSensor,
+          });
+          setState(() => _profileFrameCount = framePaths.length);
+          _isTakingProfileFrame = false;
+        }
+      } catch (_) { _isTakingProfileFrame = false; }
+      tick++;
+    });
+  }
+
+  Future<void> _finishProfileCapture(List<String> framePaths, Directory sessionDir) async {
+    setState(() { _profileRunning = false; _profileLocked = false; _isTakingProfileFrame = false; _profileSecondsLeft = 0; _statusMessage = 'Uploading session...'; });
+    try {
+      var request = http.MultipartRequest(
+        'POST', Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/upload_session'));
+      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
+      request.fields['muscle_group'] = _selectedMuscleGroup;
+      request.fields['sensor_log'] = jsonEncode(_sensorLog);
+      for (final path in framePaths) {
+        final fname = path.split('/').last;
+        request.files.add(await http.MultipartFile.fromPath(fname, path));
+      }
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
+      final res = await http.Response.fromStream(streamed);
+      if (!mounted) return;
+      setState(() => _statusMessage = null);
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (!mounted) return;
+        Navigator.push(context, MaterialPageRoute(
+          builder: (_) => ProfileProgressScreen(
+            result: data,
+            muscleGroup: _selectedMuscleGroup,
+            onCaptureMore: () => Navigator.pop(context),
+          ),
+        ));
+      } else {
+        setState(() => _statusMessage = 'Upload failed — tap to retry');
+      }
+    } catch (e) {
+      if (mounted) setState(() { _statusMessage = 'Error: $e'; _profileLocked = false; });
+    } finally {
+      try { await sessionDir.delete(recursive: true); } catch (_) {}
+    }
+  }
+
   Future<void> _toggleGhost() async {
     if (_showGhost) { setState(() { _showGhost = false; _ghostImage = null; }); return; }
     setState(() => _statusMessage = 'Loading overlay...');
@@ -384,7 +579,9 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         CustomPaint(painter: BodyGuidePainter(phase: _capturePhase, muscleGroup: _selectedMuscleGroup)),
         _buildTopBar(),
         _buildCaptureUI(),
-        if (_isUploading) _buildUploadOverlay(),
+        if (_autoRunning) _buildAutoOverlay(),
+        if (_profileLocked) _buildProfileLockScreen(),
+        if (_isUploading && !_autoRunning) _buildUploadOverlay(),
       ]),
     );
   }
@@ -395,6 +592,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       const SizedBox(width: 12),
       DropdownButtonHideUnderline(child: DropdownButton<String>(value: _selectedMuscleGroup, dropdownColor: Colors.black87, icon: const Icon(Icons.arrow_drop_down, color: AppTheme.primaryTeal), style: const TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.bold, fontSize: 14), onChanged: _frontPath != null ? null : (v) => setState(() => _selectedMuscleGroup = v!), items: _muscleIcons.keys.map((m) => DropdownMenuItem(value: m, child: Row(children: [Icon(_muscleIcons[m], size: 16, color: AppTheme.primaryTeal), const SizedBox(width: 8), Text(m.toUpperCase())]))).toList())),
       const Spacer(),
+      IconButton(icon: Icon(_torchOn ? Icons.flashlight_on : Icons.flashlight_off, color: _torchOn ? Colors.yellow : Colors.white70), padding: EdgeInsets.zero, constraints: const BoxConstraints(minWidth: 36, minHeight: 36), onPressed: _toggleTorch),
       IconButton(icon: Icon(_showGhost ? Icons.visibility : Icons.visibility_off, color: _showGhost ? AppTheme.primaryTeal : Colors.white70), padding: EdgeInsets.zero, constraints: const BoxConstraints(minWidth: 36, minHeight: 36), onPressed: _toggleGhost),
       IconButton(icon: const Icon(Icons.history, color: Colors.white), padding: EdgeInsets.zero, constraints: const BoxConstraints(minWidth: 36, minHeight: 36), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: _selectedMuscleGroup)))),
       // R-6: Live Measure shortcut
@@ -413,7 +611,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Widget _buildCaptureUI() {
     final bottomPad = MediaQuery.of(context).padding.bottom + 24;
     return Positioned(bottom: 0, left: 0, right: 0, child: Container(padding: EdgeInsets.fromLTRB(24, 16, 24, bottomPad), decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Colors.black87, Colors.transparent])), child: Column(mainAxisSize: MainAxisSize.min, children: [
-      Container(margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [_modeBtn('PHOTO', !_isRecordingMode), _modeBtn('VIDEO', _isRecordingMode)])),
+      Container(margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [_modeBtn('PHOTO', !_isRecordingMode && !_isAutoMode && !_isProfileMode), _modeBtn('VIDEO', _isRecordingMode && !_isAutoMode && !_isProfileMode), _modeBtn('AUTO', _isAutoMode && !_isProfileMode), _modeBtn('PROFILE', _isProfileMode)])),
       AnimatedSwitcher(duration: const Duration(milliseconds: 300), child: _isRecording ? Text('00:0$_recordingCountdown', key: const ValueKey('timer'), style: const TextStyle(color: AppTheme.accentRed, fontSize: 32, fontWeight: FontWeight.bold)) : Row(mainAxisSize: MainAxisSize.min, children: [_phaseDot(0), const SizedBox(width: 6), Text(_phaseLabels[_capturePhase], key: ValueKey(_capturePhase), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2)), const SizedBox(width: 6), _phaseDot(1)])),
       const SizedBox(height: 12),
       if (_statusMessage != null) Text(_statusMessage!, style: const TextStyle(color: AppTheme.primaryTeal, fontSize: 13, fontWeight: FontWeight.w500)),
@@ -421,16 +619,89 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       Row(mainAxisAlignment: MainAxisAlignment.center, children: [
         if (_frontPath != null) IconButton(onPressed: _resetCapture, icon: const Icon(Icons.refresh, color: Colors.white54)),
         const SizedBox(width: 24),
-        GestureDetector(onTap: !_isCapturing ? (_isRecordingMode ? _toggleRecording : _captureImage) : null, child: Container(width: 76, height: 76, decoration: BoxDecoration(shape: BoxShape.circle, color: _isRecording ? AppTheme.accentRed : AppTheme.primaryTeal, border: Border.all(color: Colors.white, width: 4)), child: _isCapturing || (_isUploading && _isRecordingMode) ? const Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: Colors.black, strokeWidth: 3)) : Icon(_isRecordingMode ? (_isRecording ? Icons.stop : Icons.videocam) : _phaseIcons[_capturePhase], color: Colors.black, size: 36))),
+        GestureDetector(
+          onTap: (_isCapturing || _profileRunning) ? null : (_isProfileMode ? _startProfileCapture : (_isAutoMode ? _startAutoCapture : (_isRecordingMode ? _toggleRecording : _captureImage))),
+          child: Container(width: 76, height: 76, decoration: BoxDecoration(shape: BoxShape.circle, color: _profileRunning ? AppTheme.accentRed : (_isRecording ? AppTheme.accentRed : AppTheme.primaryTeal), border: Border.all(color: Colors.white, width: 4)),
+            child: _isCapturing || (_isUploading && _isRecordingMode) ? const Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: Colors.black, strokeWidth: 3))
+              : Icon(_isProfileMode ? (_profileRunning ? Icons.stop : Icons.person_search) : (_isAutoMode ? Icons.play_arrow : (_isRecordingMode ? (_isRecording ? Icons.stop : Icons.videocam) : _phaseIcons[_capturePhase])), color: Colors.black, size: 36))),
         const SizedBox(width: 72),
       ]),
     ])));
   }
 
-  Widget _modeBtn(String l, bool a) { return GestureDetector(onTap: () => setState(() { _isRecordingMode = l == 'VIDEO'; _statusMessage = null; }), child: Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6), decoration: BoxDecoration(color: a ? AppTheme.primaryTeal : Colors.transparent, borderRadius: BorderRadius.circular(20)), child: Text(l, style: TextStyle(color: a ? Colors.black : Colors.white70, fontWeight: FontWeight.bold, fontSize: 11)))); }
+  Widget _modeBtn(String l, bool a) {
+    return GestureDetector(
+      onTap: () => setState(() {
+        _isRecordingMode = l == 'VIDEO';
+        _isAutoMode = l == 'AUTO';
+        _isProfileMode = l == 'PROFILE';
+        _statusMessage = null;
+      }),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        decoration: BoxDecoration(color: a ? AppTheme.primaryTeal : Colors.transparent, borderRadius: BorderRadius.circular(20)),
+        child: Text(l, style: TextStyle(color: a ? Colors.black : Colors.white70, fontWeight: FontWeight.bold, fontSize: 11)),
+      ),
+    );
+  }
+
+  Widget _buildAutoOverlay() {
+    return Container(
+      color: Colors.black.withOpacity(0.75),
+      child: Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(_autoInstruction, style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold, letterSpacing: 3)),
+          const SizedBox(height: 24),
+          if (_autoCountdown > 0)
+            Text('$_autoCountdown', style: const TextStyle(color: AppTheme.primaryTeal, fontSize: 96, fontWeight: FontWeight.bold)),
+          if (_autoCountdown == 0 && _isCapturing)
+            const Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: AppTheme.primaryTeal, strokeWidth: 4)),
+          const SizedBox(height: 40),
+          TextButton.icon(onPressed: _cancelAuto, icon: const Icon(Icons.close, color: Colors.white54), label: const Text('Cancel', style: TextStyle(color: Colors.white54))),
+        ]),
+      ),
+    );
+  }
 
   void _showProfile() {
     showDialog(context: context, builder: (c) => AlertDialog(backgroundColor: AppTheme.cardBg, title: Row(children: [const Icon(Icons.account_circle, color: AppTheme.primaryTeal), const SizedBox(width: 12), Text(_customerName ?? 'Profile')]), content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('ID: $_customerId', style: const TextStyle(color: Colors.white70)), const Text('Role: Clinical Data Contributor', style: TextStyle(color: AppTheme.primaryTeal, fontSize: 11))]), actions: [TextButton(onPressed: () { _jwtToken = null; Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false); }, child: const Text('LOGOUT', style: TextStyle(color: AppTheme.accentRed))), TextButton(onPressed: () => Navigator.pop(c), child: const Text('CLOSE'))]));
+  }
+
+  Widget _buildProfileLockScreen() {
+    // AbsorbPointer blocks ALL touch events — screen is locked during recording
+    return Positioned.fill(child: AbsorbPointer(
+      absorbing: true,
+      child: Container(
+        color: Colors.black.withOpacity(0.45),
+        child: SafeArea(child: Column(children: [
+          // Top status bar
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+            color: Colors.black.withOpacity(0.6),
+            child: Row(children: [
+              Container(width: 10, height: 10, decoration: const BoxDecoration(shape: BoxShape.circle, color: AppTheme.accentRed)),
+              const SizedBox(width: 10),
+              const Text('RECORDING — SCREEN LOCKED', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12, letterSpacing: 1.5)),
+              const Spacer(),
+              Text('${_profileSecondsLeft}s', style: const TextStyle(color: AppTheme.accentRed, fontWeight: FontWeight.bold, fontSize: 20)),
+            ]),
+          ),
+          const Spacer(),
+          // Bottom hint
+          Container(
+            padding: const EdgeInsets.all(16),
+            margin: const EdgeInsets.all(20),
+            decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(12)),
+            child: Column(children: [
+              Text('$_profileFrameCount / 20 frames captured', style: const TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 6),
+              const Text('Keep phone steady • Good lighting helps\nScreen locked to prevent accidents', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12)),
+            ]),
+          ),
+          const SizedBox(height: 20),
+        ])),
+      ),
+    ));
   }
 
   Widget _buildUploadOverlay() { return Container(color: Colors.black.withOpacity(0.87), child: const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(color: AppTheme.primaryTeal), SizedBox(height: 20), Text('Vision Engine Analysis...', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)), Text('Quantifying muscle metrics', style: TextStyle(color: Colors.white54, fontSize: 12))]))); }
@@ -445,12 +716,14 @@ class BodyGuidePainter extends CustomPainter {
   BodyGuidePainter({required this.phase, this.muscleGroup = 'bicep'});
 
   static const _guidanceText = {
-    'bicep':  'Flex arm, elbow ~90°, raise to shoulder',
-    'tricep': 'Extend arm back, elbow straight',
-    'quad':   'Stand straight, legs together',
-    'calf':   'Stand straight, heels on ground',
-    'delt':   'Arms at sides, slight abduction',
-    'lat':    'Arms wide, lat spread pose',
+    'bicep':     'Flex arm, elbow ~90°, raise to shoulder',
+    'tricep':    'Extend arm back, elbow straight',
+    'quadricep': 'Stand straight, legs together, facing camera',
+    'hamstring': 'Stand straight, back to camera',
+    'calf':      'Stand straight, heels on ground',
+    'glute':     'Stand straight, back to camera',
+    'deltoid':   'Arms at sides, slight abduction',
+    'lat':       'Arms wide, lat spread pose',
   };
 
   @override
@@ -744,6 +1017,124 @@ class _ResultsScreenState extends State<ResultsScreen> {
         ]),
       ),
     );
+  }
+}
+
+// --- PROFILE PROGRESS SCREEN (Auto Mode 2) ---
+
+class ProfileProgressScreen extends StatelessWidget {
+  final Map<String, dynamic> result;
+  final String muscleGroup;
+  final VoidCallback onCaptureMore;
+  const ProfileProgressScreen({super.key, required this.result, required this.muscleGroup, required this.onCaptureMore});
+
+  @override
+  Widget build(BuildContext context) {
+    final pct = (result['progress_pct'] as num?)?.toInt() ?? 0;
+    final isComplete = result['is_complete'] == true;
+    final instructions = result['instructions'] as String? ?? '';
+    final detail = result['detail'] as String? ?? '';
+    final covered = List<String>.from(result['covered_zones'] ?? []);
+    final missingReq = List<String>.from(result['missing_required'] ?? []);
+    final stats = result['frame_stats'] as Map<String, dynamic>? ?? {};
+    const allRequired = ['front', 'right', 'back', 'left'];
+    return Scaffold(
+      backgroundColor: AppTheme.darkBg,
+      appBar: AppBar(title: const Text('Profile Builder'), backgroundColor: AppTheme.darkBg),
+      body: SafeArea(child: SingleChildScrollView(padding: const EdgeInsets.all(24), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // Progress arc
+        Center(child: Stack(alignment: Alignment.center, children: [
+          SizedBox(width: 140, height: 140, child: CircularProgressIndicator(
+            value: pct / 100.0,
+            strokeWidth: 12,
+            backgroundColor: Colors.white12,
+            valueColor: AlwaysStoppedAnimation<Color>(isComplete ? AppTheme.accentGreen : AppTheme.primaryTeal),
+          )),
+          Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('$pct%', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: isComplete ? AppTheme.accentGreen : Colors.white)),
+            Text(isComplete ? 'COMPLETE' : 'BUILDING', style: TextStyle(fontSize: 11, letterSpacing: 2, color: isComplete ? AppTheme.accentGreen : Colors.white54)),
+          ]),
+        ])),
+        const SizedBox(height: 28),
+        // Zone checklist
+        Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.circular(12)), child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('COVERAGE', style: TextStyle(color: Colors.white54, fontSize: 11, letterSpacing: 2, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            ...allRequired.map((z) {
+              final done = covered.contains(z);
+              return Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Row(children: [
+                Icon(done ? Icons.check_circle : Icons.radio_button_unchecked, size: 20, color: done ? AppTheme.accentGreen : Colors.white30),
+                const SizedBox(width: 10),
+                Text(z.toUpperCase(), style: TextStyle(color: done ? Colors.white : Colors.white54, fontWeight: done ? FontWeight.bold : FontWeight.normal)),
+                if (!done && missingReq.first == z) ...[
+                  const Spacer(),
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), decoration: BoxDecoration(color: AppTheme.primaryTeal.withOpacity(0.2), borderRadius: BorderRadius.circular(10)), child: const Text('NEXT', style: TextStyle(color: AppTheme.primaryTeal, fontSize: 10, fontWeight: FontWeight.bold))),
+                ],
+              ]));
+            }),
+          ],
+        )),
+        const SizedBox(height: 16),
+        // Frame stats
+        Row(children: [
+          _statChip('${stats['total'] ?? 0}', 'Captured'),
+          const SizedBox(width: 8),
+          _statChip('${stats['usable'] ?? 0}', 'Usable'),
+          const SizedBox(width: 8),
+          _statChip('${stats['mapped'] ?? 0}', 'Mapped'),
+        ]),
+        const SizedBox(height: 24),
+        // Instructions
+        if (!isComplete) ...[
+          Container(width: double.infinity, padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: AppTheme.primaryTeal.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.primaryTeal.withOpacity(0.3))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('NEXT STEP', style: TextStyle(color: AppTheme.primaryTeal, fontSize: 11, letterSpacing: 2, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text(instructions, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+            if (detail.isNotEmpty) ...[const SizedBox(height: 4), Text(detail, style: const TextStyle(color: Colors.white60, fontSize: 13))],
+            const SizedBox(height: 4),
+            const Text('Stand 1 meter away from the phone', style: TextStyle(color: Colors.white38, fontSize: 12)),
+          ])),
+          const SizedBox(height: 20),
+          SizedBox(width: double.infinity, child: FilledButton.icon(
+            onPressed: onCaptureMore,
+            icon: const Icon(Icons.person_search),
+            label: const Text('CAPTURE MORE — AUTO 2'),
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.primaryTeal, foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(vertical: 16)),
+          )),
+        ] else ...[
+          Container(width: double.infinity, padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: AppTheme.accentGreen.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.accentGreen.withOpacity(0.4))), child: Column(children: [
+            const Icon(Icons.check_circle, color: AppTheme.accentGreen, size: 48),
+            const SizedBox(height: 12),
+            const Text('PROFILE COMPLETE', style: TextStyle(color: AppTheme.accentGreen, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2)),
+            const SizedBox(height: 4),
+            Text('${muscleGroup.toUpperCase()} profile built successfully', style: const TextStyle(color: Colors.white60, fontSize: 13)),
+          ])),
+          const SizedBox(height: 20),
+          SizedBox(width: double.infinity, child: FilledButton.icon(
+            onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HistoryScreen(muscleGroup: muscleGroup))),
+            icon: const Icon(Icons.dashboard),
+            label: const Text('VIEW DASHBOARD'),
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.accentGreen, foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(vertical: 16)),
+          )),
+          const SizedBox(height: 12),
+          SizedBox(width: double.infinity, child: OutlinedButton.icon(
+            onPressed: onCaptureMore,
+            icon: const Icon(Icons.add_a_photo, color: AppTheme.primaryTeal),
+            label: const Text('ADD MORE ANGLES', style: TextStyle(color: AppTheme.primaryTeal)),
+            style: OutlinedButton.styleFrom(side: const BorderSide(color: AppTheme.primaryTeal), padding: const EdgeInsets.symmetric(vertical: 14)),
+          )),
+        ],
+      ]))),
+    );
+  }
+
+  Widget _statChip(String value, String label) {
+    return Expanded(child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.circular(8)), child: Column(children: [
+      Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+      Text(label, style: const TextStyle(color: Colors.white38, fontSize: 11)),
+    ])));
   }
 }
 
