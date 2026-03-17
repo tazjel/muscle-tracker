@@ -197,11 +197,16 @@ function renderScans(scans) {
   recent.forEach(scan => {
     const card = document.createElement('div');
     card.className = 'scan-card';
-    card.onclick = () => showScanDetail(scan);
+    card.style.position = 'relative';
+    card.onclick = (e) => { if (e.target.type !== 'checkbox') showScanDetail(scan); };
     const graw = scan.growth_pct;
     const gcls = graw > 0 ? 'scan-growth-pos' : graw < 0 ? 'scan-growth-neg' : '';
     const gstr = graw != null ? `${graw > 0 ? '+' : ''}${graw.toFixed(1)}%` : '';
+    const hasMesh = scan.mesh_model_id ? '' : 'display:none;';
     card.innerHTML = `
+      <input type="checkbox" class="compare-check" data-mesh-id="${scan.mesh_model_id || ''}"
+             onchange="updateCompareButton()" title="Select for 3D comparison"
+             style="${hasMesh}position:absolute;top:6px;right:6px;cursor:pointer;width:14px;height:14px;accent-color:#4a9eff;">
       <div class="scan-thumb">${MUSCLE_MAP[scan.muscle_group]?.emoji ?? '📷'}</div>
       <div class="scan-info">
         <div class="scan-muscle">${scan.muscle_group}</div>
@@ -210,6 +215,41 @@ function renderScans(scans) {
       </div>`;
     container.appendChild(card);
   });
+}
+
+/* ── Scan Comparison ── */
+function updateCompareButton() {
+  const checked = document.querySelectorAll('.compare-check:checked');
+  // Enforce max 2 selected
+  if (checked.length > 2) {
+    checked[0].checked = false;
+    return;
+  }
+  let btn = document.getElementById('btn-compare-3d');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'btn-compare-3d';
+    btn.textContent = 'Compare in 3D';
+    btn.style.cssText = 'position:fixed;bottom:24px;right:24px;padding:10px 22px;background:#4a9eff;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;z-index:100;display:none;box-shadow:0 4px 16px rgba(74,158,255,0.4);';
+    btn.onclick = openComparison;
+    document.body.appendChild(btn);
+  }
+  btn.style.display = checked.length === 2 ? 'block' : 'none';
+}
+
+function openComparison() {
+  const checked = Array.from(document.querySelectorAll('.compare-check:checked'));
+  if (checked.length !== 2) return;
+  const ids = checked.map(c => parseInt(c.dataset.meshId)).filter(id => !isNaN(id));
+  if (ids.length !== 2) { alert('Selected scans have no 3D mesh — body3d scans only'); return; }
+  // Sort: older (smaller id) first
+  ids.sort((a, b) => a - b);
+  const [oldId, newId] = ids;
+  // Open viewer with new mesh + comparison heatmap
+  window.open(
+    `/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/${newId}.glb&compare_old=${oldId}&compare_new=${newId}`,
+    '_blank'
+  );
 }
 
 /* ── Charts ── */

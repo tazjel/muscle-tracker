@@ -1254,6 +1254,32 @@ def serve_mesh_glb(mesh_id):
         return f.read()
 
 
+@action('api/customer/<customer_id:int>/meshes', method=['GET'])
+@action.uses(db, cors)
+def list_meshes(customer_id):
+    """Return list of mesh models for a customer — used by viewer comparison dropdown."""
+    payload, err = _auth_check()
+    if err: return err
+    rows = db(db.mesh_model.customer_id == customer_id).select(
+        db.mesh_model.id,
+        db.mesh_model.muscle_group,
+        db.mesh_model.model_type,
+        db.mesh_model.volume_cm3,
+        db.mesh_model.created_on,
+        orderby=~db.mesh_model.id
+    )
+    return dict(
+        status='success',
+        meshes=[dict(
+            id=int(r.id),
+            muscle_group=r.muscle_group or 'body',
+            model_type=r.model_type or 'body',
+            volume_cm3=round(float(r.volume_cm3), 1) if r.volume_cm3 else None,
+            created_on=str(r.created_on)[:16] if r.created_on else '',
+        ) for r in rows]
+    )
+
+
 @action('api/customer/<customer_id:int>/compare_3d', method=['POST'])
 @action.uses(db, cors)
 def compare_3d(customer_id):

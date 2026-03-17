@@ -46,10 +46,39 @@
         <button onclick="saveAdjustments()" style="font-size:11px;">Save to Profile</button>
       </div>
 
+      <!-- Mesh comparison -->
+      <div id="compare-panel" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+        <h3 style="margin:0 0 6px;font-size:13px;">Compare Growth</h3>
+        <label style="font-size:11px;display:block;margin-bottom:4px;">
+          Before: <select id="compare-old" style="width:130px;font-size:11px;background:#1e2035;color:#e2e4f0;border:1px solid #444;border-radius:3px;"></select>
+        </label>
+        <label style="font-size:11px;display:block;margin-bottom:6px;">
+          After: <select id="compare-new" style="width:130px;font-size:11px;background:#1e2035;color:#e2e4f0;border:1px solid #444;border-radius:3px;"></select>
+        </label>
+        <button onclick="runComparison()" style="font-size:11px;margin-right:4px;">Compare</button>
+        <button onclick="clearComparison()" style="font-size:11px;">Clear</button>
+        <div id="compare-stats" style="font-size:11px;margin-top:4px;color:#00b4cc;display:none;"></div>
+      </div>
+
+      <!-- Cross-section tool -->
+      <div id="section-panel" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+        <h3 style="margin:0 0 6px;font-size:13px;">Cross Section</h3>
+        <label style="font-size:11px;display:block;">
+          Height:&nbsp;<input type="range" id="section-height" min="0" max="100" value="50" style="width:100px;">
+          <span id="section-height-val">50</span>%
+        </label>
+        <div id="section-stats" style="font-size:11px;margin-top:4px;color:#aaa;"></div>
+      </div>
+
       <div class="controls">
         <button onclick="resetCamera()">Reset Camera</button>
+        <button id="btn-measure" onclick="toggleMeasure()">Measure</button>
         <button onclick="takeScreenshot()">Screenshot</button>
         <button onclick="clearMeasurements()">Clear Pins</button>
+      </div>
+
+      <div style="font-size:9px;color:#555;margin-top:6px;">
+        Keys: 1-4 views · L labels · M measure · R reset · S screenshot
       </div>
 
       <div class="stats">

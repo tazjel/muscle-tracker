@@ -23,6 +23,16 @@ const _originalMaterials = new Map();  // mesh → original loaded material (for
 const raycaster  = new THREE.Raycaster();
 const _mouse     = new THREE.Vector2();
 
+// ── Measure mode globals ───────────────────────────────────────────────────────
+let _measureMode   = false;
+let _measurePoints = [];   // [{point: THREE.Vector3, marker: THREE.Mesh}]
+let _measureLines  = [];   // THREE.Line objects in scene
+let _measureLabels = [];   // DOM div elements
+
+// ── Cross-section globals ──────────────────────────────────────────────────────
+let _sectionPlane   = null;
+let _sectionOutline = null;
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 let _viewerToken = null;
 
@@ -118,11 +128,39 @@ function init() {
     });
   });
 
-  // Authenticate for save/regenerate calls
-  _autoLogin();
+  // Authenticate for save/regenerate calls then load mesh list
+  _autoLogin().then(() => _loadMeshList());
 
   // Load model from URL params
   _loadFromUrl();
+
+  // Cross-section slider
+  const secSlider = document.getElementById('section-height');
+  if (secSlider) {
+    secSlider.addEventListener('input', (e) => {
+      document.getElementById('section-height-val').textContent = e.target.value;
+      _updateCrossSection(parseInt(e.target.value) / 100);
+    });
+  }
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    switch (e.key) {
+      case '1': window.setViewMode('solid');     break;
+      case '2': window.setViewMode('wireframe'); break;
+      case '3': window.setViewMode('heatmap');   break;
+      case '4': window.setViewMode('textured');  break;
+      case 'l': case 'L': window.toggleLabels();  break;
+      case 'm': case 'M': window.toggleMeasure(); break;
+      case 'r': case 'R': window.resetCamera();   break;
+      case 's': case 'S': if (!e.ctrlKey) window.takeScreenshot(); break;
+      case 'Escape':
+        _measureMode = false;
+        document.getElementById('btn-measure')?.classList.remove('active');
+        break;
+    }
+  });
 
   // Start render loop
   _animate();
@@ -215,6 +253,12 @@ async function _applyCompareHeatmap(meshIdOld, meshIdNew) {
     applyHeatmap(bodyMesh, new Float32Array(data.heatmap_values));
     document.querySelector('.heatmap-legend')?.classList.add('visible');
     _setStatus(`Max Δ: ${data.max_displacement_mm}mm  Mean Δ: ${data.mean_displacement_mm}mm`);
+    // Update comparison stats panel
+    const statsEl = document.getElementById('compare-stats');
+    if (statsEl) {
+      statsEl.textContent = `Max Δ: ${data.max_displacement_mm}mm | Mean Δ: ${data.mean_displacement_mm}mm`;
+      statsEl.style.display = 'block';
+    }
     // Activate heatmap button
     document.querySelectorAll('.view-mode-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('btn-heatmap')?.classList.add('active');
@@ -242,10 +286,14 @@ function _loadGLB(url, onLoaded) {
       _updateStats(bodyMesh);
       _setStatus('');
       _createRegionLabels();
+      _hideProgress();
       if (onLoaded) onLoaded();
     },
-    (xhr) => _setStatus(`Loading… ${Math.round(xhr.loaded / xhr.total * 100)}%`),
-    (err) => { console.error(err); _setStatus('Error loading model'); },
+    (xhr) => {
+      if (xhr.total > 0) _showProgress(Math.round(xhr.loaded / xhr.total * 100));
+      _setStatus(`Loading… ${xhr.total > 0 ? Math.round(xhr.loaded / xhr.total * 100) + '%' : ''}`);
+    },
+    (err) => { console.error(err); _setStatus('Error loading model'); _hideProgress(); },
   );
 }
 
@@ -392,6 +440,40 @@ function getBodyRegion(point) {
 function _onMeshClick(event) {
   const hit = _getMeshIntersection(event);
   if (!hit) return;
+
+  // Measure mode: collect points
+  if (_measureMode) {
+    const pt = hit.point.clone();
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(2, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xff4444 })
+    );
+    marker.position.copy(pt);
+    scene.add(marker);
+    _measurePoints.push({ point: pt, marker });
+
+    if (_measurePoints.length === 2) {
+      const geom = new THREE.BufferGeometry().setFromPoints(
+        [_measurePoints[0].point, _measurePoints[1].point]
+      );
+      const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: 0xff4444 }));
+      scene.add(line);
+      _measureLines.push(line);
+
+      const dist = _measurePoints[0].point.distanceTo(_measurePoints[1].point);
+      // Convert from scene units back to mm: scene is scaled to targetH=300 over ~1680mm
+      const sceneToMm = bodyMesh ? (() => {
+        const b = new THREE.Box3().setFromObject(bodyMesh);
+        return 1680 / (b.max.y - b.min.y);  // mm per scene unit
+      })() : 1;
+      const distMm = dist * sceneToMm;
+      _setStatus(`Distance: ${distMm.toFixed(1)} mm`);
+      _showMeasureLabel(_measurePoints[0].point, _measurePoints[1].point, distMm);
+      _measurePoints = [];
+    }
+    return;
+  }
+
   const region = getBodyRegion(hit.point);
   _showRegionLabel(region, event.clientX, event.clientY);
   _openAdjustPanel(region);
@@ -766,16 +848,191 @@ window.resetCamera = function() {
 };
 
 window.takeScreenshot = function() {
+  // Render at 2× resolution for sharper export
+  const w = renderer.domElement.width;
+  const h = renderer.domElement.height;
+  renderer.setSize(w * 2, h * 2, false);
+  renderer.render(scene, camera);
+  const dataUrl = renderer.domElement.toDataURL('image/png');
+  renderer.setSize(w, h, false);
   renderer.render(scene, camera);
   const link = document.createElement('a');
-  link.download = 'muscle3d.png';
-  link.href = renderer.domElement.toDataURL('image/png');
+  link.download = `muscle_tracker_3d_${Date.now()}.png`;
+  link.href = dataUrl;
   link.click();
 };
 
 window.clearMeasurements = function() {
   if (window.MeasurementOverlay) window.MeasurementOverlay.clear();
+  // Clear measure mode markers, lines, labels
+  _measureLines.forEach(l => scene.remove(l));
+  _measureLines = [];
+  _measurePoints.forEach(p => scene.remove(p.marker));
+  _measurePoints = [];
+  _measureLabels.forEach(l => l.remove());
+  _measureLabels = [];
+  // Clear cross-section
+  if (_sectionPlane)   { scene.remove(_sectionPlane);   _sectionPlane   = null; }
+  if (_sectionOutline) { scene.remove(_sectionOutline); _sectionOutline = null; }
+  const secStats = document.getElementById('section-stats');
+  if (secStats) secStats.textContent = '';
 };
+
+// ── Mesh comparison UI ────────────────────────────────────────────────────────
+async function _loadMeshList() {
+  if (!_viewerToken) return;
+  try {
+    const cid = _customerId();
+    const resp = await fetch(`/web_app/api/customer/${cid}/meshes`, {
+      headers: { 'Authorization': `Bearer ${_viewerToken}` }
+    });
+    const data = await resp.json();
+    if (data.status !== 'success') return;
+    const oldSel = document.getElementById('compare-old');
+    const newSel = document.getElementById('compare-new');
+    if (!oldSel || !newSel) return;
+    oldSel.innerHTML = '<option value="">— none —</option>';
+    newSel.innerHTML = '<option value="">— none —</option>';
+    for (const m of data.meshes) {
+      const label = `#${m.id} ${m.created_on} (${m.muscle_group})`;
+      const opt1 = `<option value="${m.id}">${label}</option>`;
+      oldSel.innerHTML += opt1;
+      newSel.innerHTML += opt1;
+    }
+  } catch (e) { console.warn('Failed to load mesh list:', e); }
+}
+
+window.runComparison = async function() {
+  const oldId = document.getElementById('compare-old')?.value;
+  const newId = document.getElementById('compare-new')?.value;
+  if (!oldId || !newId) { _setStatus('Select both meshes to compare'); return; }
+  await _applyCompareHeatmap(parseInt(oldId), parseInt(newId));
+};
+
+window.clearComparison = function() {
+  window.setViewMode('solid');
+  const statsEl = document.getElementById('compare-stats');
+  if (statsEl) { statsEl.style.display = 'none'; statsEl.textContent = ''; }
+};
+
+// ── Measure mode ──────────────────────────────────────────────────────────────
+window.toggleMeasure = function() {
+  _measureMode = !_measureMode;
+  const btn = document.getElementById('btn-measure');
+  if (btn) btn.classList.toggle('active', _measureMode);
+  if (!_measureMode && _measurePoints.length === 1) {
+    scene.remove(_measurePoints[0].marker);
+    _measurePoints = [];
+  }
+  _setStatus(_measureMode ? 'Click two points to measure distance' : '');
+};
+
+function _showMeasureLabel(p1, p2, distMm) {
+  const mid = p1.clone().add(p2).multiplyScalar(0.5);
+  const div = document.createElement('div');
+  div.style.cssText = 'position:fixed;background:rgba(255,68,68,0.9);color:#fff;padding:2px 7px;border-radius:3px;font-size:11px;pointer-events:none;z-index:60;';
+  div.textContent = `${distMm.toFixed(1)} mm`;
+  document.getElementById('canvas-container').appendChild(div);
+  _measureLabels.push(div);
+
+  function updatePos() {
+    if (!div.parentElement) return;
+    const projected = mid.clone().project(camera);
+    const x = (projected.x * 0.5 + 0.5) * window.innerWidth;
+    const y = (-projected.y * 0.5 + 0.5) * window.innerHeight;
+    div.style.left = x + 'px';
+    div.style.top  = y + 'px';
+    requestAnimationFrame(updatePos);
+  }
+  updatePos();
+}
+
+// ── Cross-section ─────────────────────────────────────────────────────────────
+function _updateCrossSection(ratio) {
+  if (!bodyMesh) return;
+  if (_sectionPlane)   { scene.remove(_sectionPlane);   _sectionPlane   = null; }
+  if (_sectionOutline) { scene.remove(_sectionOutline); _sectionOutline = null; }
+
+  const box = new THREE.Box3().setFromObject(bodyMesh);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const sliceY = box.min.y + size.y * ratio;
+
+  // Translucent plane
+  const planeSize = Math.max(size.x, size.z) * 1.8;
+  _sectionPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(planeSize, planeSize),
+    new THREE.MeshBasicMaterial({ color: 0x4a9eff, transparent: true, opacity: 0.12, side: THREE.DoubleSide })
+  );
+  _sectionPlane.rotation.x = -Math.PI / 2;
+  _sectionPlane.position.y = sliceY;
+  scene.add(_sectionPlane);
+
+  // Compute cross-section edges
+  const crossPoints = [];
+  bodyMesh.traverse(child => {
+    if (!child.isMesh || !child.geometry) return;
+    const geo  = child.geometry;
+    const pos  = geo.attributes.position;
+    const idx  = geo.index;
+    const mat  = child.matrixWorld;
+    const getV = (i) => new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mat);
+    const triCount = idx ? idx.count / 3 : pos.count / 3;
+    for (let t = 0; t < triCount; t++) {
+      const i0 = idx ? idx.getX(t * 3) : t * 3;
+      const i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+      const i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+      const v0 = getV(i0), v1 = getV(i1), v2 = getV(i2);
+      const edges = [[v0, v1], [v1, v2], [v2, v0]];
+      for (const [a, b] of edges) {
+        if ((a.y - sliceY) * (b.y - sliceY) < 0) {
+          const tVal = (sliceY - a.y) / (b.y - a.y);
+          crossPoints.push(new THREE.Vector3(
+            a.x + tVal * (b.x - a.x), sliceY, a.z + tVal * (b.z - a.z)
+          ));
+        }
+      }
+    }
+  });
+
+  if (crossPoints.length >= 2) {
+    _sectionOutline = new THREE.LineSegments(
+      new THREE.BufferGeometry().setFromPoints(crossPoints),
+      new THREE.LineBasicMaterial({ color: 0x4a9eff })
+    );
+    scene.add(_sectionOutline);
+
+    let perimeter = 0;
+    for (let i = 0; i + 1 < crossPoints.length; i += 2) {
+      perimeter += crossPoints[i].distanceTo(crossPoints[i + 1]);
+    }
+    // Convert scene units → mm
+    const sceneToMm = size.y > 0 ? 1680 / size.y : 1;
+    const perimMm   = perimeter * sceneToMm;
+    const heightMm  = (sliceY - box.min.y) * sceneToMm;
+    const statsEl = document.getElementById('section-stats');
+    if (statsEl) {
+      statsEl.textContent = `H: ${heightMm.toFixed(0)}mm | Circ ≈ ${perimMm.toFixed(0)}mm (${(perimMm / 10).toFixed(1)}cm)`;
+    }
+  }
+}
+
+// ── Loading progress bar ───────────────────────────────────────────────────────
+function _showProgress(pct) {
+  let bar = document.getElementById('load-progress');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'load-progress';
+    bar.style.cssText = 'position:fixed;top:0;left:0;height:3px;background:#4a9eff;transition:width 0.2s;z-index:9999;pointer-events:none;';
+    document.body.appendChild(bar);
+  }
+  bar.style.width = pct + '%';
+}
+
+function _hideProgress() {
+  const bar = document.getElementById('load-progress');
+  if (bar) { bar.style.width = '100%'; setTimeout(() => bar.remove(), 350); }
+}
 
 // ── Render loop ───────────────────────────────────────────────────────────────
 function _animate() {

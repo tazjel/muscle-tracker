@@ -127,4 +127,23 @@ def project_texture(vertices: np.ndarray, faces: np.ndarray, uvs: np.ndarray,
             ).astype(np.uint8)
             weight[ty, tx] = w_new
 
+    # ── Seam blending: smooth overlap zones between views ─────────────────────
+    overlap_mask = (weight > 1.0).astype(np.uint8) * 255
+    if overlap_mask.any():
+        kernel = np.ones((5, 5), np.uint8)
+        seam_region = cv2.dilate(overlap_mask, kernel, iterations=2)
+        blurred = cv2.GaussianBlur(texture, (7, 7), 0)
+        alpha = seam_region.astype(np.float32) / 255.0
+        for c in range(3):
+            texture[:, :, c] = (
+                texture[:, :, c].astype(np.float32) * (1.0 - alpha) +
+                blurred[:, :, c].astype(np.float32) * alpha
+            ).astype(np.uint8)
+
+    # ── Gap inpainting: fill uncovered pixels with surrounding colors ──────────
+    mask_unfilled = (weight == 0).astype(np.uint8) * 255
+    if mask_unfilled.any():
+        inpaint_r = max(5, atlas_size // 256)  # scale radius with atlas resolution
+        texture = cv2.inpaint(texture, mask_unfilled, inpaintRadius=inpaint_r, flags=cv2.INPAINT_TELEA)
+
     return texture, weight
