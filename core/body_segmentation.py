@@ -118,14 +118,34 @@ def extract_muscle_roi(image_bgr: np.ndarray, muscle_group: str,
     h, w = image_bgr.shape[:2]
     pad = 40
 
+    # For muscles that span both sides (quadricep, hamstring) use bilateral ROI:
+    # x range from RIGHT landmark to LEFT landmark (full width of both legs),
+    # y range from hip to knee.
+    bilateral_rois = {
+        'quadricep': ('RIGHT_HIP', 'LEFT_HIP', 'RIGHT_KNEE', 'LEFT_KNEE'),
+        'hamstring': ('RIGHT_HIP', 'LEFT_HIP', 'RIGHT_KNEE', 'LEFT_KNEE'),
+        'glute': ('RIGHT_HIP', 'LEFT_HIP', 'RIGHT_KNEE', 'LEFT_KNEE'),
+    }
+    if muscle_group in bilateral_rois:
+        pts = bilateral_rois[muscle_group]
+        coords = [landmarks[p] for p in pts if p in landmarks]
+        if len(coords) < 2:
+            return None
+        xs = [c[0] for c in coords]
+        ys = [c[1] for c in coords]
+        x_min = max(0, min(xs) - pad)
+        x_max = min(w, max(xs) + pad)
+        y_min = max(0, min(ys) - pad)
+        y_max = min(h, max(ys) + pad)
+        if x_max <= x_min or y_max <= y_min:
+            return None
+        return image_bgr[y_min:y_max, x_min:x_max]
+
     rois = {
         'bicep': ('LEFT_SHOULDER', 'LEFT_ELBOW'),
         'tricep': ('LEFT_SHOULDER', 'LEFT_ELBOW'),
-        'quadricep': ('LEFT_HIP', 'LEFT_KNEE'),
-        'hamstring': ('LEFT_HIP', 'LEFT_KNEE'),
         'calf': ('LEFT_KNEE', 'LEFT_ANKLE'),
         'deltoid': ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
-        'glute': ('LEFT_HIP', 'RIGHT_HIP'),
         'lat': ('LEFT_SHOULDER', 'LEFT_HIP'),
         'chest': ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
         'forearm': ('LEFT_ELBOW', 'LEFT_WRIST'),

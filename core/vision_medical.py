@@ -11,11 +11,30 @@ logger = logging.getLogger(__name__)
 
 
 def _auto_orient(image_path):
-    """Load image with correct EXIF orientation applied."""
+    """
+    Load image with correct EXIF orientation applied.
+
+    Extra step: if the image is landscape (w > h * 1.4) AND EXIF had no valid
+    orientation tag, rotate 90° CCW. This corrects MatePad Pro images which
+    are saved in landscape when the device is held landscape, but should be
+    portrait for muscle analysis.
+    """
     try:
         from PIL import Image as PILImage, ImageOps
         pil = PILImage.open(image_path)
+
+        # Check whether EXIF has an explicit orientation tag (tag 274)
+        exif = pil.getexif()
+        has_exif_orientation = exif.get(274, None) not in (None, 0, 1)
+
         pil = ImageOps.exif_transpose(pil)
+        w, h = pil.size
+
+        # MatePad landscape fallback: no EXIF orientation + image is landscape
+        if not has_exif_orientation and w > h * 1.4:
+            logger.info("Landscape image (%dx%d) with no EXIF orientation — rotating CCW", w, h)
+            pil = pil.rotate(90, expand=True)
+
         rgb = np.array(pil)
         if len(rgb.shape) == 3 and rgb.shape[2] == 3:
             return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
@@ -38,6 +57,22 @@ _MAX_MUSCLE_WIDTH_MM = {
     'chest': 350,
 }
 _DEFAULT_MAX_WIDTH_MM = 200
+
+# Max realistic muscle LENGTH (height of silhouette = muscle longitudinal extent, mm)
+# When no ROI crop, the silhouette height is the full body — clamp to muscle length.
+_MAX_MUSCLE_HEIGHT_MM = {
+    'bicep':     320,   # ~32 cm upper arm
+    'tricep':    320,
+    'forearm':   280,   # ~28 cm forearm
+    'quadricep': 560,   # ~56 cm floor-to-knee (user: 52cm)
+    'hamstring': 560,
+    'calf':      380,   # floor-to-knee minus knee offset
+    'glute':     280,
+    'deltoid':   200,
+    'lat':       450,
+    'chest':     300,
+}
+_DEFAULT_MAX_HEIGHT_MM = 400
 
 
 def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
@@ -84,13 +119,20 @@ def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
                 logger.info("Image B: pose detected after rotation")
                 break
     
+    roi_cropped = False
     if muscle_group and landmarks_a and landmarks_b:
         crop_a = extract_muscle_roi(img_a, muscle_group, landmarks_a)
         if crop_a is not None:
             img_a = crop_a
+            roi_cropped = True
+            logger.info("ROI crop applied to image A for %s", muscle_group)
+        else:
+            logger.warning("ROI crop returned None for image A (%s) — using full image", muscle_group)
         crop_b = extract_muscle_roi(img_b_orig, muscle_group, landmarks_b)
         if crop_b is not None:
             img_b_orig = crop_b
+        else:
+            logger.warning("ROI crop returned None for image B (%s) — using full image", muscle_group)
 
     # Alignment
     align_confidence = 0.0
@@ -131,22 +173,38 @@ def analyze_muscle_growth(img_a_path, img_b_path, marker_size_mm=20.0,
     height_a = res_a['height_px'] * (ratio_a if use_mm else 1.0)
     height_b = res_b['height_px'] * (ratio_b if use_mm else 1.0)
 
-    # Sanity clamp: if no ROI crop happened (no pose landmarks), the contour
-    # likely covers the whole body. Scale down to realistic muscle dimensions.
-    roi_cropped = (landmarks_a is not None or landmarks_b is not None)
+    # Sanity clamp: if ROI crop did not succeed, the contour likely covers the
+    # whole body. Scale down to realistic muscle dimensions.
+    # roi_cropped was set above when the actual crop was applied to img_a.
+    logger.info("Measurements: width_a=%.1fmm height_a=%.1fmm area_a=%.0fmm2 roi_cropped=%s calibrated=%s",
+                width_a, height_a, area_a, roi_cropped, use_mm)
     if use_mm and not roi_cropped and muscle_group:
+        # ── Width clamp ───────────────────────────────────────────────────────
         max_w = _MAX_MUSCLE_WIDTH_MM.get(muscle_group, _DEFAULT_MAX_WIDTH_MM)
         raw_width = max(width_a, width_b)
         if raw_width > max_w * 1.5:
-            scale = max_w / raw_width
-            logger.info("Sanity clamp: width %.0fmm > max %.0fmm for %s, scale=%.2f",
-                        raw_width, max_w, muscle_group, scale)
-            width_a *= scale
-            width_b *= scale
-            height_a *= scale
-            height_b *= scale
-            area_a *= scale * scale
-            area_b *= scale * scale
+            w_scale = max_w / raw_width
+            logger.info("Sanity clamp width: %.0fmm → %.0fmm for %s (scale=%.2f)",
+                        raw_width, max_w, muscle_group, w_scale)
+            width_a  *= w_scale
+            width_b  *= w_scale
+            height_a *= w_scale
+            height_b *= w_scale
+            area_a   *= w_scale * w_scale
+            area_b   *= w_scale * w_scale
+
+        # ── Height clamp (muscle length — prevents full-body silhouette height) ─
+        max_h = _MAX_MUSCLE_HEIGHT_MM.get(muscle_group, _DEFAULT_MAX_HEIGHT_MM)
+        raw_height = max(height_a, height_b)
+        if raw_height > max_h * 1.5:
+            h_scale = max_h / raw_height
+            logger.info("Sanity clamp height: %.0fmm → %.0fmm for %s (scale=%.2f)",
+                        raw_height, max_h, muscle_group, h_scale)
+            height_a *= h_scale
+            height_b *= h_scale
+            # Recalculate area as width × clamped_height (rectangle approximation)
+            area_a = width_a * height_a
+            area_b = width_b * height_b
 
     delta_area = area_b - area_a
     delta_width = width_b - width_a

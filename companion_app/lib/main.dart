@@ -17,6 +17,41 @@ late List<CameraDescription> _cameras;
 class AppConfig {
   static const String serverBaseUrl = 'http://192.168.100.16:8000/web_app';
   static const String appVersion = '3.0.0';
+
+  // ── DEV MODE ─────────────────────────────────────────────────────────────
+  // Set to false when releasing to production.
+  static const bool devMode = true;
+
+  static bool profileCompleted = false;
+
+  // Hardcoded test profile — submitted automatically on first run in dev mode.
+  // Edit these values to match the current test subject.
+  static const Map<String, dynamic> devProfile = {
+    'height_cm':                  168,
+    'weight_kg':                  63,
+    'shoulder_width_cm':          37,
+    'neck_to_shoulder_cm':        15,
+    'shoulder_to_head_cm':        25,
+    'arm_length_cm':              80,
+    'upper_arm_length_cm':        35,
+    'forearm_length_cm':          45,
+    'torso_length_cm':            50,
+    'floor_to_knee_cm':           52,
+    'knee_to_belly_cm':           40,
+    'back_buttock_to_knee_cm':    61.6,
+    'head_circumference_cm':      56,
+    'neck_circumference_cm':      35,
+    'chest_circumference_cm':     97,
+    'bicep_circumference_cm':     32,
+    'forearm_circumference_cm':   29,
+    'hand_circumference_cm':      21,
+    'waist_circumference_cm':     90,
+    'hip_circumference_cm':       92,
+    'thigh_circumference_cm':     53,
+    'quadricep_circumference_cm': 52,
+    'calf_circumference_cm':      34,
+    'skin_tone_hex':              'C4956A',
+  };
 }
 
 class AppTheme {
@@ -49,11 +84,13 @@ String? _customerName;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Full immersive kiosk mode — hide nav bar and status bar permanently
+
+  // Kiosk mode — always on (dev panel is inside the app, not system UI)
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   _cameras = await availableCameras();
-  // Auto-login with demo account; fall back to local demo if server unreachable
+
+  // Auto-login
   try {
     final res = await http.post(
       Uri.parse('${AppConfig.serverBaseUrl}/api/auth/token'),
@@ -70,6 +107,40 @@ Future<void> main() async {
   _jwtToken ??= 'demo';
   _customerId ??= '1';
   _customerName ??= 'Demo User';
+
+  // --- Dev mode: auto-submit hardcoded profile, skip setup screen ---
+  if (AppConfig.devMode) {
+    try {
+      // Check if profile already submitted to avoid hammering server
+      final pRes = await http.get(
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_profile'),
+        headers: {'Authorization': 'Bearer $_jwtToken'},
+      ).timeout(const Duration(seconds: 4));
+      final pData = jsonDecode(pRes.body);
+      final alreadyDone = pData['profile']?['profile_completed'] == true;
+      if (!alreadyDone) {
+        // Submit hardcoded dev profile
+        await http.post(
+          Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_profile'),
+          headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $_jwtToken'},
+          body: jsonEncode(AppConfig.devProfile),
+        ).timeout(const Duration(seconds: 5));
+      }
+    } catch (_) {}
+    // In dev mode, always mark complete so we go straight to camera
+    AppConfig.profileCompleted = true;
+  } else {
+    // Production: check server for profile completion
+    try {
+      final pRes = await http.get(
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_profile'),
+        headers: {'Authorization': 'Bearer $_jwtToken'},
+      ).timeout(const Duration(seconds: 4));
+      final pData = jsonDecode(pRes.body);
+      AppConfig.profileCompleted = pData['profile']?['profile_completed'] == true;
+    } catch (_) {}
+  }
+
   runApp(const MuscleCompanionApp());
 }
 
@@ -77,13 +148,307 @@ class MuscleCompanionApp extends StatelessWidget {
   const MuscleCompanionApp({super.key});
   @override
   Widget build(BuildContext context) {
+    // Dev mode always goes straight to camera — no onboarding
+    final Widget home = (AppConfig.devMode || AppConfig.profileCompleted)
+        ? const CameraLevelScreen()
+        : const ProfileSetupScreen();
     return MaterialApp(
       title: 'Muscle Tracker v3',
       theme: AppTheme.darkTheme,
-      home: const CameraLevelScreen(),
+      home: home,
       debugShowCheckedModeBanner: false,
     );
   }
+}
+
+// =============================================================================
+// PROFILE SETUP SCREEN
+// =============================================================================
+
+class ProfileSetupScreen extends StatefulWidget {
+  const ProfileSetupScreen({super.key});
+  @override
+  State<ProfileSetupScreen> createState() => _ProfileSetupScreenState();
+}
+
+class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
+  int _step = 0;
+  bool _submitting = false;
+  String? _error;
+
+  // Step 0 — essentials
+  final _heightCtrl   = TextEditingController();
+  final _weightCtrl   = TextEditingController();
+  // Step 1 — upper body
+  final _shoulderCtrl = TextEditingController();
+  final _chestCtrl    = TextEditingController();
+  final _bicepCtrl    = TextEditingController();
+  final _neckCtrl     = TextEditingController();
+  // Step 2 — lower body
+  final _waistCtrl    = TextEditingController();
+  final _hipCtrl      = TextEditingController();
+  final _thighCtrl    = TextEditingController();
+  final _calfCtrl     = TextEditingController();
+  // Step 3 — device setup
+  final _camHeightCtrl  = TextEditingController(text: '65');
+  final _camDistCtrl    = TextEditingController(text: '100');
+
+  static const _steps = ['Essentials', 'Upper Body', 'Lower Body', 'Device Setup'];
+
+  @override
+  void dispose() {
+    for (final c in [_heightCtrl, _weightCtrl, _shoulderCtrl, _chestCtrl,
+                     _bicepCtrl, _neckCtrl, _waistCtrl, _hipCtrl, _thighCtrl,
+                     _calfCtrl, _camHeightCtrl, _camDistCtrl]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  double? _parse(TextEditingController c) => double.tryParse(c.text.trim());
+
+  Future<void> _submit() async {
+    setState(() { _submitting = true; _error = null; });
+    try {
+      // Submit body profile
+      final profile = <String, dynamic>{};
+      void add(String k, double? v) { if (v != null && v > 0) profile[k] = v; }
+      add('height_cm',              _parse(_heightCtrl));
+      add('weight_kg',              _parse(_weightCtrl));
+      add('shoulder_width_cm',      _parse(_shoulderCtrl));
+      add('chest_circumference_cm', _parse(_chestCtrl));
+      add('bicep_circumference_cm', _parse(_bicepCtrl));
+      add('neck_circumference_cm',  _parse(_neckCtrl));
+      add('waist_circumference_cm', _parse(_waistCtrl));
+      add('hip_circumference_cm',   _parse(_hipCtrl));
+      add('thigh_circumference_cm', _parse(_thighCtrl));
+      add('calf_circumference_cm',  _parse(_calfCtrl));
+      profile['skin_tone_hex'] = 'C4956A'; // default light-brown
+
+      await http.post(
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_profile'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $_jwtToken'},
+        body: jsonEncode(profile),
+      ).timeout(const Duration(seconds: 8));
+
+      // Submit device profile
+      final camH = _parse(_camHeightCtrl) ?? 65.0;
+      final camD = _parse(_camDistCtrl)   ?? 100.0;
+      await http.post(
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/devices'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $_jwtToken'},
+        body: jsonEncode({
+          'device_name': 'Phone',
+          'role': 'front',
+          'orientation': 'portrait',
+          'camera_height_from_ground_cm': camH,
+          'distance_to_subject_cm': camD,
+        }),
+      ).timeout(const Duration(seconds: 8));
+
+      AppConfig.profileCompleted = true;
+      if (mounted) {
+        Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => const CameraLevelScreen()));
+      }
+    } catch (e) {
+      setState(() { _error = 'Could not save profile. Tap Skip to continue.'; });
+    } finally {
+      setState(() { _submitting = false; });
+    }
+  }
+
+  Widget _field(String label, TextEditingController ctrl, String unit, {String? hint}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(children: [
+        Expanded(
+          child: TextField(
+            controller: ctrl,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              labelText: label,
+              hintText: hint,
+              labelStyle: const TextStyle(color: Color(0xFF94A3B8)),
+              hintStyle: const TextStyle(color: Color(0xFF475569), fontSize: 12),
+              enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF334155))),
+              focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF009688))),
+              filled: true, fillColor: const Color(0xFF121212),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        SizedBox(width: 36, child: Text(unit, style: const TextStyle(color: Color(0xFF94A3B8)))),
+      ]),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF000000),
+      appBar: AppBar(
+        title: Text('Setup — ${_steps[_step]}'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pushReplacement(context,
+                MaterialPageRoute(builder: (_) => const CameraLevelScreen())),
+            child: const Text('Skip', style: TextStyle(color: Color(0xFF94A3B8))),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(children: [
+            // Step indicator
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(
+              _steps.length, (i) => Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                width: 10, height: 10,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: i <= _step ? const Color(0xFF009688) : const Color(0xFF334155),
+                ),
+              ),
+            )),
+            const SizedBox(height: 20),
+            Expanded(
+              child: SingleChildScrollView(child: Column(children: [
+                if (_step == 0) ...[
+                  const Text('Enter your basic measurements.\nHeight and weight are required.',
+                      textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
+                  const SizedBox(height: 12),
+                  _field('Height *', _heightCtrl, 'cm'),
+                  _field('Weight *', _weightCtrl, 'kg'),
+                ],
+                if (_step == 1) ...[
+                  const Text('Upper body — all optional but improves 3D accuracy.',
+                      textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
+                  const SizedBox(height: 12),
+                  _field('Shoulder width', _shoulderCtrl, 'cm', hint: 'Edge to edge'),
+                  _field('Chest circumference', _chestCtrl, 'cm', hint: 'At nipple height'),
+                  _field('Bicep circumference', _bicepCtrl, 'cm', hint: 'Widest part, arm at side'),
+                  _field('Neck circumference', _neckCtrl, 'cm'),
+                ],
+                if (_step == 2) ...[
+                  const Text('Lower body — all optional.',
+                      textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
+                  const SizedBox(height: 12),
+                  _field('Waist', _waistCtrl, 'cm', hint: 'Below belly button'),
+                  _field('Hip / Buttock', _hipCtrl, 'cm'),
+                  _field('Upper thigh', _thighCtrl, 'cm'),
+                  _field('Calf', _calfCtrl, 'cm'),
+                ],
+                if (_step == 3) ...[
+                  const Text('Tell us how your devices are set up.\nThis calibrates the camera distance.',
+                      textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
+                  const SizedBox(height: 12),
+                  _field('Camera height from floor', _camHeightCtrl, 'cm',
+                      hint: 'Chair height + device position (e.g. 65)'),
+                  _field('Distance to subject', _camDistCtrl, 'cm',
+                      hint: '100 = 1 metre, 50 = half metre'),
+                ],
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(_error!, style: const TextStyle(color: Color(0xFFFF5252), fontSize: 12)),
+                  ),
+              ])),
+            ),
+            Row(children: [
+              if (_step > 0)
+                Expanded(child: OutlinedButton(
+                  onPressed: () => setState(() => _step--),
+                  child: const Text('Back'),
+                )),
+              if (_step > 0) const SizedBox(width: 12),
+              Expanded(child: FilledButton(
+                onPressed: _submitting ? null
+                    : (_step < _steps.length - 1)
+                        ? () => setState(() => _step++)
+                        : _submit,
+                child: _submitting
+                    ? const SizedBox(width: 20, height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black))
+                    : Text(_step < _steps.length - 1 ? 'Next' : 'Save & Start'),
+              )),
+            ]),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// DEV PANEL — overlaid on CameraLevelScreen in dev mode
+// =============================================================================
+
+class DevPanel extends StatelessWidget {
+  final String customerId;
+  final String? jwtToken;
+  final double cameraDistanceCm;
+  final bool profileCompleted;
+  final VoidCallback? onEditProfile;
+  final VoidCallback? onForceScan;
+
+  const DevPanel({
+    super.key,
+    required this.customerId,
+    this.jwtToken,
+    this.cameraDistanceCm = 75,
+    this.profileCompleted = false,
+    this.onEditProfile,
+    this.onForceScan,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (!AppConfig.devMode) return const SizedBox.shrink();
+    return Positioned(
+      top: 40, right: 8,
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.85),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.amber.withOpacity(0.6)),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('⚙ DEV', style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 11)),
+          const SizedBox(height: 4),
+          Text('ID: $customerId', style: const TextStyle(color: Colors.white70, fontSize: 10)),
+          Text('Dist: ${cameraDistanceCm.round()}cm', style: const TextStyle(color: Colors.white70, fontSize: 10)),
+          Text(
+            'Profile: ${profileCompleted ? "✓" : "✗"}',
+            style: TextStyle(color: profileCompleted ? Colors.greenAccent : Colors.redAccent, fontSize: 10),
+          ),
+          if (jwtToken != null)
+            Text('JWT: ${jwtToken!.length > 8 ? jwtToken!.substring(0, 8) : jwtToken!}…',
+                style: const TextStyle(color: Colors.white38, fontSize: 9)),
+          const SizedBox(height: 6),
+          if (onEditProfile != null)
+            _devBtn('Edit Profile', Colors.teal, onEditProfile!),
+          if (onForceScan != null)
+            _devBtn('Force Scan', Colors.orange, onForceScan!),
+        ]),
+      ),
+    );
+  }
+
+  Widget _devBtn(String label, Color color, VoidCallback onTap) => GestureDetector(
+    onTap: onTap,
+    child: Container(
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(color: color.withOpacity(0.2),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: color.withOpacity(0.5))),
+      child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.bold)),
+    ),
+  );
 }
 
 // --- LOGIN SCREEN ---
@@ -218,7 +583,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   final List<String> _phaseLabels = ['FRONT VIEW', 'SIDE VIEW'];
   final List<IconData> _phaseIcons = [Icons.person, Icons.person_outline];
   String _selectedMuscleGroup = 'quadricep';
-  double _cameraDistanceCm = 100.0; // default 1 meter
+  double _cameraDistanceCm = 75.0; // default distance
   final Map<String, IconData> _muscleIcons = {
     'bicep': Icons.fitness_center, 'tricep': Icons.fitness_center,
     'quadricep': Icons.accessibility_new, 'hamstring': Icons.accessibility_new,
@@ -268,7 +633,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       (c) => c.lensDirection == CameraLensDirection.back,
       orElse: () => _cameras.first,
     );
-    _controller = CameraController(cam, ResolutionPreset.medium, enableAudio: false);
+    _controller = CameraController(cam, ResolutionPreset.max, enableAudio: false);
     try {
       await _controller!.initialize();
       if (mounted) {
@@ -522,10 +887,12 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     _frontPath = frontBest;
     await _saveLatestScan(frontBest, 'front');
     setState(() { _capturePhase = 1; });
-    // Rotate prompt — brief
-    setState(() { _autoInstruction = 'ROTATE 90°'; });
-    await Future.delayed(const Duration(seconds: 2));
-    if (!mounted || !_autoRunning) return;
+    // Rotate prompt — give user 5 seconds to turn 90°
+    for (int i = 5; i >= 1; i--) {
+      setState(() { _autoInstruction = 'ROTATE 90° — $i s'; });
+      await Future.delayed(const Duration(seconds: 1));
+      if (!mounted || !_autoRunning) return;
+    }
     // Phase 1: side — burst capture, pick sharpest
     setState(() { _autoInstruction = 'SIDE — CAPTURING...'; });
     final sideBest = await _burstCaptureBest(8);
@@ -702,6 +1069,15 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         if (_isDualMode) _buildDualOverlay(),
         if (_profileLocked) _buildProfileLockScreen(),
         if (_isUploading && !_autoRunning) _buildUploadOverlay(),
+        DevPanel(
+          customerId: _customerId ?? '1',
+          jwtToken: _jwtToken,
+          cameraDistanceCm: _cameraDistanceCm,
+          profileCompleted: AppConfig.profileCompleted,
+          onEditProfile: () => Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const ProfileSetupScreen())),
+          onForceScan: _isCapturing ? null : () => _startAutoCapture(),
+        ),
       ]),
     );
   }
@@ -1654,7 +2030,7 @@ class _LivePreviewScreenState extends State<LivePreviewScreen> {
       (c) => c.lensDirection == CameraLensDirection.back,
       orElse: () => _cameras.first,
     );
-    _controller = CameraController(cam, ResolutionPreset.medium, enableAudio: false);
+    _controller = CameraController(cam, ResolutionPreset.max, enableAudio: false);
     try {
       await _controller!.initialize();
       if (mounted) { setState(() {}); _startAnalysis(); }
