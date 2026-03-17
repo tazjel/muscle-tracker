@@ -1,45 +1,92 @@
 <!DOCTYPE html>
-<html lang='en'>
+<html lang="en">
 <head>
-    <meta charset='UTF-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <title>Muscle Tracker — 3D Viewer</title>
-    <style>
-        body { margin: 0; background-color: #1a1a2e; color: #e0e0e0; font-family: sans-serif; overflow: hidden; }
-        #canvas-container { width: 100vw; height: 100vh; }
-        #ui-overlay { position: absolute; top: 20px; left: 20px; z-index: 10; pointer-events: none; }
-        .card { background: rgba(22, 33, 62, 0.8); padding: 15px; border-radius: 8px; border: 1px solid #4a9eff; pointer-events: auto; }
-        h2 { margin: 0 0 10px 0; color: #4a9eff; font-size: 1.2rem; }
-        .controls { display: flex; flex-direction: column; gap: 10px; margin-top: 15px; }
-        button { background: #4a9eff; color: #1a1a2e; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        button:hover { filter: brightness(1.1); }
-        .stats { font-size: 0.8rem; margin-top: 10px; color: #94a3b8; }
-        #loader { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Muscle Tracker — 3D Viewer</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div id='ui-overlay'>
-        <div class='card'>
-            <h2>3D Muscle Model</h2>
-            <div id='mesh-info'>Loading model...</div>
-            <div class='controls'>
-                <button onclick='toggleWireframe()'>Toggle Wireframe</button>
-                <button onclick='resetCamera()'>Reset Camera</button>
-                <button onclick='takeScreenshot()'>Take Screenshot</button>
-            </div>
-            <div class='stats' id='stats-display'>
-                Vertices: <span id='v-count'>0</span><br>
-                Faces: <span id='f-count'>0</span><br>
-                Volume: <span id='vol-val'>0</span> cm³
-            </div>
-        </div>
-    </div>
-    <div id='loader'>Loading 3D Engine...</div>
-    <div id='canvas-container'></div>
+  <div id="ui-overlay">
+    <div class="card">
+      <h2>3D Muscle Model</h2>
+      <div id="mesh-info">Loading model…</div>
 
-    <script src='https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js'></script>
-    <script src='https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js'></script>
-    <script src='https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js'></script>
-    <script src='viewer.js'></script>
+      <!-- View-mode toggle -->
+      <div class="view-modes">
+        <button class="view-mode-btn active" id="btn-solid"
+                onclick="setViewMode('solid')">Solid</button>
+        <button class="view-mode-btn" id="btn-wireframe"
+                onclick="setViewMode('wireframe')">Wire</button>
+        <button class="view-mode-btn" id="btn-heatmap"
+                onclick="setViewMode('heatmap')">Heat</button>
+        <button class="view-mode-btn" id="btn-textured"
+                onclick="setViewMode('textured')">Textured</button>
+      </div>
+
+      <!-- Body region adjustment panel (shown on click) -->
+      <div id="adjust-panel" style="display:none;margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+        <h3 id="adjust-region" style="margin:0 0 6px;font-size:13px;">Region</h3>
+        <label style="display:block;font-size:11px;margin-bottom:4px;">
+          Width&nbsp;<input type="range" id="adj-width" min="-30" max="30" value="0" style="width:90px;">
+          <span id="adj-width-val">0</span>mm
+        </label>
+        <label style="display:block;font-size:11px;margin-bottom:4px;">
+          Depth&nbsp;<input type="range" id="adj-depth" min="-30" max="30" value="0" style="width:90px;">
+          <span id="adj-depth-val">0</span>mm
+        </label>
+        <label style="display:block;font-size:11px;margin-bottom:6px;">
+          Length&nbsp;<input type="range" id="adj-length" min="-30" max="30" value="0" style="width:90px;">
+          <span id="adj-length-val">0</span>mm
+        </label>
+        <button onclick="applyAdjustment()" style="font-size:11px;margin-right:4px;">Apply</button>
+        <button onclick="resetAdjustment()" style="font-size:11px;margin-right:4px;">Reset</button>
+        <button onclick="saveAdjustments()" style="font-size:11px;">Save to Profile</button>
+      </div>
+
+      <div class="controls">
+        <button onclick="resetCamera()">Reset Camera</button>
+        <button onclick="takeScreenshot()">Screenshot</button>
+        <button onclick="clearMeasurements()">Clear Pins</button>
+      </div>
+
+      <div class="stats">
+        Vertices: <span id="v-count">0</span><br>
+        Faces: <span id="f-count">0</span><br>
+        Volume: <span id="vol-val">—</span> cm³
+      </div>
+    </div>
+  </div>
+
+  <!-- Heatmap legend (shown only in heatmap mode) -->
+  <div class="heatmap-legend">
+    <h3>MUSCLE ACTIVATION</h3>
+    <div class="heatmap-gradient"></div>
+    <div class="heatmap-labels">
+      <span>Low</span><span>Mid</span><span>High</span>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div id="canvas-container"></div>
+
+  <!-- MeasurementOverlay (plain script, must load before module) -->
+  <script src="measurement_overlay.js"></script>
+
+  <!-- 3D Viewer (ES module) -->
+  <script type="module" src="body_viewer.js"></script>
+
+  <!-- Wire overlay to viewer after both are loaded -->
+  <script type="module">
+    // body_viewer.js exposes window.bodyViewer in init() (synchronous).
+    // Model loading is async, but overlay can be initialised immediately —
+    // getMeshIntersection() already guards against a null bodyMesh.
+    window.addEventListener('load', () => {
+      const container = document.getElementById('canvas-container');
+      if (container && window.MeasurementOverlay) {
+        window.MeasurementOverlay.init(container);
+      }
+    });
+  </script>
 </body>
 </html>

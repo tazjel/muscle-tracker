@@ -99,6 +99,183 @@ def export_stl(vertices, faces, output_path):
                 f.write(struct.pack('<fff', v[0], v[1], v[2]))
             f.write(struct.pack('<H', 0)) # Attribute byte count
 
+def _compute_smooth_normals(vertices, faces):
+    """Average face normals at each vertex for smooth shading."""
+    normals = np.zeros_like(vertices, dtype=np.float32)
+    for f in faces:
+        v0, v1, v2 = vertices[f[0]], vertices[f[1]], vertices[f[2]]
+        n = np.cross(v1 - v0, v2 - v0)
+        length = np.linalg.norm(n)
+        if length > 0:
+            n /= length
+        normals[f[0]] += n
+        normals[f[1]] += n
+        normals[f[2]] += n
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    lengths[lengths == 0] = 1.0
+    normals /= lengths
+    return normals.astype(np.float32)
+
+
+def export_glb(vertices, faces, output_path, normals=True,
+               uvs=None, texture_image=None):
+    """
+    Export mesh as a binary glTF (.glb) file using pygltflib.
+
+    Args:
+        vertices:      numpy array (N, 3) float32 — coordinates in mm.
+        faces:         numpy array (M, 3) uint32  — triangle indices.
+        output_path:   destination .glb file path.
+        normals:       embed smooth normals (default True).
+        uvs:           optional (N, 2) float32 — UV coordinates [0,1].
+        texture_image: optional (H, W, 3) uint8 BGR — texture to embed as PNG.
+
+    Returns:
+        output_path on success, raises on failure.
+    """
+    try:
+        import pygltflib
+    except ImportError:
+        raise ImportError("pygltflib is required: pip install pygltflib")
+
+    verts = np.array(vertices, dtype=np.float32)
+    tris  = np.array(faces,    dtype=np.uint32)
+
+    tris_binary  = tris.tobytes()
+    verts_binary = verts.tobytes()
+
+    # ── Smooth normals ─────────────────────────────────────────────────────────
+    norms_binary = b''
+    if normals:
+        norms = _compute_smooth_normals(verts, tris)
+        norms_binary = norms.tobytes()
+
+    # ── UV coordinates ─────────────────────────────────────────────────────────
+    uvs_binary = b''
+    if uvs is not None:
+        uvs_arr = np.array(uvs, dtype=np.float32)
+        uvs_binary = uvs_arr.tobytes()
+
+    # ── Texture PNG ────────────────────────────────────────────────────────────
+    png_binary = b''
+    if texture_image is not None:
+        success, enc = cv2.imencode('.png', texture_image)
+        if success:
+            png_binary = enc.tobytes()
+            # Pad to 4-byte alignment
+            pad = (4 - len(png_binary) % 4) % 4
+            png_binary += b'\x00' * pad
+
+    # ── Assemble buffer: tris → verts → norms → uvs → png ────────────────────
+    blob  = tris_binary + verts_binary + norms_binary + uvs_binary + png_binary
+    offset = 0
+
+    buf_views = []
+    accessors  = []
+
+    # BV 0: indices
+    buf_views.append(pygltflib.BufferView(
+        buffer=0, byteOffset=offset, byteLength=len(tris_binary),
+        target=pygltflib.ELEMENT_ARRAY_BUFFER,
+    ))
+    accessors.append(pygltflib.Accessor(
+        bufferView=0, componentType=pygltflib.UNSIGNED_INT,
+        count=int(tris.size), type=pygltflib.SCALAR,
+        max=[int(tris.max())], min=[0],
+    ))
+    offset += len(tris_binary)
+
+    # BV 1: positions
+    buf_views.append(pygltflib.BufferView(
+        buffer=0, byteOffset=offset, byteLength=len(verts_binary),
+        target=pygltflib.ARRAY_BUFFER,
+    ))
+    accessors.append(pygltflib.Accessor(
+        bufferView=1, componentType=pygltflib.FLOAT,
+        count=int(len(verts)), type=pygltflib.VEC3,
+        max=verts.max(axis=0).tolist(), min=verts.min(axis=0).tolist(),
+    ))
+    offset += len(verts_binary)
+
+    attr_kwargs = {'POSITION': 1}
+
+    # BV 2: normals (optional)
+    if norms_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(norms_binary),
+            target=pygltflib.ARRAY_BUFFER,
+        ))
+        accessors.append(pygltflib.Accessor(
+            bufferView=len(buf_views) - 1, componentType=pygltflib.FLOAT,
+            count=int(len(verts)), type=pygltflib.VEC3,
+        ))
+        attr_kwargs['NORMAL'] = len(accessors) - 1
+        offset += len(norms_binary)
+
+    # BV for UVs (optional)
+    if uvs_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(uvs_binary),
+            target=pygltflib.ARRAY_BUFFER,
+        ))
+        accessors.append(pygltflib.Accessor(
+            bufferView=len(buf_views) - 1, componentType=pygltflib.FLOAT,
+            count=int(len(verts)), type=pygltflib.VEC2,
+        ))
+        attr_kwargs['TEXCOORD_0'] = len(accessors) - 1
+        offset += len(uvs_binary)
+
+    # BV for PNG texture (optional — no target, it's image data)
+    images, textures, samplers = [], [], []
+    if png_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(png_binary),
+        ))
+        images.append(pygltflib.Image(
+            mimeType='image/png', bufferView=len(buf_views) - 1,
+        ))
+        samplers.append(pygltflib.Sampler(
+            magFilter=pygltflib.LINEAR, minFilter=pygltflib.LINEAR_MIPMAP_LINEAR,
+            wrapS=pygltflib.CLAMP_TO_EDGE, wrapT=pygltflib.CLAMP_TO_EDGE,
+        ))
+        textures.append(pygltflib.Texture(source=0, sampler=0))
+
+    # ── Material ───────────────────────────────────────────────────────────────
+    if png_binary and uvs_binary:
+        pbr = pygltflib.PbrMetallicRoughness(
+            baseColorTexture=pygltflib.TextureInfo(index=0),
+            roughnessFactor=0.65, metallicFactor=0.0,
+        )
+    else:
+        pbr = pygltflib.PbrMetallicRoughness(
+            baseColorFactor=[0.769, 0.584, 0.416, 1.0],  # #C4956A skin tone
+            roughnessFactor=0.65, metallicFactor=0.0,
+        )
+
+    attributes = pygltflib.Attributes(**attr_kwargs)
+
+    gltf = pygltflib.GLTF2(
+        scene=0,
+        scenes=[pygltflib.Scene(nodes=[0])],
+        nodes=[pygltflib.Node(mesh=0)],
+        meshes=[pygltflib.Mesh(primitives=[
+            pygltflib.Primitive(attributes=attributes, indices=0, material=0)
+        ])],
+        materials=[pygltflib.Material(
+            pbrMetallicRoughness=pbr, doubleSided=True,
+        )],
+        accessors=accessors,
+        bufferViews=buf_views,
+        buffers=[pygltflib.Buffer(byteLength=len(blob))],
+        images=images or None,
+        textures=textures or None,
+        samplers=samplers or None,
+    )
+    gltf.set_binary_blob(blob)
+    gltf.save(output_path)
+    return output_path
+
+
 def generate_mesh_preview_image(vertices, faces, output_path):
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d import Axes3D
