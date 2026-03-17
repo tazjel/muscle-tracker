@@ -1323,6 +1323,83 @@ def compare_3d(customer_id):
         return dict(status='error', message='3D comparison failed')
 
 
+@action('api/customer/<customer_id:int>/compare_meshes', method=['POST'])
+@action.uses(db, cors)
+def compare_meshes_heatmap(customer_id):
+    """Return per-vertex heatmap values for growth visualization in the 3D viewer."""
+    payload, err = _auth_check()
+    if err: return err
+
+    data = request.json or {}
+    mesh_id_old = int(data.get('mesh_id_old', 0))
+    mesh_id_new = int(data.get('mesh_id_new', 0))
+    if not mesh_id_old or not mesh_id_new:
+        return dict(status='error', message='mesh_id_old and mesh_id_new required')
+
+    old_row = db.mesh_model[mesh_id_old]
+    new_row = db.mesh_model[mesh_id_new]
+    if not old_row or not new_row:
+        return dict(status='error', message='Mesh not found')
+    if old_row.customer_id != customer_id or new_row.customer_id != customer_id:
+        return dict(status='error', message='Access denied')
+    if not old_row.glb_path or not new_row.glb_path:
+        return dict(status='error', message='GLB path missing for one or both meshes')
+
+    try:
+        import numpy as np
+        import struct as _struct
+        import pygltflib as _pygltflib
+
+        # Resolve relative paths (meshes/ lives at project root, two dirs above __file__)
+        # __file__ = apps/web_app/controllers.py → go up twice to project root
+        _root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+        def _abs(p):
+            p = p.replace('\\', '/')
+            return p if os.path.isabs(p) else os.path.join(_root, p)
+
+        def _load_verts(path):
+            try:
+                gltf = _pygltflib.GLTF2().load(path)
+                acc = gltf.accessors[gltf.meshes[0].primitives[0].attributes.POSITION]
+                bv  = gltf.bufferViews[acc.bufferView]
+                blob = gltf.binary_blob()
+                data = blob[bv.byteOffset: bv.byteOffset + bv.byteLength]
+                v = np.array(_struct.unpack(f'<{acc.count * 3}f', data)).reshape(acc.count, 3)
+                return v.astype(np.float32)
+            except Exception:
+                return None
+
+        verts_old = _load_verts(_abs(old_row.glb_path))
+        verts_new = _load_verts(_abs(new_row.glb_path))
+        if verts_old is None or verts_new is None:
+            return dict(status='error', message='Could not load mesh vertices from GLB')
+
+        if len(verts_old) == len(verts_new):
+            disp = np.linalg.norm(verts_new - verts_old, axis=1)
+        else:
+            # Different vertex counts — nearest-vertex match
+            from scipy.spatial import cKDTree
+            tree = cKDTree(verts_old)
+            _, idx = tree.query(verts_new)
+            disp = np.linalg.norm(verts_new - verts_old[idx], axis=1)
+
+        # Normalize to [0, 1] using 95th-percentile cap to avoid outliers dominating
+        cap = float(np.percentile(disp, 95)) or 1.0
+        heatmap = np.clip(disp / cap, 0.0, 1.0)
+
+        return dict(
+            status='success',
+            heatmap_values=heatmap.tolist(),
+            displacements_mm=disp.tolist(),
+            max_displacement_mm=round(float(disp.max()), 2),
+            mean_displacement_mm=round(float(disp.mean()), 2),
+            num_vertices=int(len(heatmap)),
+        )
+    except Exception:
+        logger.exception('compare_meshes_heatmap failed for customer %d', customer_id)
+        return dict(status='error', message='Mesh comparison failed')
+
+
 # --- DASHBOARD ENDPOINTS ---
 
 @action('api/customer/<customer_id:int>/body_map', method=['GET'])

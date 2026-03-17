@@ -23,6 +23,33 @@ const _originalMaterials = new Map();  // mesh → original loaded material (for
 const raycaster  = new THREE.Raycaster();
 const _mouse     = new THREE.Vector2();
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
+let _viewerToken = null;
+
+async function _autoLogin() {
+  try {
+    const r = await fetch('/web_app/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'demo@muscle.com' }),
+    });
+    const d = await r.json();
+    if (d.token) _viewerToken = d.token;
+  } catch (e) {
+    console.warn('Viewer auto-login failed:', e);
+  }
+}
+
+function _authHeaders() {
+  return _viewerToken
+    ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${_viewerToken}` }
+    : { 'Content-Type': 'application/json' };
+}
+
+function _customerId() {
+  return new URLSearchParams(window.location.search).get('customer') || '1';
+}
+
 // User's skin tone — light brown #C4956A
 const SKIN_COLOR    = 0xC4956A;
 const SKIN_MATERIAL = new THREE.MeshStandardMaterial({
@@ -91,6 +118,9 @@ function init() {
     });
   });
 
+  // Authenticate for save/regenerate calls
+  _autoLogin();
+
   // Load model from URL params
   _loadFromUrl();
 
@@ -146,23 +176,55 @@ function _setupEnvironment() {
 
 // ── Load from URL params ──────────────────────────────────────────────────────
 function _loadFromUrl() {
-  const params   = new URLSearchParams(window.location.search);
-  const glbUrl   = params.get('model');
-  const objUrl   = params.get('obj');
-  const volStr   = params.get('volume');
+  const params      = new URLSearchParams(window.location.search);
+  const glbUrl      = params.get('model');
+  const objUrl      = params.get('obj');
+  const volStr      = params.get('volume');
+  const compareOld  = params.get('compare_old');
+  const compareNew  = params.get('compare_new');
 
   if (volStr) {
     const el = document.getElementById('vol-val');
     if (el) el.textContent = parseFloat(volStr).toFixed(1);
   }
 
-  if (glbUrl)      _loadGLB(glbUrl);
-  else if (objUrl) _loadOBJ(objUrl);
-  else             _showPlaceholder();
+  if (glbUrl) {
+    _loadGLB(glbUrl, compareOld && compareNew
+      ? () => _applyCompareHeatmap(parseInt(compareOld), parseInt(compareNew))
+      : null);
+  } else if (objUrl) {
+    _loadOBJ(objUrl);
+  } else {
+    _showPlaceholder();
+  }
+}
+
+async function _applyCompareHeatmap(meshIdOld, meshIdNew) {
+  const cid = _customerId();
+  try {
+    _setStatus('Loading comparison…');
+    const resp = await fetch(`/web_app/api/customer/${cid}/compare_meshes`, {
+      method: 'POST',
+      headers: _authHeaders(),
+      body: JSON.stringify({ mesh_id_old: meshIdOld, mesh_id_new: meshIdNew }),
+    });
+    const data = await resp.json();
+    if (data.status !== 'success') {
+      _setStatus('Comparison failed: ' + (data.message || '')); return;
+    }
+    applyHeatmap(bodyMesh, new Float32Array(data.heatmap_values));
+    document.querySelector('.heatmap-legend')?.classList.add('visible');
+    _setStatus(`Max Δ: ${data.max_displacement_mm}mm  Mean Δ: ${data.mean_displacement_mm}mm`);
+    // Activate heatmap button
+    document.querySelectorAll('.view-mode-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('btn-heatmap')?.classList.add('active');
+  } catch (e) {
+    _setStatus('Comparison error: ' + e.message);
+  }
 }
 
 // ── GLB Loader ────────────────────────────────────────────────────────────────
-function _loadGLB(url) {
+function _loadGLB(url, onLoaded) {
   _setStatus('Loading model…');
   const loader = new GLTFLoader();
 
@@ -179,6 +241,8 @@ function _loadGLB(url) {
       scene.add(bodyMesh);
       _updateStats(bodyMesh);
       _setStatus('');
+      _createRegionLabels();
+      if (onLoaded) onLoaded();
     },
     (xhr) => _setStatus(`Loading… ${Math.round(xhr.loaded / xhr.total * 100)}%`),
     (err) => { console.error(err); _setStatus('Error loading model'); },
@@ -349,6 +413,93 @@ function _showRegionLabel(region, cx, cy) {
   label._timer = setTimeout(() => { label.style.display = 'none'; }, 2500);
 }
 
+// ── Floating region labels ────────────────────────────────────────────────────
+let _labelsEnabled  = false;
+const _labelEls     = [];   // HTML div elements
+const _labelAnchors = [];   // THREE.Vector3 world positions
+
+const _LABEL_DEFS = [
+  { name: 'Head',     yFrac: 0.95 },
+  { name: 'Neck',     yFrac: 0.86 },
+  { name: 'Shoulder', yFrac: 0.76 },
+  { name: 'Chest',    yFrac: 0.64 },
+  { name: 'Waist',    yFrac: 0.54 },
+  { name: 'Hip',      yFrac: 0.45 },
+  { name: 'Thigh',    yFrac: 0.34 },
+  { name: 'Knee',     yFrac: 0.23 },
+  { name: 'Calf',     yFrac: 0.13 },
+];
+
+function _createRegionLabels() {
+  // Remove any previous labels
+  _labelEls.forEach(el => el.remove());
+  _labelEls.length = 0;
+  _labelAnchors.length = 0;
+
+  if (!bodyMesh) return;
+  const box = new THREE.Box3().setFromObject(bodyMesh);
+  const h   = box.max.y - box.min.y;
+  const xOff = (box.max.x - box.min.x) * 0.55 + 10;  // just outside the body edge
+
+  for (const def of _LABEL_DEFS) {
+    const worldPos = new THREE.Vector3(xOff, box.min.y + def.yFrac * h, 0);
+    _labelAnchors.push(worldPos);
+
+    const el = document.createElement('div');
+    el.className = 'region-label-float';
+    el.textContent = def.name;
+    el.style.cssText = [
+      'position:fixed',
+      'background:rgba(0,0,0,0.65)',
+      'color:#e0e0e0',
+      'font:11px/1.4 sans-serif',
+      'padding:2px 7px',
+      'border-radius:3px',
+      'pointer-events:none',
+      'white-space:nowrap',
+      'display:none',
+      'z-index:50',
+      'border-left:2px solid rgba(100,180,255,0.7)',
+    ].join(';');
+    document.body.appendChild(el);
+    _labelEls.push(el);
+  }
+
+  if (_labelsEnabled) _setLabelsVisible(true);
+}
+
+function _setLabelsVisible(on) {
+  _labelEls.forEach(el => { el.style.display = on ? 'block' : 'none'; });
+}
+
+function _updateRegionLabels() {
+  if (!_labelsEnabled || !_labelEls.length) return;
+  const w = window.innerWidth, h = window.innerHeight;
+  const tmp = new THREE.Vector3();
+  for (let i = 0; i < _labelAnchors.length; i++) {
+    tmp.copy(_labelAnchors[i]);
+    tmp.project(camera);          // NDC -1..1
+    const sx = (tmp.x * 0.5 + 0.5) * w;
+    const sy = (-(tmp.y) * 0.5 + 0.5) * h;
+    // Hide if behind camera or off-screen
+    if (tmp.z > 1 || sx < 0 || sx > w || sy < 0 || sy > h) {
+      _labelEls[i].style.display = 'none';
+    } else {
+      _labelEls[i].style.display = 'block';
+      _labelEls[i].style.left = sx + 8 + 'px';
+      _labelEls[i].style.top  = sy - 8 + 'px';
+    }
+  }
+}
+
+window.toggleLabels = function() {
+  _labelsEnabled = !_labelsEnabled;
+  if (_labelsEnabled && bodyMesh && !_labelEls.length) _createRegionLabels();
+  _setLabelsVisible(_labelsEnabled);
+  const btn = document.getElementById('btn-labels');
+  if (btn) btn.classList.toggle('active', _labelsEnabled);
+};
+
 // ── Adjustment panel ──────────────────────────────────────────────────────────
 let _currentRegion = null;
 const _regionAdjustments = {};  // region → {width, depth, length}
@@ -440,32 +591,66 @@ window.resetAdjustment = function() {
 };
 
 window.saveAdjustments = async function() {
-  const adjustments = {};
+  // Build field→delta map from all adjusted regions
+  const fieldDeltas = {};
   for (const [region, deltas] of Object.entries(_regionAdjustments)) {
-    if (deltas.width !== 0) {
-      const field = REGION_TO_FIELD[region];
-      if (field) {
-        adjustments[field] = deltas.width * 2 * Math.PI / 10;  // mm → cm approx
-      }
+    const field = REGION_TO_FIELD[region];
+    if (field && deltas.width !== 0) {
+      // Width slider is ±30 scene units ≈ mm; circumference delta = π * width_delta / 10 cm
+      fieldDeltas[field] = (fieldDeltas[field] || 0) + Math.PI * deltas.width / 10;
     }
   }
+  if (Object.keys(fieldDeltas).length === 0) {
+    _setStatus('No changes to save'); return;
+  }
+
   try {
-    const resp = await fetch('/web_app/api/customer/1/body_profile', {
+    const cid = _customerId();
+
+    // 1. Fetch current profile so we can post absolute values
+    const getResp = await fetch(`/web_app/api/customer/${cid}/body_profile`,
+      { headers: _authHeaders() });
+    const profile = await getResp.json();
+    if (profile.status !== 'success') {
+      _setStatus('Save failed: could not read profile'); return;
+    }
+
+    // 2. Build absolute updates: current value + delta
+    const updates = {};
+    for (const [field, delta] of Object.entries(fieldDeltas)) {
+      const current = parseFloat(profile.profile?.[field] || profile[field] || 0);
+      updates[field] = Math.max(0, current + delta);
+    }
+
+    // 3. POST absolute values back
+    const postResp = await fetch(`/web_app/api/customer/${cid}/body_profile`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(adjustments),
+      headers: _authHeaders(),
+      body: JSON.stringify(updates),
     });
-    const result = await resp.json();
-    if (result.status === 'success') {
-      alert('Profile updated. Regenerating mesh…');
-      const meshResp = await fetch('/web_app/api/customer/1/body_model', { method: 'POST' });
-      const meshResult = await meshResp.json();
-      if (meshResult.glb_url) {
-        window.location.href = '?model=' + meshResult.glb_url;
-      }
+    const result = await postResp.json();
+    if (result.status !== 'success') {
+      _setStatus('Save failed: ' + (result.message || '')); return;
+    }
+
+    _setStatus('Saved — regenerating mesh…');
+
+    // 4. Regenerate mesh with updated profile
+    const meshResp = await fetch(`/web_app/api/customer/${cid}/body_model`, {
+      method: 'POST',
+      headers: _authHeaders(),
+      body: JSON.stringify({}),
+    });
+    const meshResult = await meshResp.json();
+    if (meshResult.glb_url) {
+      const params = new URLSearchParams(window.location.search);
+      params.set('model', meshResult.glb_url);
+      window.location.search = params.toString();
+    } else {
+      _setStatus('Mesh regeneration failed');
     }
   } catch (e) {
-    alert('Save failed: ' + e.message);
+    _setStatus('Save failed: ' + e.message);
   }
 };
 
@@ -597,6 +782,7 @@ function _animate() {
   requestAnimationFrame(_animate);
   controls.update();
   renderer.render(scene, camera);
+  _updateRegionLabels();
 }
 
 function _onResize() {

@@ -276,6 +276,23 @@ def export_glb(vertices, faces, output_path, normals=True,
     return output_path
 
 
+def load_glb_vertices(glb_path):
+    """Load vertex positions from a GLB file. Returns (N, 3) float32 or None."""
+    try:
+        import pygltflib
+        glb_path = glb_path.replace('\\', '/')  # normalise Windows paths
+        gltf = pygltflib.GLTF2().load(glb_path)
+        accessor = gltf.accessors[gltf.meshes[0].primitives[0].attributes.POSITION]
+        bv = gltf.bufferViews[accessor.bufferView]
+        blob = gltf.binary_blob()
+        data = blob[bv.byteOffset: bv.byteOffset + bv.byteLength]
+        count = accessor.count
+        verts = np.array(struct.unpack(f'<{count * 3}f', data)).reshape(count, 3)
+        return verts.astype(np.float32)
+    except Exception:
+        return None
+
+
 def generate_mesh_preview_image(vertices, faces, output_path):
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d import Axes3D
