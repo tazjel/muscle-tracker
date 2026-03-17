@@ -458,16 +458,15 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
                 circ_result = estimate_circumference(contour_front, pixels_per_mm)
                 circumference_cm = circ_result.get('circumference_cm')
 
-        # 6. Definition score
+        # 6. Definition score — use the processed image that contour was extracted from
+        processed_front_img = res_f.get('raw_data', {}).get('img_a')
         definition_score = None
         definition_grade = None
-        if _HAS_DEFINITION_SCORER and contour_front is not None:
+        if _HAS_DEFINITION_SCORER and contour_front is not None and processed_front_img is not None:
             try:
-                front_img = cv2.imread(front_path)
-                if front_img is not None:
-                    def_result = score_muscle_definition(front_img, contour_front, muscle_group)
-                    definition_score = def_result.get('overall_definition')
-                    definition_grade = def_result.get('grade')
+                def_result = score_muscle_definition(processed_front_img, contour_front, muscle_group)
+                definition_score = def_result.get('overall_definition')
+                definition_grade = def_result.get('grade')
             except Exception:
                 logger.warning("Definition scoring failed, skipping", exc_info=True)
 
@@ -475,7 +474,7 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
         annotated_filename = None
         if contour_front is not None:
             try:
-                front_img = cv2.imread(front_path)
+                front_img = processed_front_img if processed_front_img is not None else cv2.imread(front_path)
                 if front_img is not None:
                     annotated = draw_measurement_overlay(
                         front_img, contour_front,
@@ -491,9 +490,12 @@ def _process_and_save_scan(customer, customer_id, front_path, side_path, front_f
 
         growth_pct = None
         volume_delta = None
+        # Only compare against calibrated scans — uncalibrated volumes are
+        # in pixel units and would produce misleading growth percentages.
         prev_scan = db(
             (db.muscle_scan.customer_id == customer_id) &
-            (db.muscle_scan.muscle_group == muscle_group)
+            (db.muscle_scan.muscle_group == muscle_group) &
+            (db.muscle_scan.calibrated == True)
         ).select(orderby=~db.muscle_scan.scan_date, limitby=(0, 1)).first()
 
         if prev_scan and prev_scan.volume_cm3:
@@ -1142,7 +1144,7 @@ def reconstruct_3d(customer_id):
 
     try:
         from core.vision_medical import analyze_muscle_growth
-        from core.mesh_reconstruction import reconstruct_mesh_from_silhouettes, export_obj, generate_mesh_preview_image
+        from core.mesh_reconstruction import reconstruct_mesh_from_silhouettes, export_obj, export_glb, generate_mesh_preview_image
         from core.mesh_volume import compute_mesh_volume_cm3
 
         res_f = analyze_muscle_growth(front_path, front_path, marker_size, align=False, muscle_group=muscle_group, camera_distance_cm=camera_distance_cm)
@@ -1179,6 +1181,16 @@ def reconstruct_3d(customer_id):
 
         export_obj(mesh_data['vertices'], mesh_data['faces'], obj_path)
 
+        # GLB export (preferred format for 3D viewer)
+        glb_path = os.path.join('meshes', base_name + '.glb')
+        glb_url  = None
+        try:
+            export_glb(mesh_data['vertices'], mesh_data['faces'], glb_path)
+            glb_url = f'/meshes/{base_name}.glb'
+        except Exception:
+            logger.warning('GLB export failed for mesh %s — OBJ fallback only', base_name)
+            glb_path = None
+
         preview_url = None
         try:
             generate_mesh_preview_image(mesh_data['vertices'], mesh_data['faces'], prev_path)
@@ -1190,6 +1202,7 @@ def reconstruct_3d(customer_id):
             customer_id=customer_id,
             muscle_group=muscle_group,
             obj_path=obj_path,
+            glb_path=glb_path,
             preview_path=prev_path if preview_url else None,
             volume_cm3=mesh_data.get('volume_cm3'),
             num_vertices=mesh_data.get('num_vertices'),
@@ -1200,7 +1213,9 @@ def reconstruct_3d(customer_id):
         return dict(
             status='success',
             mesh_id=mesh_id,
-            mesh_url=f'/meshes/{base_name}.obj',
+            mesh_url=glb_url or f'/meshes/{base_name}.obj',
+            glb_url=glb_url,
+            obj_url=f'/meshes/{base_name}.obj',
             preview_url=preview_url,
             volume_cm3=mesh_data.get('volume_cm3'),
             num_vertices=mesh_data.get('num_vertices'),
@@ -1219,6 +1234,23 @@ def serve_mesh_obj(mesh_id):
         abort(404, 'Mesh not found')
     response.headers['Content-Type'] = 'text/plain'
     with open(mesh.obj_path, 'r') as f:
+        return f.read()
+
+
+@action('api/mesh/<mesh_id:int>.glb', method=['GET'])
+@action.uses(db, cors)
+def serve_mesh_glb(mesh_id):
+    """Serve the GLB binary for the 3D viewer (?model= param)."""
+    mesh = db.mesh_model(mesh_id)
+    if not mesh:
+        abort(404, 'Mesh not found')
+    # Fall back to OBJ if GLB was never generated
+    glb = getattr(mesh, 'glb_path', None)
+    if not glb or not os.path.exists(glb):
+        abort(404, 'GLB not available for this mesh — use .obj endpoint')
+    response.headers['Content-Type']        = 'model/gltf-binary'
+    response.headers['Content-Disposition'] = f'inline; filename="mesh_{mesh_id}.glb"'
+    with open(glb, 'rb') as f:
         return f.read()
 
 
@@ -1853,3 +1885,482 @@ def profile_status(customer_id):
         )
     except Exception:
         return dict(status='success', has_session=False, progress_pct=0)
+
+
+# =============================================================================
+# BODY PROFILE + DEVICE PROFILE (T0.2)
+# =============================================================================
+
+_BODY_PROFILE_FIELDS = [
+    'height_cm', 'weight_kg',
+    'shoulder_width_cm', 'neck_to_shoulder_cm', 'shoulder_to_head_cm',
+    'arm_length_cm', 'upper_arm_length_cm', 'forearm_length_cm',
+    'torso_length_cm', 'inseam_cm', 'floor_to_knee_cm',
+    'knee_to_belly_cm', 'back_buttock_to_knee_cm',
+    'head_circumference_cm', 'neck_circumference_cm',
+    'chest_circumference_cm', 'bicep_circumference_cm',
+    'forearm_circumference_cm', 'hand_circumference_cm',
+    'waist_circumference_cm', 'hip_circumference_cm',
+    'thigh_circumference_cm', 'quadricep_circumference_cm',
+    'calf_circumference_cm', 'skin_tone_hex',
+]
+
+
+def _auth_check(require_customer_id=None):
+    """Return payload if auth passes, else return error dict."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return None, dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return None, dict(status='error', message='Invalid or expired token')
+    return payload, None
+
+
+@action('api/customer/<customer_id:int>/body_profile', method=['GET'])
+@action.uses(db, cors)
+def get_body_profile(customer_id):
+    payload, err = _auth_check()
+    if err: return err
+    customer = db.customer[customer_id]
+    if not customer:
+        return dict(status='error', message='Customer not found')
+    profile = {f: getattr(customer, f, None) for f in _BODY_PROFILE_FIELDS}
+    profile['profile_completed'] = customer.profile_completed
+    return dict(status='success', profile=profile)
+
+
+@action('api/customer/<customer_id:int>/body_profile', method=['POST'])
+@action.uses(db, cors)
+def update_body_profile(customer_id):
+    payload, err = _auth_check()
+    if err: return err
+    customer = db.customer[customer_id]
+    if not customer:
+        return dict(status='error', message='Customer not found')
+    data = request.json or {}
+    updates = {}
+    for field in _BODY_PROFILE_FIELDS:
+        if field in data and data[field] is not None:
+            if field == 'skin_tone_hex':
+                updates[field] = str(data[field])[:8]
+            else:
+                try:
+                    updates[field] = float(data[field])
+                except (ValueError, TypeError):
+                    pass
+    # Mark complete when height + weight + at least 3 circumferences are filled
+    all_vals = {**{f: getattr(customer, f, None) for f in _BODY_PROFILE_FIELDS}, **updates}
+    circs = [f for f in _BODY_PROFILE_FIELDS if 'circumference' in f]
+    filled_circs = sum(1 for f in circs if all_vals.get(f))
+    updates['profile_completed'] = bool(
+        all_vals.get('height_cm') and all_vals.get('weight_kg') and filled_circs >= 3
+    )
+    customer.update_record(**updates)
+    db.commit()
+    return dict(status='success', profile_completed=updates['profile_completed'], updated=list(updates.keys()))
+
+
+# --- DEVICE PROFILE ---
+
+@action('api/customer/<customer_id:int>/devices', method=['GET'])
+@action.uses(db, cors)
+def get_devices(customer_id):
+    payload, err = _auth_check()
+    if err: return err
+    devices = db(db.device_profile.customer_id == customer_id).select(
+        orderby=db.device_profile.id)
+    return dict(status='success', devices=[r.as_dict() for r in devices])
+
+
+@action('api/customer/<customer_id:int>/devices', method=['POST'])
+@action.uses(db, cors)
+def add_or_update_device(customer_id):
+    payload, err = _auth_check()
+    if err: return err
+    data = request.json or {}
+    serial = (data.get('device_serial') or '').strip()
+    existing = None
+    if serial:
+        existing = db(
+            (db.device_profile.customer_id == customer_id) &
+            (db.device_profile.device_serial == serial)
+        ).select().first()
+
+    def _flt(key, default=0.0):
+        try: return float(data.get(key) or default)
+        except (ValueError, TypeError): return default
+
+    def _int(key, default=0):
+        try: return int(data.get(key) or default)
+        except (ValueError, TypeError): return default
+
+    fields = dict(
+        customer_id=customer_id,
+        device_name=(data.get('device_name') or '').strip(),
+        device_serial=serial,
+        role=data.get('role', 'front'),
+        orientation=data.get('orientation', 'portrait'),
+        camera_height_from_ground_cm=_flt('camera_height_from_ground_cm'),
+        distance_to_subject_cm=_flt('distance_to_subject_cm', 100.0),
+        sensor_width_mm=_flt('sensor_width_mm'),
+        focal_length_mm=_flt('focal_length_mm'),
+        screen_width_px=_int('screen_width_px'),
+        screen_height_px=_int('screen_height_px'),
+        tap_x=_int('tap_x'),
+        tap_y=_int('tap_y'),
+        notes=data.get('notes', ''),
+    )
+    if existing:
+        existing.update_record(**fields)
+        db.commit()
+        return dict(status='success', device_id=existing.id, action='updated')
+    device_id = db.device_profile.insert(**fields)
+    db.commit()
+    return dict(status='success', device_id=device_id, action='created')
+
+
+@action('api/customer/<customer_id:int>/devices/<device_id:int>', method=['DELETE'])
+@action.uses(db, cors)
+def delete_device(customer_id, device_id):
+    payload, err = _auth_check()
+    if err: return err
+    db(
+        (db.device_profile.id == device_id) &
+        (db.device_profile.customer_id == customer_id)
+    ).delete()
+    db.commit()
+    return dict(status='success')
+
+
+# --- SCAN SETUP ---
+
+@action('api/customer/<customer_id:int>/scan_setup', method=['POST'])
+@action.uses(db, cors)
+def save_scan_setup(customer_id):
+    payload, err = _auth_check()
+    if err: return err
+    data = request.json or {}
+    try:
+        dist = float(data.get('distance_to_subject_cm') or 100.0)
+    except (ValueError, TypeError):
+        dist = 100.0
+    setup_id = db.scan_setup.insert(
+        customer_id=customer_id,
+        distance_to_subject_cm=dist,
+        lighting=data.get('lighting', ''),
+        clothing=data.get('clothing', ''),
+        notes=data.get('notes', ''),
+    )
+    db.commit()
+    return dict(status='success', setup_id=setup_id)
+
+
+# --- CALIBRATION QUESTIONS ---
+
+@action('api/customer/<customer_id:int>/calibration_questions', method=['GET'])
+@action.uses(db, cors)
+def calibration_questions(customer_id):
+    """Return prioritised list of missing measurements Sonnet should ask the user."""
+    payload, err = _auth_check()
+    if err: return err
+    customer = db.customer[customer_id]
+    if not customer:
+        return dict(status='error', message='Customer not found')
+    devices = db(db.device_profile.customer_id == customer_id).select()
+    questions = []
+
+    if not customer.height_cm:
+        questions.append(dict(id='height_cm', type='number', unit='cm',
+            question='How tall are you?',
+            hint='Stand against a wall, mark the top of your head, measure from floor.',
+            priority='required'))
+    if not customer.weight_kg:
+        questions.append(dict(id='weight_kg', type='number', unit='kg',
+            question='What is your weight?', priority='required'))
+
+    if not devices:
+        questions.append(dict(id='camera_height_from_ground_cm', type='number', unit='cm',
+            question='How high is the phone camera from the floor?',
+            hint='Measure from floor to the camera lens. Chair height + where the device sits.',
+            priority='important'))
+        questions.append(dict(id='distance_to_subject_cm', type='number', unit='cm',
+            question='How far do you stand from the phone?',
+            hint='Measure the straight-line distance from camera to where you stand.',
+            priority='important'))
+
+    latest_scan = db(db.muscle_scan.customer_id == customer_id).select(
+        orderby=~db.muscle_scan.scan_date, limitby=(0, 1)).first()
+    target = (latest_scan.muscle_group if latest_scan else 'bicep')
+
+    _muscle_q = {
+        'bicep':     ('bicep_circumference_cm',    'What is your relaxed bicep circumference?',
+                      'Wrap tape around the widest part of your upper arm, arm hanging at side.'),
+        'quadricep': ('quadricep_circumference_cm', 'What is your quadricep circumference?',
+                      'Wrap tape around the widest part of your thigh, standing upright.'),
+        'calf':      ('calf_circumference_cm',      'What is your calf circumference?',
+                      'Wrap tape around the widest part of your calf.'),
+        'chest':     ('chest_circumference_cm',     'What is your chest circumference?',
+                      'Wrap tape at nipple height, arms at sides, relaxed breath.'),
+        'hamstring': ('thigh_circumference_cm',     'What is your thigh circumference?',
+                      'Wrap tape around the widest part of your thigh.'),
+    }
+    if target in _muscle_q:
+        field, q, hint = _muscle_q[target]
+        if not getattr(customer, field, None):
+            questions.append(dict(id=field, type='number', unit='cm',
+                question=q, hint=hint, priority='helpful'))
+
+    return dict(
+        status='success',
+        questions=questions,
+        profile_completed=bool(customer.profile_completed),
+        remaining=len(questions),
+    )
+
+
+# ── T3.2: Body model from measurements ───────────────────────────────────────
+
+@action('api/customer/<customer_id:int>/body_model', method=['POST'])
+@action.uses(db, cors)
+def generate_body_model(customer_id):
+    """
+    Build a parametric body mesh from the customer's stored body profile
+    measurements, export it as GLB (+ OBJ fallback), persist in mesh_model.
+
+    Accepts optional JSON body to override individual measurements:
+      { "height_cm": 170, "chest_circumference_cm": 100, ... }
+
+    Returns:
+      { status, mesh_id, glb_url, obj_url, volume_cm3, num_vertices, num_faces }
+    """
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    req_id = payload.get('customer_id') or payload.get('sub')
+    if req_id != 'admin' and str(req_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    customer = db.customer(customer_id)
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    # Build profile from DB fields
+    db_profile = {}
+    for field in _BODY_PROFILE_FIELDS:
+        val = getattr(customer, field, None)
+        if val is not None:
+            db_profile[field] = val
+
+    # Merge with any overrides from request body
+    try:
+        overrides = request.json or {}
+    except Exception:
+        overrides = {}
+    profile = {**db_profile, **overrides}
+
+    try:
+        import time
+        from core.smpl_fitting import build_body_mesh
+        from core.mesh_reconstruction import export_obj, export_glb
+
+        os.makedirs('meshes', exist_ok=True)
+        base_name = f'body_{customer_id}_{int(time.time())}'
+        obj_path = os.path.join('meshes', base_name + '.obj')
+        glb_path = os.path.join('meshes', base_name + '.glb')
+
+        # ── Build base mesh from profile measurements ──────────────────────────
+        mesh = build_body_mesh(profile)
+        verts = mesh['vertices']
+        faces = mesh['faces']
+
+        # ── Optional silhouette refinement ─────────────────────────────────────
+        # Accept front_image / back_image / left_image / right_image as
+        # multipart uploads. Each uploaded image is used to extract the body
+        # silhouette which then deforms the mesh to match.
+        camera_distance_cm = float(
+            request.forms.get('camera_distance_cm', '0') or '100'
+        )
+        cam_h_mm = float(profile.get('camera_height_from_ground_cm', 65)) * 10
+
+        silhouette_views = []
+        for direction in ('front', 'back', 'left', 'right'):
+            img_file = request.files.get(f'{direction}_image')
+            if not img_file:
+                continue
+            tmp_fn   = f'sil_{customer_id}_{direction}_{int(time.time())}.jpg'
+            tmp_path = os.path.join('uploads', tmp_fn)
+            try:
+                img_file.save(tmp_path)
+                from core.silhouette_extractor import extract_silhouette
+                contour_mm, _mask, _ratio = extract_silhouette(
+                    tmp_path, camera_distance_cm
+                )
+                if contour_mm is not None and len(contour_mm) >= 4:
+                    silhouette_views.append({
+                        'contour_mm':        contour_mm,
+                        'direction':         direction,
+                        'distance_mm':       camera_distance_cm * 10.0,
+                        'camera_height_mm':  cam_h_mm,
+                    })
+                    logger.info('Silhouette extracted: %s (%d pts)', direction, len(contour_mm))
+                else:
+                    logger.warning('Silhouette extraction produced no contour for %s', direction)
+            except Exception:
+                logger.warning('Silhouette extraction failed for %s image', direction)
+
+        if silhouette_views:
+            from core.silhouette_matcher import fit_mesh_to_silhouettes
+            verts = fit_mesh_to_silhouettes(verts, faces, silhouette_views)
+            logger.info('Body model refined with %d silhouette view(s)', len(silhouette_views))
+
+        # ── Export ─────────────────────────────────────────────────────────────
+        export_obj(verts, faces, obj_path)
+        glb_path_out = None
+        try:
+            export_glb(verts, faces, glb_path)
+            glb_path_out = glb_path
+        except Exception:
+            logger.warning('GLB export failed for body model %s', base_name)
+
+        mesh_id = db.mesh_model.insert(
+            customer_id=customer_id,
+            muscle_group='full_body',
+            model_type='body',
+            obj_path=obj_path,
+            glb_path=glb_path_out,
+            volume_cm3=mesh['volume_cm3'],
+            num_vertices=int(len(verts)),
+            num_faces=int(len(faces)),
+        )
+        db.commit()
+
+        return dict(
+            status='success',
+            mesh_id=mesh_id,
+            glb_url=f'/api/mesh/{mesh_id}.glb' if glb_path_out else None,
+            obj_url=f'/api/mesh/{mesh_id}.obj',
+            volume_cm3=mesh['volume_cm3'],
+            num_vertices=int(len(verts)),
+            num_faces=int(len(faces)),
+            silhouette_views_used=len(silhouette_views),
+        )
+    except Exception:
+        logger.exception('Body model generation failed for customer %d', customer_id)
+        return dict(status='error', message='Body model generation failed')
+
+
+# ── T4.2: Video scan upload + quality gate + frame extraction ─────────────────
+
+@action('api/customer/<customer_id:int>/upload_video_scan', method=['POST'])
+@action.uses(db, cors)
+def upload_video_scan(customer_id):
+    """
+    Upload a capture video, run quality gate, extract best frames, persist session.
+
+    Multipart form fields:
+      video         — video file (mp4/mov/avi/mkv)
+      tracking_json — optional IMU/pose JSON file
+      num_frames    — int, target frame count (default 30)
+      strict        — '1' to require 270° arc instead of 90°
+
+    Returns:
+      { status, session_id, quality_passed, quality_score, quality_report,
+        num_frames_extracted, frame_paths, rejection_reasons }
+    """
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+    req_id = payload.get('customer_id') or payload.get('sub')
+    if req_id != 'admin' and str(req_id) != str(customer_id):
+        return dict(status='error', message='Access denied')
+
+    customer = db.customer(customer_id)
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    video_file = request.files.get('video')
+    if not video_file:
+        return dict(status='error', message='No video file uploaded')
+
+    ext = os.path.splitext(video_file.filename)[1].lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        return dict(status='error', message=f'Invalid video type: {ext}')
+
+    # Save video
+    import time
+    os.makedirs('uploads/videos', exist_ok=True)
+    ts = int(time.time())
+    video_path = os.path.join('uploads', 'videos',
+                               f'scan_{customer_id}_{ts}{ext}')
+    video_file.file.seek(0)
+    with open(video_path, 'wb') as fh:
+        fh.write(video_file.file.read())
+
+    # Save optional tracking JSON
+    tracking_path = None
+    tracking_file = request.files.get('tracking_json')
+    if tracking_file:
+        tracking_path = os.path.join('uploads', 'videos',
+                                      f'tracking_{customer_id}_{ts}.json')
+        tracking_file.file.seek(0)
+        with open(tracking_path, 'wb') as fh:
+            fh.write(tracking_file.file.read())
+
+    num_frames = int(request.forms.get('num_frames', '30') or '30')
+    strict     = request.forms.get('strict', '0') == '1'
+
+    try:
+        from scripts.quality_gate  import check_video_quality
+        from core.frame_selector   import select_best_frames, extract_selected_frames
+        from core.video_capture    import get_video_info
+
+        # ── Quality gate ──────────────────────────────────────────────────────
+        quality_report = check_video_quality(video_path, tracking_path, strict)
+        quality_score  = quality_report.get('score', 0)
+        quality_passed = quality_report.get('passed', False)
+
+        # ── Frame selection (even if quality failed — caller may proceed) ─────
+        frames_dir = os.path.join('uploads', 'videos',
+                                   f'frames_{customer_id}_{ts}')
+        selected  = select_best_frames(video_path, num_frames=num_frames,
+                                       quality_report=quality_report)
+        extracted = extract_selected_frames(video_path, selected, frames_dir)
+
+        # ── Video info ────────────────────────────────────────────────────────
+        info = get_video_info(video_path)
+        duration_ms = round(info.get('duration_s', 0) * 1000)
+
+        # ── Persist session ───────────────────────────────────────────────────
+        session_id = db.video_scan_session.insert(
+            customer_id=customer_id,
+            video_path=video_path,
+            tracking_json_path=tracking_path,
+            status='FRAMES_EXTRACTED',
+            num_frames=len(extracted),
+            duration_ms=duration_ms,
+            quality_score=quality_score,
+            quality_report=json.dumps(quality_report),
+        )
+        db.commit()
+
+        return dict(
+            status='success',
+            session_id=session_id,
+            quality_passed=quality_passed,
+            quality_score=quality_score,
+            rejection_reasons=quality_report.get('rejection_reasons', []),
+            num_frames_extracted=len(extracted),
+            frame_paths=[f['image_path'] for f in extracted],
+            duration_ms=duration_ms,
+        )
+
+    except Exception:
+        logger.exception('Video scan upload failed for customer %d', customer_id)
+        return dict(status='error', message='Video processing failed')
