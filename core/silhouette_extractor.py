@@ -81,6 +81,24 @@ def extract_silhouette(image_path: str, camera_distance_cm: float):
         logger.warning("silhouette_extractor: largest contour too small (< 1000 px²)")
         return None, mask, ratio
 
+    # Quality check: body contour should be taller than wide and occupy
+    # a reasonable fraction of the image height (rejects blank walls, desks, etc.)
+    x_bb, y_bb, w_bb, h_bb = cv2.boundingRect(main)
+    aspect = h_bb / (w_bb + 1)
+    if aspect < 1.2:
+        logger.warning(
+            "silhouette_extractor: aspect ratio %.2f < 1.2 — likely not a person (too wide)",
+            aspect,
+        )
+        return None, mask, ratio
+    img_h = mask.shape[0]
+    if h_bb < img_h * 0.3:
+        logger.warning(
+            "silhouette_extractor: contour height %dpx < 30%% of image — likely bad segmentation",
+            h_bb,
+        )
+        return None, mask, ratio
+
     # Squeeze (K, 1, 2) → (K, 2) and convert px → mm
     pts_px = main.squeeze().astype(np.float32)
     if pts_px.ndim == 1:

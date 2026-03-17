@@ -81,23 +81,30 @@ def fit_mesh_to_silhouettes(vertices: np.ndarray, faces: np.ndarray,
 def _project_vertices(verts: np.ndarray, direction: str,
                       dist_mm: float, cam_h_mm: float) -> np.ndarray:
     """
-    Simple orthographic projection of 3D vertices to 2D image space.
+    Pinhole perspective projection of 3D vertices to 2D image space.
 
+    Output is scaled by dist_mm so units match contour_mm (mm at reference dist).
     Image axes: x_img = right, y_img = down (matching OpenCV/camera convention).
 
     Returns:
         proj: (N, 2) float64 — projected (x_img, y_img) in mm
     """
     if direction in ('front', 'back'):
-        # Camera looks along ±Y; image x = mesh X, image y = (−mesh Z + cam_h)
         sign = 1.0 if direction == 'front' else -1.0
-        x_img = verts[:, 0] * sign
-        y_img = cam_h_mm - verts[:, 2]          # flip Z: up in mesh = up in image
+        dx = verts[:, 0] * sign
+        # Depth: camera is at Y = -dist_mm*sign; vertex depth = dist_mm + Y*sign
+        depth = dist_mm + verts[:, 1] * sign
+        dz = cam_h_mm - verts[:, 2]
     else:  # left / right
         sign = 1.0 if direction == 'right' else -1.0
-        x_img = verts[:, 1] * sign
-        y_img = cam_h_mm - verts[:, 2]
+        dx = verts[:, 1] * sign
+        depth = dist_mm + verts[:, 0] * sign
+        dz = cam_h_mm - verts[:, 2]
 
+    safe_depth = np.maximum(depth, 10.0)
+    # Scale by dist_mm so output is in mm at reference distance (compatible with contour_mm)
+    x_img = dx / safe_depth * dist_mm
+    y_img = dz / safe_depth * dist_mm
     return np.stack([x_img, y_img], axis=1)
 
 

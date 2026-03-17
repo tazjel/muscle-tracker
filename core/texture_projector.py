@@ -82,32 +82,49 @@ def project_texture(vertices: np.ndarray, faces: np.ndarray, uvs: np.ndarray,
         dots = (face_normals * view_vecs).sum(axis=1)
         view_lens = np.linalg.norm(view_vecs, axis=1) + 1e-8
 
-        for fi in np.where(dots > 0)[0]:
-            facing_w = float(dots[fi] / view_lens[fi])  # cosine weight
+        visible_face_idxs = np.where(dots > 0)[0]
+        if len(visible_face_idxs) == 0:
+            continue
+        vis_vert_idxs = faces[visible_face_idxs].ravel()  # (K*3,)
+        facing_weights = np.repeat(
+            np.clip(dots[visible_face_idxs] / view_lens[visible_face_idxs], 0, 1), 3
+        )  # (K*3,)
 
-            for vi in faces[fi]:
-                rel = vertices[vi] - cam_pos
-                depth = float(np.dot(rel, cam_fwd))
-                if depth < 10.0:
-                    continue
-                px = np.dot(rel, cam_right) / depth * focal_px + w_img / 2
-                py = -np.dot(rel, cam_up)   / depth * focal_px + h_img / 2
-                ix, iy = int(px), int(py)
-                if not (0 <= ix < w_img and 0 <= iy < h_img):
-                    continue
+        # Vectorized projection
+        rel_verts = vertices[vis_vert_idxs] - cam_pos   # (K*3, 3)
+        depth     = rel_verts @ cam_fwd                  # (K*3,)
+        valid     = depth > 10.0
+        rel_verts = rel_verts[valid]
+        depth     = depth[valid]
+        fw        = facing_weights[valid]
+        vi_valid  = vis_vert_idxs[valid]
 
-                color = img[iy, ix]
-                u, v_coord = uvs[vi]
-                tx = max(0, min(atlas_size - 1, int(u * (atlas_size - 1))))
-                ty = max(0, min(atlas_size - 1, int((1.0 - v_coord) * (atlas_size - 1))))
+        px_all = (rel_verts @ cam_right) / depth * focal_px + w_img / 2
+        py_all = -(rel_verts @ cam_up)   / depth * focal_px + h_img / 2
+        ix_all = px_all.astype(int)
+        iy_all = py_all.astype(int)
 
-                w_old = weight[ty, tx]
-                w_new = w_old + facing_w
-                texture[ty, tx] = (
-                    (texture[ty, tx].astype(np.float32) * w_old +
-                     color.astype(np.float32) * facing_w)
-                    / (w_new + 1e-8)
-                ).astype(np.uint8)
-                weight[ty, tx] = w_new
+        in_frame = (ix_all >= 0) & (ix_all < w_img) & (iy_all >= 0) & (iy_all < h_img)
+        ix_all   = ix_all[in_frame]
+        iy_all   = iy_all[in_frame]
+        fw       = fw[in_frame]
+        vi_valid = vi_valid[in_frame]
+
+        colors_all = img[iy_all, ix_all]  # (N, 3)
+
+        uv_all = uvs[vi_valid]
+        tx_all = np.clip((uv_all[:, 0] * (atlas_size - 1)).astype(int), 0, atlas_size - 1)
+        ty_all = np.clip(((1 - uv_all[:, 1]) * (atlas_size - 1)).astype(int), 0, atlas_size - 1)
+
+        for i in range(len(tx_all)):
+            tx, ty = tx_all[i], ty_all[i]
+            w_old = weight[ty, tx]
+            w_new = w_old + fw[i]
+            texture[ty, tx] = (
+                (texture[ty, tx].astype(np.float32) * w_old +
+                 colors_all[i].astype(np.float32) * fw[i])
+                / (w_new + 1e-8)
+            ).astype(np.uint8)
+            weight[ty, tx] = w_new
 
     return texture, weight

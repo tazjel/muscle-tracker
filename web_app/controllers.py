@@ -2205,6 +2205,7 @@ def generate_body_model(customer_id):
                         'direction':         direction,
                         'distance_mm':       camera_distance_cm * 10.0,
                         'camera_height_mm':  cam_h_mm,
+                        '_tmp_path':         tmp_path,
                     })
                     logger.info('Silhouette extracted: %s (%d pts)', direction, len(contour_mm))
                 else:
@@ -2217,11 +2218,45 @@ def generate_body_model(customer_id):
             verts = fit_mesh_to_silhouettes(verts, faces, silhouette_views)
             logger.info('Body model refined with %d silhouette view(s)', len(silhouette_views))
 
+        # ── Texture projection (when silhouette images are available) ───────────
+        texture_image = None
+        uvs_for_glb   = None
+        if silhouette_views:
+            try:
+                import cv2 as _cv2
+                from core.uv_unwrap import compute_uvs, DEFAULT_ATLAS
+                from core.texture_projector import project_texture
+                uvs_for_glb = compute_uvs(verts, mesh['body_part_ids'], DEFAULT_ATLAS)
+                cam_views = []
+                for sv in silhouette_views:
+                    img = _cv2.imread(sv['_tmp_path'])
+                    if img is not None:
+                        cam_views.append({
+                            'image':           img,
+                            'direction':       sv['direction'],
+                            'distance_mm':     sv['distance_mm'],
+                            'focal_mm':        4.0,
+                            'sensor_width_mm': 6.4,
+                        })
+                if cam_views:
+                    texture_image, _ = project_texture(
+                        verts, faces, uvs_for_glb, cam_views, atlas_size=1024
+                    )
+                    logger.info('Texture projected from %d view(s)', len(cam_views))
+            except Exception:
+                logger.warning('Texture projection failed — exporting untextured GLB')
+                texture_image = None
+                uvs_for_glb   = None
+
         # ── Export ─────────────────────────────────────────────────────────────
         export_obj(verts, faces, obj_path)
         glb_path_out = None
         try:
-            export_glb(verts, faces, glb_path)
+            if texture_image is not None and uvs_for_glb is not None:
+                export_glb(verts, faces, glb_path,
+                           uvs=uvs_for_glb, texture_image=texture_image)
+            else:
+                export_glb(verts, faces, glb_path)
             glb_path_out = glb_path
         except Exception:
             logger.warning('GLB export failed for body model %s', base_name)
