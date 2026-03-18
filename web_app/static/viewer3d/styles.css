@@ -144,6 +144,137 @@ button:hover { filter: brightness(1.1); }
 }
 
 /* Responsive: stack controls vertically on narrow screens */
+/* Dark theme scrollbar */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: #1a1a2e;
+}
+::-webkit-scrollbar-thumb {
+    background: #4a9eff44;
+    border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #4a9eff88;
+}
+
+/* Text selection */
+::selection {
+    background: rgba(74, 158, 255, 0.3);
+    color: #ffffff;
+}
+
+/* Range input (sliders) dark theme */
+input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+}
+input[type="range"]::-webkit-slider-track {
+    height: 4px;
+    background: #2a2a4a;
+    border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    background: #4a9eff;
+    border-radius: 50%;
+    border: 2px solid #1a1a2e;
+    margin-top: -5px;
+}
+input[type="range"]::-moz-range-track {
+    height: 4px;
+    background: #2a2a4a;
+    border-radius: 2px;
+    border: none;
+}
+input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: #4a9eff;
+    border-radius: 50%;
+    border: 2px solid #1a1a2e;
+}
+
+/* Measurement distance label at line midpoint */
+.measurement-label {
+    position: absolute;
+    z-index: 16;
+    background: rgba(22, 33, 62, 0.9);
+    color: #4a9eff;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    pointer-events: none;
+    transform: translate(-50%, -100%);
+    white-space: nowrap;
+    border: 1px solid rgba(74, 158, 255, 0.4);
+    text-shadow: 0 0 4px rgba(74, 158, 255, 0.3);
+}
+
+/* Collapsible panels — smooth expand/collapse */
+.collapsible {
+    overflow: hidden;
+    max-height: 500px;
+    opacity: 1;
+    transition: max-height 0.3s ease, opacity 0.2s ease, padding 0.3s ease;
+}
+
+.collapsible.collapsed {
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    border-top-color: transparent !important;
+}
+
+/* Panel header styling */
+.collapsible h3 {
+    margin: 0 0 6px;
+    font-size: 13px;
+    color: #4a9eff;
+    letter-spacing: 0.03em;
+}
+
+/* Panel inner labels */
+.collapsible label {
+    font-size: 11px;
+    display: block;
+    margin-bottom: 4px;
+}
+
+/* Panel select dropdowns (dark theme) */
+.collapsible select {
+    width: 130px;
+    font-size: 11px;
+    background: #1e2035;
+    color: #e2e4f0;
+    border: 1px solid #444;
+    border-radius: 3px;
+    padding: 2px 4px;
+}
+
+/* Panel stats text */
+.collapsible .panel-stats {
+    font-size: 11px;
+    margin-top: 4px;
+    color: #00b4cc;
+}
+
+/* Small panel buttons */
+.collapsible button {
+    font-size: 11px;
+    padding: 4px 8px;
+    margin-right: 4px;
+}
+
 @media (max-width: 480px) {
     #ui-overlay {
         top: 10px;
