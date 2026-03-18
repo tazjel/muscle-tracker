@@ -120,13 +120,145 @@ function _customerId() {
   return new URLSearchParams(window.location.search).get('customer') || '1';
 }
 
-// User's skin tone — light brown #C4956A
-const SKIN_COLOR    = 0xC4956A;
-const SKIN_MATERIAL = new THREE.MeshStandardMaterial({
-  color:     SKIN_COLOR,
-  roughness: 0.65,
-  metalness: 0.0,
-  side:      THREE.DoubleSide,
+// ── Procedural skin texture — color variation like real skin ──────────────────
+function _createSkinColorMap(size = 512) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  // Base skin tone
+  ctx.fillStyle = '#C4956A';
+  ctx.fillRect(0, 0, size, size);
+
+  // Layer 1: Large blotchy patches (vein/flush areas)
+  for (let i = 0; i < 40; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const r = 30 + Math.random() * 80;
+    const colors = ['rgba(180,100,90,0.08)', 'rgba(160,110,80,0.06)',
+                    'rgba(200,130,100,0.07)', 'rgba(140,90,70,0.05)'];
+    const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, colors[i % colors.length]);
+    grad.addColorStop(1, 'rgba(196,149,106,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+  }
+
+  // Layer 2: Fine speckle noise (pores, freckles)
+  const imgData = ctx.getImageData(0, 0, size, size);
+  const d = imgData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const vary = (Math.random() - 0.5) * 18;
+    d[i]     = Math.max(0, Math.min(255, d[i] + vary));         // R
+    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + vary * 0.7)); // G
+    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + vary * 0.5)); // B
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(4, 4);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// ── Skin normal map — multi-scale bumps (pores + wrinkle lines) ──────────────
+function _createSkinNormalMap(size = 512) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'rgb(128,128,255)';
+  ctx.fillRect(0, 0, size, size);
+  const imgData = ctx.getImageData(0, 0, size, size);
+  const d = imgData.data;
+
+  // Pass 1: Fine pore noise
+  for (let i = 0; i < d.length; i += 4) {
+    d[i]     = 128 + (Math.random() - 0.5) * 25;
+    d[i + 1] = 128 + (Math.random() - 0.5) * 25;
+  }
+
+  // Pass 2: Larger bumps (muscle/skin folds) via scattered dents
+  for (let n = 0; n < 200; n++) {
+    const cx = Math.floor(Math.random() * size);
+    const cy = Math.floor(Math.random() * size);
+    const r = 3 + Math.floor(Math.random() * 8);
+    const strength = 15 + Math.random() * 25;
+    const dirX = (Math.random() - 0.5) * 2;
+    const dirY = (Math.random() - 0.5) * 2;
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy > r * r) continue;
+        const px = ((cx + dx) % size + size) % size;
+        const py = ((cy + dy) % size + size) % size;
+        const idx = (py * size + px) * 4;
+        const falloff = 1 - Math.sqrt(dx * dx + dy * dy) / r;
+        d[idx]     = Math.max(0, Math.min(255, d[idx] + dirX * strength * falloff));
+        d[idx + 1] = Math.max(0, Math.min(255, d[idx + 1] + dirY * strength * falloff));
+      }
+    }
+  }
+
+  // Pass 3: Fine wrinkle lines (horizontal/vertical creases)
+  for (let n = 0; n < 60; n++) {
+    const horizontal = Math.random() > 0.5;
+    const pos = Math.floor(Math.random() * size);
+    const len = 20 + Math.floor(Math.random() * 60);
+    const start = Math.floor(Math.random() * (size - len));
+    const str = 20 + Math.random() * 15;
+    for (let t = 0; t < len; t++) {
+      const x = horizontal ? start + t : pos;
+      const y = horizontal ? pos : start + t;
+      const idx = (y * size + x) * 4;
+      const ch = horizontal ? 1 : 0;  // perturb perpendicular to line
+      d[idx + ch] = Math.max(0, Math.min(255, d[idx + ch] + str));
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(6, 6);
+  return tex;
+}
+
+// ── Skin roughness map — slight variation (oilier on forehead, drier on limbs)
+function _createSkinRoughnessMap(size = 256) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  // Base roughness ~0.6 (153/255)
+  ctx.fillStyle = 'rgb(153,153,153)';
+  ctx.fillRect(0, 0, size, size);
+  const imgData = ctx.getImageData(0, 0, size, size);
+  const d = imgData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = 140 + Math.random() * 30;  // 0.55–0.67 roughness range
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  ctx.putImageData(imgData, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(4, 4);
+  return tex;
+}
+
+const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
+  map:              _createSkinColorMap(),       // color variation, not flat
+  roughnessMap:     _createSkinRoughnessMap(),   // varied roughness
+  roughness:        0.6,
+  metalness:        0.0,
+  side:             THREE.DoubleSide,
+  // Subsurface scattering approximation
+  sheen:            0.5,
+  sheenRoughness:   0.5,
+  sheenColor:       new THREE.Color(0xcc7755),   // warm reddish undertone (blood)
+  // Skin sheen
+  clearcoat:        0.03,
+  clearcoatRoughness: 0.5,
+  // Normal map for surface detail
+  normalMap:        _createSkinNormalMap(),
+  normalScale:      new THREE.Vector2(0.6, 0.6), // stronger bumps
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -341,15 +473,43 @@ function _setupEnvironment() {
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
 
-  // Simple gradient environment via a RoomEnvironment-like approach
+  // Warm studio-like environment for skin-flattering reflections
   const envScene = new THREE.Scene();
-  envScene.background = new THREE.Color(0x1a1a2e);
-  // Add emissive geometry for ambient light contribution
-  const boxGeo = new THREE.BoxGeometry(2000, 2000, 2000);
-  const boxMat = new THREE.MeshStandardMaterial({
-    color: 0x334466, side: THREE.BackSide, emissive: 0x223355, emissiveIntensity: 0.3,
+  envScene.background = new THREE.Color(0x2a2535);
+
+  // Sky dome — warm overhead light
+  const domeGeo = new THREE.SphereGeometry(900, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+  const domeMat = new THREE.MeshBasicMaterial({
+    color: 0x665544, side: THREE.BackSide,
   });
-  envScene.add(new THREE.Mesh(boxGeo, boxMat));
+  envScene.add(new THREE.Mesh(domeGeo, domeMat));
+
+  // Ground plane — subtle warm bounce fill
+  const floorGeo = new THREE.PlaneGeometry(2000, 2000);
+  const floorMat = new THREE.MeshBasicMaterial({ color: 0x443333 });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -10;
+  envScene.add(floor);
+
+  // Emissive panels for soft fill (studio softbox simulation)
+  const panelGeo = new THREE.PlaneGeometry(400, 600);
+  const panelMat = new THREE.MeshBasicMaterial({ color: 0xffeedd });
+  // Front-left softbox
+  const p1 = new THREE.Mesh(panelGeo, panelMat);
+  p1.position.set(-500, 300, 300);
+  p1.lookAt(0, 150, 0);
+  envScene.add(p1);
+  // Front-right softbox
+  const p2 = new THREE.Mesh(panelGeo, panelMat);
+  p2.position.set(500, 300, 300);
+  p2.lookAt(0, 150, 0);
+  envScene.add(p2);
+  // Back rim panel (cooler)
+  const p3 = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xccddff }));
+  p3.position.set(0, 200, -500);
+  p3.lookAt(0, 150, 0);
+  envScene.add(p3);
 
   const envTex = pmrem.fromScene(envScene, 0.04).texture;
   scene.environment = envTex;
@@ -465,11 +625,18 @@ function _applyDefaultMaterial(object) {
       // Store original material for texture toggle
       _originalMaterials.set(child, child.material);
       origMaterials.push({ mesh: child, mat: child.material });
-      // Only override if no useful embedded material (GLB skin material is MeshStandardMaterial)
-      if (!child.material || child.material.type === 'MeshBasicMaterial') {
+      // Upgrade all body meshes to the physical skin material for realism
+      const hasTexture = child.material && child.material.map;
+      if (hasTexture) {
+        // Keep embedded texture but upgrade material properties
+        const tex = child.material.map;
+        const mat = SKIN_MATERIAL.clone();
+        mat.map = tex;
+        child.material = mat;
+      } else {
         child.material = SKIN_MATERIAL.clone();
-        _originalMaterials.set(child, child.material);
       }
+      _originalMaterials.set(child, child.material);
       child.castShadow    = true;
       child.receiveShadow = true;
     }

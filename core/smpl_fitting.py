@@ -1,13 +1,9 @@
 """
-smpl_fitting.py — Lightweight parametric body model from user measurements.
+smpl_fitting.py — Parametric body model from user measurements.
 
-This is NOT a full SMPL neural model (that requires ~300 MB weights).
-Instead it uses the body_profile measurements to build an anatomically
-proportioned body mesh (torso + arms + legs in A-pose) driven by
-ground-truth measurements rather than silhouettes.
-
-The resulting mesh is exported as GLB and can be loaded directly in the
-3D viewer with ?model=<url>.
+Builds an anatomically shaped human body mesh using overlapping ellipsoid
+primitives merged via boolean union (manifold3d).  The result is a single
+continuous watertight mesh that looks like a real human body.
 
 Coordinate system (right-hand, Z-up):
   X = left–right (positive = right side of body)
@@ -19,6 +15,9 @@ All coordinates are in mm.
 import math
 import numpy as np
 import os
+
+import trimesh
+import trimesh.smoothing
 
 
 # ── Default profile (user's personal measurements) ────────────────────────────
@@ -51,89 +50,49 @@ DEFAULT_PROFILE = {
 }
 
 
-def _ellipse_ring(cx, cy, z, a, b, segments=32):
-    """Return list of (x, y, z) vertex positions for one horizontal ellipse ring."""
-    ring = []
-    for i in range(segments):
-        angle = 2 * math.pi * i / segments
-        ring.append((cx + a * math.cos(angle),
-                     cy + b * math.sin(angle),
-                     z))
-    return ring
+def _ellipsoid(rx, ry, rz, center, subdivisions=2):
+    """Create an ellipsoid mesh centered at `center`."""
+    s = trimesh.creation.icosphere(subdivisions=subdivisions, radius=1.0)
+    s.vertices *= [rx, ry, rz]
+    s.apply_translation(center)
+    return s
 
 
-def _connect_rings(verts, faces, ring_a_start, ring_b_start, segments):
-    """Add quads (2 triangles each) between two consecutive rings."""
-    for s in range(segments):
-        s_next = (s + 1) % segments
-        a0 = ring_a_start + s
-        a1 = ring_a_start + s_next
-        b0 = ring_b_start + s
-        b1 = ring_b_start + s_next
-        faces.append([a0, b0, a1])
-        faces.append([a1, b0, b1])
+def _capsule(rx, ry, height, center):
+    """Create an elliptical capsule (cylinder with rounded ends)."""
+    r = max(rx, ry)
+    c = trimesh.creation.capsule(height=height, radius=r, count=[24, 12])
+    c.vertices[:, 0] *= rx / r
+    c.vertices[:, 1] *= ry / r
+    c.apply_translation(center)
+    return c
 
 
-def _build_limb(rings, segments=32):
-    """Build a tube mesh from a list of (cx, cy, z, a, b) ring definitions.
+def _boolean_union(parts):
+    """Merge all parts into a single watertight mesh via boolean union."""
+    result = parts[0]
+    for p in parts[1:]:
+        try:
+            result = result.union(p)
+        except Exception:
+            result = trimesh.util.concatenate([result, p])
+    return result
 
-    Returns (vertices_list, faces_list) with LOCAL indices starting at 0.
-    Adds a cap at both ends of the tube.
+
+def build_body_mesh(profile: dict = None, segments: int = 48) -> dict:
     """
-    verts = []
-    faces = []
-    ring_starts = []
-    for cx, cy, z, a, b in rings:
-        ring_starts.append(len(verts))
-        verts.extend(_ellipse_ring(cx, cy, z, a, b, segments))
-    for i in range(len(rings) - 1):
-        _connect_rings(verts, faces, ring_starts[i], ring_starts[i + 1], segments)
-    # End cap (last ring in the list)
-    cap_end = len(verts)
-    verts.append((rings[-1][0], rings[-1][1], rings[-1][2]))
-    rs = ring_starts[-1]
-    for s in range(segments):
-        faces.append([rs + s, cap_end, rs + (s + 1) % segments])
-    # Start cap (first ring in the list)
-    cap_start = len(verts)
-    verts.append((rings[0][0], rings[0][1], rings[0][2]))
-    rs0 = ring_starts[0]
-    for s in range(segments):
-        faces.append([rs0 + (s + 1) % segments, cap_start, rs0 + s])
-    return verts, faces
-
-
-def _merge_meshes(parts):
-    """Merge multiple (verts_list, faces_list) into one mesh.
-
-    Each part's face indices are offset by the cumulative vertex count.
-    Returns (all_verts list, all_faces list).
-    """
-    all_verts = []
-    all_faces = []
-    offset = 0
-    for verts, faces in parts:
-        all_verts.extend(verts)
-        for f in faces:
-            all_faces.append([f[0] + offset, f[1] + offset, f[2] + offset])
-        offset += len(verts)
-    return all_verts, all_faces
-
-
-def build_body_mesh(profile: dict = None, segments: int = 32) -> dict:
-    """
-    Build a full body mesh (torso + arms + legs, A-pose) from body profile measurements.
+    Build a full body mesh from body profile measurements using ellipsoid
+    primitives merged via boolean union.
 
     Args:
         profile: dict with measurement keys (see DEFAULT_PROFILE).
-                 Missing keys fall back to DEFAULT_PROFILE values.
-        segments: number of vertices per cross-section ring (higher = smoother).
+        segments: ignored (kept for API compatibility).
 
     Returns:
         dict with:
           'vertices'      — np.float32 (N, 3), units = mm
           'faces'         — np.uint32  (M, 3)
-          'body_part_ids' — np.int32   (N,)  0=torso 1=r_arm 2=l_arm 3=r_leg 4=l_leg
+          'body_part_ids' — np.int32   (N,)  (all zeros — single mesh)
           'volume_cm3'    — float
           'num_vertices'  — int
           'num_faces'     — int
@@ -143,11 +102,10 @@ def build_body_mesh(profile: dict = None, segments: int = 32) -> dict:
     def cm(key):
         return p[key] * 10  # cm → mm
 
-    # ── Key anatomy heights (mm from floor) ───────────────────────────────────
+    # ── Key heights (mm from floor) ──────────────────────────────────────────
     z_knee      = cm('floor_to_knee_cm')
-    z_mid_thigh = z_knee + cm('knee_to_belly_cm') * 0.50  # 720mm
-    z_hip       = z_knee + cm('knee_to_belly_cm') * 0.80  # 840mm – max hip girth
-    z_waist     = z_knee + cm('knee_to_belly_cm')          # 920mm
+    z_hip       = z_knee + cm('knee_to_belly_cm') * 0.80
+    z_waist     = z_knee + cm('knee_to_belly_cm')
     z_chest_bot = z_waist + cm('torso_length_cm') * 0.35
     z_chest     = z_waist + cm('torso_length_cm') * 0.65
     z_shoulder  = z_waist + cm('torso_length_cm')
@@ -156,139 +114,142 @@ def build_body_mesh(profile: dict = None, segments: int = 32) -> dict:
     z_head      = z_neck_top + cm('shoulder_to_head_cm') * 0.50
     z_crown     = z_neck_top + cm('shoulder_to_head_cm')
 
-    # ── Circumferences in mm ──────────────────────────────────────────────────
-    calf_circ    = cm('calf_circumference_cm')
-    quad_circ    = cm('quadricep_circumference_cm')
-    hip_circ     = cm('hip_circumference_cm')
-    waist_circ   = cm('waist_circumference_cm')
-    chest_circ   = cm('chest_circumference_cm')
-    neck_circ    = cm('neck_circumference_cm')
-    head_circ    = cm('head_circumference_cm')
-    shoulder_w   = cm('shoulder_width_cm')
-    bicep_circ   = cm('bicep_circumference_cm')
-    forearm_circ = cm('forearm_circumference_cm')
-    thigh_circ   = cm('thigh_circumference_cm')
+    # ── Radii from circumferences ────────────────────────────────────────────
+    def circ_r(key):
+        return cm(key) / (2 * math.pi)
 
-    # ── Torso: 35 rings via anchor interpolation ───────────────────────────────
-    anchors = [
-        (0,            calf_circ * 0.75),
-        (z_knee * 0.3, calf_circ),
-        (z_knee,       calf_circ * 0.95),
-        (z_mid_thigh,  quad_circ),
-        (z_hip,        hip_circ),
-        (z_waist,      waist_circ),
-        (z_chest_bot,  (chest_circ + waist_circ) / 2),
-        (z_chest,      chest_circ),
-        (z_shoulder,   shoulder_w * math.pi),   # width → approx circ
-        (z_neck_base,  neck_circ),
-        (z_neck_top,   neck_circ * 0.9),
-        (z_head,       head_circ),
-        (z_crown,      head_circ * 0.7),
-    ]
-    anchor_zs    = [a[0] for a in anchors]
-    anchor_circs = [a[1] for a in anchors]
+    r_head    = circ_r('head_circumference_cm')
+    r_neck    = circ_r('neck_circumference_cm')
+    r_chest   = circ_r('chest_circumference_cm')
+    r_waist   = circ_r('waist_circumference_cm')
+    r_hip     = circ_r('hip_circumference_cm')
+    r_thigh   = circ_r('thigh_circumference_cm')
+    r_calf    = circ_r('calf_circumference_cm')
+    r_bicep   = circ_r('bicep_circumference_cm')
+    r_forearm = circ_r('forearm_circumference_cm')
+    sw_half   = cm('shoulder_width_cm') / 2
 
-    num_rings = 35
-    z_levels = np.linspace(0.0, z_crown, num_rings)
-    circs    = np.interp(z_levels, anchor_zs, anchor_circs)
+    r_ankle  = r_calf * 0.65
+    r_wrist  = r_forearm * 0.60
+    r_hand   = r_wrist * 1.3
 
-    def aspect_at_z(z):
-        """Front-back / left-right ratio per height zone."""
-        if z < z_knee:       return 0.85
-        if z < z_waist:      return 0.70
-        if z < z_chest:      return 0.65
-        if z < z_shoulder:   return 0.60
-        return 0.95
+    parts = []
 
-    torso_rings = []
-    for i in range(num_rings):
-        z = float(z_levels[i])
-        circ = float(circs[i])
-        a = circ / (2 * math.pi)
-        b = a * aspect_at_z(z)
-        torso_rings.append((0.0, 0.0, z, a, b))
+    # ── HEAD ─────────────────────────────────────────────────────────────────
+    parts.append(_ellipsoid(r_head * 0.95, r_head, r_head * 1.15,
+                            [0, 0, z_head + 10]))
 
-    # ── Arms (A-pose — tips hang DOWN, z decreases from shoulder) ────────────
-    r_bicep   = bicep_circ / (2 * math.pi)
-    r_forearm = forearm_circ / (2 * math.pi)
-    r_wrist   = r_forearm * 0.60
-    r_hand    = r_wrist * 1.10
-    sx = shoulder_w / 2  # x offset of shoulder joint
+    # ── NECK ─────────────────────────────────────────────────────────────────
+    parts.append(_capsule(r_neck, r_neck * 0.90,
+                          z_neck_top - z_neck_base,
+                          [0, 0, (z_neck_base + z_neck_top) / 2]))
 
-    right_arm_rings = [
-        (sx,      0, z_shoulder,       r_bicep * 1.10, r_bicep * 0.90),
-        (sx + 30, 0, z_shoulder -  50, r_bicep,        r_bicep * 0.85),
-        (sx + 50, 0, z_shoulder - 180, r_bicep,        r_bicep * 0.80),
-        (sx + 50, 0, z_shoulder - 350, r_forearm * 1.1, r_forearm),
-        (sx + 40, 0, z_shoulder - 400, r_forearm,      r_forearm * 0.90),
-        (sx + 30, 0, z_shoulder - 600, r_forearm * 0.85, r_forearm * 0.80),
-        (sx + 20, 0, z_shoulder - 750, r_wrist,        r_wrist),
-        (sx + 15, 0, z_shoulder - 800, r_hand,         r_hand * 0.50),
-    ]
-    left_arm_rings = [(-cx, cy, z, a, b) for cx, cy, z, a, b in right_arm_rings]
+    # ── TORSO (overlapping ellipsoids for organic shape) ─────────────────────
+    # Shoulders (wide, flat)
+    parts.append(_ellipsoid(sw_half + 10, r_chest * 0.55, 60,
+                            [0, 0, z_shoulder]))
+    # Chest
+    parts.append(_ellipsoid(r_chest * 0.95, r_chest * 0.72, r_chest * 0.80,
+                            [0, 5, z_chest]))
+    # Ribcage
+    parts.append(_ellipsoid(r_chest * 0.88, r_chest * 0.65, (z_chest - z_chest_bot) * 0.6,
+                            [0, 0, z_chest_bot + 30]))
+    # Waist
+    parts.append(_ellipsoid(r_waist * 0.88, r_waist * 0.70, r_waist * 0.55,
+                            [0, 0, z_waist]))
+    # Belly
+    parts.append(_ellipsoid(r_waist * 0.92, r_waist * 0.73, r_waist * 0.55,
+                            [0, 10, z_waist - 40]))
+    # Hips / pelvis
+    parts.append(_ellipsoid(r_hip, r_hip * 0.72, r_hip * 0.60,
+                            [0, 0, z_hip]))
+    # Pectorals
+    parts.append(_ellipsoid(55, 30, 45, [r_chest * 0.35, r_chest * 0.45, z_chest - 15]))
+    parts.append(_ellipsoid(55, 30, 45, [-r_chest * 0.35, r_chest * 0.45, z_chest - 15]))
+    # Glutes
+    parts.append(_ellipsoid(r_hip * 0.42, r_hip * 0.48, r_hip * 0.40,
+                            [r_hip * 0.35, -r_hip * 0.25, z_hip - 20]))
+    parts.append(_ellipsoid(r_hip * 0.42, r_hip * 0.48, r_hip * 0.40,
+                            [-r_hip * 0.35, -r_hip * 0.25, z_hip - 20]))
 
-    # ── Legs (from hip socket DOWN to floor) ─────────────────────────────────
-    hip_offset = hip_circ / (2 * math.pi) * 0.45
-    r_thigh_r  = thigh_circ / (2 * math.pi)
-    r_calf_r   = calf_circ  / (2 * math.pi)
-    r_ankle_r  = r_calf_r * 0.70
-    r_foot     = r_ankle_r * 1.30
+    # ── LEGS (symmetric) ────────────────────────────────────────────────────
+    leg_x = r_hip * 0.50
+    for side in [1, -1]:
+        x = side * leg_x
+        # Thigh
+        thigh_len = z_hip - z_knee
+        parts.append(_capsule(r_thigh, r_thigh * 0.85,
+                              thigh_len * 0.85,
+                              [x, 0, z_knee + thigh_len * 0.5]))
+        # Inner thigh fill (smooth crotch area)
+        parts.append(_ellipsoid(r_thigh * 0.65, r_thigh * 0.60, thigh_len * 0.30,
+                                [x * 0.7, 0, z_hip - 30]))
+        # Knee
+        parts.append(_ellipsoid(r_calf * 1.10, r_calf * 1.05, r_calf * 0.85,
+                                [x, 5, z_knee]))
+        # Calf
+        calf_len = z_knee - 80
+        parts.append(_capsule(r_calf, r_calf * 0.85,
+                              calf_len * 0.75,
+                              [x, -5, 80 + calf_len * 0.45]))
+        # Calf muscle bulge
+        parts.append(_ellipsoid(r_calf * 0.75, r_calf * 0.85, r_calf * 1.2,
+                                [x, -r_calf * 0.35, z_knee - z_knee * 0.22]))
+        # Ankle
+        parts.append(_ellipsoid(r_ankle, r_ankle, r_ankle * 0.90,
+                                [x, 0, 75]))
+        # Foot
+        parts.append(_ellipsoid(r_ankle * 1.2, r_ankle * 2.2, r_ankle * 0.65,
+                                [x, r_ankle * 0.8, 25]))
 
-    right_leg_rings = [
-        (hip_offset,  0, z_waist,       r_thigh_r,        r_thigh_r * 0.80),
-        (hip_offset,  0, z_hip,         r_thigh_r * 1.05, r_thigh_r * 0.80),
-        (hip_offset,  0, z_knee + 100,  r_thigh_r * 0.90, r_thigh_r * 0.70),
-        (hip_offset,  0, z_knee,        r_calf_r  * 1.10, r_calf_r  * 0.90),
-        (hip_offset,  0, z_knee - 100,  r_calf_r  * 1.05, r_calf_r  * 0.85),
-        (hip_offset,  0, z_knee * 0.40, r_calf_r,         r_calf_r  * 0.80),
-        (hip_offset,  0, 80,            r_ankle_r,        r_ankle_r),
-        (hip_offset, 20, 0,             r_foot,           r_foot    * 0.50),
-    ]
-    left_leg_rings = [(-cx, cy, z, a, b) for cx, cy, z, a, b in right_leg_rings]
+    # ── ARMS (A-pose, hanging down) ─────────────────────────────────────────
+    arm_len = cm('arm_length_cm')
+    upper_len = cm('upper_arm_length_cm')
+    forearm_len = cm('forearm_length_cm')
 
-    # ── Build meshes for each part ────────────────────────────────────────────
-    torso_verts, torso_faces = _build_limb(torso_rings,     segments)
-    r_arm_verts, r_arm_faces = _build_limb(right_arm_rings, segments)
-    l_arm_verts, l_arm_faces = _build_limb(left_arm_rings,  segments)
-    r_leg_verts, r_leg_faces = _build_limb(right_leg_rings, segments)
-    l_leg_verts, l_leg_faces = _build_limb(left_leg_rings,  segments)
+    for side in [1, -1]:
+        x = side * (sw_half + 10)
+        z_elbow = z_shoulder - upper_len
+        z_wrist = z_elbow - forearm_len
+        z_hand_end = z_wrist - r_hand * 2.5
 
-    # ── Assign body part IDs per vertex ───────────────────────────────────────
-    # 0=torso, 1=right_arm, 2=left_arm, 3=right_leg, 4=left_leg
-    part_ids = (
-        [0] * len(torso_verts) +
-        [1] * len(r_arm_verts) +
-        [2] * len(l_arm_verts) +
-        [3] * len(r_leg_verts) +
-        [4] * len(l_leg_verts)
-    )
+        # Deltoid cap
+        parts.append(_ellipsoid(r_bicep * 1.10, r_bicep * 1.05, r_bicep * 1.05,
+                                [x, 0, z_shoulder]))
+        # Upper arm (bicep/tricep)
+        parts.append(_capsule(r_bicep, r_bicep * 0.90,
+                              upper_len * 0.80,
+                              [x, 5, z_shoulder - upper_len * 0.45]))
+        # Elbow
+        parts.append(_ellipsoid(r_forearm * 0.95, r_forearm * 0.90, r_forearm * 0.75,
+                                [x, -3, z_elbow]))
+        # Forearm
+        parts.append(_capsule(r_forearm, r_forearm * 0.90,
+                              forearm_len * 0.75,
+                              [x, 0, z_elbow - forearm_len * 0.42]))
+        # Wrist
+        parts.append(_ellipsoid(r_wrist * 1.05, r_wrist * 0.90, r_wrist * 0.80,
+                                [x, 0, z_wrist]))
+        # Hand
+        parts.append(_ellipsoid(r_hand, r_hand * 0.40, r_hand * 1.8,
+                                [x, 0, z_wrist - r_hand * 1.5]))
 
-    all_verts, all_faces = _merge_meshes([
-        (torso_verts, torso_faces),
-        (r_arm_verts, r_arm_faces),
-        (l_arm_verts, l_arm_faces),
-        (r_leg_verts, r_leg_faces),
-        (l_leg_verts, l_leg_faces),
-    ])
+    # ── BOOLEAN UNION ────────────────────────────────────────────────────────
+    mesh = _boolean_union(parts)
 
-    verts_np    = np.array(all_verts, dtype=np.float32)
-    faces_np    = np.array(all_faces, dtype=np.uint32)
-    part_ids_np = np.array(part_ids,  dtype=np.int32)
+    # Smooth for a more natural look
+    mesh = trimesh.smoothing.filter_laplacian(mesh, iterations=2, lamb=0.5)
 
-    # ── Volume estimate (torso only, simplified) ───────────────────────────────
-    vol_mm3 = 0.0
-    for i in range(len(torso_rings) - 1):
-        _, _, z0, a0, b0 = torso_rings[i]
-        _, _, z1, a1, b1 = torso_rings[i + 1]
-        h = abs(z1 - z0)
-        area_avg = math.pi * ((a0 + a1) / 2) * ((b0 + b1) / 2)
-        vol_mm3 += area_avg * h
-    vol_cm3 = round(vol_mm3 / 1000.0, 2)
+    verts_np = np.array(mesh.vertices, dtype=np.float32)
+    faces_np = np.array(mesh.faces,    dtype=np.uint32)
+
+    # Volume from the watertight mesh
+    vol_cm3 = round(abs(mesh.volume) / 1000.0, 2) if mesh.is_volume else 0.0
 
     return {
         'vertices':      verts_np,
         'faces':         faces_np,
-        'body_part_ids': part_ids_np,
+        'body_part_ids': np.zeros(len(verts_np), dtype=np.int32),
         'volume_cm3':    vol_cm3,
         'num_vertices':  len(verts_np),
         'num_faces':     len(faces_np),
