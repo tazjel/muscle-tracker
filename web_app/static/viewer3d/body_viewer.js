@@ -2792,6 +2792,7 @@ function _animate() {
     if (t >= 1) _camTransition = null;
   }
   _updateFirstPerson();
+  _mcpUpdateRotations();
   if (!_walkMode) controls.update();
   // Update mirror every 2nd frame for performance
   if (++_mirrorFrame % 2 === 0) _updateMirror();
@@ -2806,5 +2807,101 @@ function _onResize() {
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
+// ── MCP WebSocket Bridge ─────────────────────────────────────────────────────
+// Connects to three-js-mcp server (port 8082) so Claude can remotely
+// add/move/remove objects and control rotation via MCP tool calls.
+
+let _mcpWs = null;
+const _mcpObjects = {};   // id → THREE.Mesh
+const _mcpRotations = {}; // id → { speed }
+
+function _mcpConnect() {
+  const url = 'ws://localhost:8082';
+  try { _mcpWs = new WebSocket(url); } catch { return; }
+
+  _mcpWs.onopen = () => {
+    console.log('[MCP] Connected to three-js-mcp');
+    _mcpSendSceneState();
+  };
+
+  _mcpWs.onmessage = (evt) => {
+    let cmd;
+    try { cmd = JSON.parse(evt.data); } catch { return; }
+    _mcpHandleCommand(cmd);
+  };
+
+  _mcpWs.onclose = () => {
+    console.log('[MCP] Disconnected — reconnecting in 5s');
+    setTimeout(_mcpConnect, 5000);
+  };
+
+  _mcpWs.onerror = () => {}; // suppress console noise; onclose handles reconnect
+}
+
+function _mcpHandleCommand(cmd) {
+  const { action } = cmd;
+
+  if (action === 'addObject') {
+    const geomMap = {
+      cube:     () => new THREE.BoxGeometry(30, 30, 30),
+      sphere:   () => new THREE.SphereGeometry(15, 24, 24),
+      cylinder: () => new THREE.CylinderGeometry(10, 10, 40, 24),
+      cone:     () => new THREE.ConeGeometry(15, 40, 24),
+      torus:    () => new THREE.TorusGeometry(15, 5, 16, 48),
+    };
+    const geomFn = geomMap[(cmd.type || 'cube').toLowerCase()] || geomMap.cube;
+    const color = cmd.color ? new THREE.Color(cmd.color) : new THREE.Color(0x00ff88);
+    const mesh = new THREE.Mesh(geomFn(), new THREE.MeshStandardMaterial({ color }));
+    if (cmd.position) mesh.position.set(cmd.position[0], cmd.position[1], cmd.position[2]);
+    const id = cmd.id || `mcp_${Date.now()}`;
+    mesh.name = id;
+    scene.add(mesh);
+    _mcpObjects[id] = mesh;
+    _mcpSendSceneState();
+  }
+
+  else if (action === 'moveObject' && cmd.id && _mcpObjects[cmd.id]) {
+    const m = _mcpObjects[cmd.id];
+    if (cmd.position) m.position.set(cmd.position[0], cmd.position[1], cmd.position[2]);
+    _mcpSendSceneState();
+  }
+
+  else if (action === 'removeObject' && cmd.id && _mcpObjects[cmd.id]) {
+    scene.remove(_mcpObjects[cmd.id]);
+    _mcpObjects[cmd.id].geometry.dispose();
+    _mcpObjects[cmd.id].material.dispose();
+    delete _mcpObjects[cmd.id];
+    delete _mcpRotations[cmd.id];
+    _mcpSendSceneState();
+  }
+
+  else if (action === 'startRotation' && cmd.id && _mcpObjects[cmd.id]) {
+    _mcpRotations[cmd.id] = { speed: cmd.speed || 0.02 };
+  }
+
+  else if (action === 'stopRotation' && cmd.id) {
+    delete _mcpRotations[cmd.id];
+  }
+}
+
+function _mcpSendSceneState() {
+  if (!_mcpWs || _mcpWs.readyState !== WebSocket.OPEN) return;
+  const data = Object.entries(_mcpObjects).map(([id, mesh]) => ({
+    id,
+    type: mesh.geometry.type.replace('Geometry', '').replace('Buffer', '').toLowerCase(),
+    position: [mesh.position.x, mesh.position.y, mesh.position.z],
+    color: '#' + mesh.material.color.getHexString(),
+  }));
+  _mcpWs.send(JSON.stringify({ type: 'sceneState', data }));
+}
+
+function _mcpUpdateRotations() {
+  for (const [id, { speed }] of Object.entries(_mcpRotations)) {
+    const m = _mcpObjects[id];
+    if (m) m.rotation.y += speed;
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 init();
+_mcpConnect();

@@ -48,3 +48,4 @@ gemini_watchdog.sh
 gemini_watchdog.log
 GEMINI_STATUS.md
 database.db
+.claude/settings.local.json

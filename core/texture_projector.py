@@ -164,3 +164,41 @@ def project_texture(vertices: np.ndarray, faces: np.ndarray, uvs: np.ndarray,
         texture = cv2.inpaint(texture, mask_unfilled, inpaintRadius=inpaint_r, flags=cv2.INPAINT_TELEA)
 
     return texture, weight
+
+
+def generate_ai_texture(prompt="photorealistic human skin UV texture map, seamless, "
+                                "natural skin tone, subtle pores and veins, plain white background",
+                        output_path=None, atlas_size=2048):
+    """
+    Generate an AI skin texture via the game-asset-gen MCP server (Gemini).
+
+    This is a convenience wrapper — the actual MCP call must be made by the
+    orchestrating agent (Claude). This function prepares the prompt and
+    post-processes the result into a UV-ready BGR texture.
+
+    Args:
+        prompt:      text prompt for the AI image generator
+        output_path: where to save the generated PNG (if None, uses temp file)
+        atlas_size:  resize output to this resolution
+
+    Returns:
+        texture: (atlas_size, atlas_size, 3) uint8 BGR image, or None if file not found
+    """
+    import os, tempfile
+
+    if output_path is None:
+        output_path = os.path.join(tempfile.gettempdir(), 'ai_skin_texture.png')
+
+    # The MCP tool call happens externally — this function reads the result
+    if not os.path.exists(output_path):
+        return None
+
+    img = cv2.imread(output_path)
+    if img is None:
+        return None
+
+    # Resize to atlas dimensions
+    if img.shape[0] != atlas_size or img.shape[1] != atlas_size:
+        img = cv2.resize(img, (atlas_size, atlas_size), interpolation=cv2.INTER_LANCZOS4)
+
+    return img

@@ -351,6 +351,96 @@ def load_glb_vertices(glb_path):
         return None
 
 
+def blender_refine(glb_path, subdivisions=1, max_size_mb=2.0):
+    """
+    Post-process a GLB with Blender for smoother surfaces.
+
+    Uses Catmull-Clark subdivision + limited dissolve to clean boolean artifacts.
+    Skips silently if Blender is not installed.
+
+    Args:
+        glb_path:      path to input .glb file (overwritten with refined output)
+        subdivisions:  Catmull-Clark subdivision levels (1 = doubles face count)
+        max_size_mb:   if result exceeds this, reduce subdivisions by 1
+
+    Returns:
+        glb_path on success, None if Blender unavailable or failed.
+    """
+    import shutil, subprocess, tempfile, os
+
+    blender = shutil.which('blender')
+    if not blender:
+        return None
+
+    glb_path = os.path.abspath(glb_path)
+    script = f"""
+import bpy, os
+
+# Clear default scene
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+# Import GLB
+bpy.ops.import_scene.gltf(filepath=r"{glb_path}")
+
+for obj in bpy.context.scene.objects:
+    if obj.type != 'MESH':
+        continue
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+
+    # Limited dissolve to clean tiny/degenerate faces from boolean ops
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.mesh.dissolve_limited(angle_limit=0.05)
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Catmull-Clark subdivision
+    mod = obj.modifiers.new(name='Subdiv', type='SUBSURF')
+    mod.levels = {subdivisions}
+    mod.render_levels = {subdivisions}
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+
+    # Smooth normals
+    bpy.ops.object.shade_smooth()
+    obj.select_set(False)
+
+# Export refined GLB
+bpy.ops.export_scene.gltf(
+    filepath=r"{glb_path}",
+    export_format='GLB',
+    export_apply=True,
+)
+"""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(script)
+        script_path = f.name
+
+    try:
+        result = subprocess.run(
+            [blender, '--background', '--python', script_path],
+            capture_output=True, text=True, timeout=120,
+        )
+        os.unlink(script_path)
+
+        if result.returncode != 0:
+            return None
+
+        # Check file size; if too large, caller should use fewer subdivisions
+        size_mb = os.path.getsize(glb_path) / (1024 * 1024)
+        if size_mb > max_size_mb and subdivisions > 0:
+            # Re-run with fewer subdivisions
+            return blender_refine(glb_path, subdivisions - 1, max_size_mb)
+
+        return glb_path
+
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
+        return None
+
+
 def generate_mesh_preview_image(vertices, faces, output_path):
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d import Axes3D
