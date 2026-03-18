@@ -120,8 +120,8 @@ function _customerId() {
   return new URLSearchParams(window.location.search).get('customer') || '1';
 }
 
-// ── Procedural skin texture — color variation like real skin ──────────────────
-function _createSkinColorMap(size = 512) {
+// ── Procedural skin texture — multi-layer photorealistic skin ──────────────────
+function _createSkinColorMap(size = 1024) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d');
@@ -130,40 +130,85 @@ function _createSkinColorMap(size = 512) {
   ctx.fillStyle = '#C4956A';
   ctx.fillRect(0, 0, size, size);
 
-  // Layer 1: Large blotchy patches (vein/flush areas)
-  for (let i = 0; i < 40; i++) {
-    const x = Math.random() * size;
-    const y = Math.random() * size;
-    const r = 30 + Math.random() * 80;
-    const colors = ['rgba(180,100,90,0.08)', 'rgba(160,110,80,0.06)',
-                    'rgba(200,130,100,0.07)', 'rgba(140,90,70,0.05)'];
-    const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
-    grad.addColorStop(0, colors[i % colors.length]);
-    grad.addColorStop(1, 'rgba(196,149,106,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, size, size);
+  // Layer 1: Subsurface color zones (blood flush, warm patches, shadows)
+  const zones = [
+    { color: 'rgba(190,90,80,0.10)',  count: 15, rMin: 60, rMax: 150 },
+    { color: 'rgba(160,115,80,0.08)', count: 20, rMin: 40, rMax: 120 },
+    { color: 'rgba(200,135,100,0.07)', count: 15, rMin: 50, rMax: 100 },
+    { color: 'rgba(140,85,65,0.06)',  count: 10, rMin: 30, rMax: 90 },
+    { color: 'rgba(175,120,95,0.05)', count: 20, rMin: 20, rMax: 70 },
+  ];
+  for (const zone of zones) {
+    for (let i = 0; i < zone.count; i++) {
+      const x = Math.random() * size;
+      const y = Math.random() * size;
+      const r = zone.rMin + Math.random() * (zone.rMax - zone.rMin);
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, zone.color);
+      grad.addColorStop(0.7, zone.color.replace(/[\d.]+\)$/, '0.02)'));
+      grad.addColorStop(1, 'rgba(196,149,106,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, size, size);
+    }
   }
 
-  // Layer 2: Fine speckle noise (pores, freckles)
+  // Layer 2: Subtle vein-like streaks
+  ctx.globalAlpha = 0.03;
+  ctx.strokeStyle = 'rgba(120,80,100,1)';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 25; i++) {
+    ctx.beginPath();
+    let cx = Math.random() * size, cy = Math.random() * size;
+    ctx.moveTo(cx, cy);
+    for (let s = 0; s < 5; s++) {
+      cx += (Math.random() - 0.5) * 60;
+      cy += (Math.random() - 0.5) * 60;
+      ctx.lineTo(cx, cy);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1.0;
+
+  // Layer 3: Fine speckle noise (pores, micro-texture)
   const imgData = ctx.getImageData(0, 0, size, size);
   const d = imgData.data;
   for (let i = 0; i < d.length; i += 4) {
-    const vary = (Math.random() - 0.5) * 18;
-    d[i]     = Math.max(0, Math.min(255, d[i] + vary));         // R
-    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + vary * 0.7)); // G
-    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + vary * 0.5)); // B
+    const vary = (Math.random() - 0.5) * 14;
+    d[i]     = Math.max(0, Math.min(255, d[i] + vary));
+    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + vary * 0.7));
+    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + vary * 0.4));
+  }
+
+  // Layer 4: Scattered freckles/moles
+  for (let n = 0; n < 80; n++) {
+    const px = Math.floor(Math.random() * size);
+    const py = Math.floor(Math.random() * size);
+    const r = 1 + Math.floor(Math.random() * 3);
+    const darken = 15 + Math.random() * 20;
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy > r * r) continue;
+        const fx = ((px + dx) % size + size) % size;
+        const fy = ((py + dy) % size + size) % size;
+        const idx = (fy * size + fx) * 4;
+        const falloff = 1 - Math.sqrt(dx * dx + dy * dy) / r;
+        d[idx]     = Math.max(0, d[idx] - darken * falloff);
+        d[idx + 1] = Math.max(0, d[idx + 1] - darken * falloff * 0.8);
+        d[idx + 2] = Math.max(0, d[idx + 2] - darken * falloff * 0.6);
+      }
+    }
   }
   ctx.putImageData(imgData, 0, 0);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(4, 4);
+  tex.repeat.set(3, 3);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
 
-// ── Skin normal map — multi-scale bumps (pores + wrinkle lines) ──────────────
-function _createSkinNormalMap(size = 512) {
+// ── Skin normal map — multi-scale anatomical detail ──────────────────────────
+function _createSkinNormalMap(size = 1024) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d');
@@ -172,18 +217,18 @@ function _createSkinNormalMap(size = 512) {
   const imgData = ctx.getImageData(0, 0, size, size);
   const d = imgData.data;
 
-  // Pass 1: Fine pore noise
+  // Pass 1: Fine pore noise (micro-scale skin texture)
   for (let i = 0; i < d.length; i += 4) {
-    d[i]     = 128 + (Math.random() - 0.5) * 25;
-    d[i + 1] = 128 + (Math.random() - 0.5) * 25;
+    d[i]     = 128 + (Math.random() - 0.5) * 20;
+    d[i + 1] = 128 + (Math.random() - 0.5) * 20;
   }
 
-  // Pass 2: Larger bumps (muscle/skin folds) via scattered dents
-  for (let n = 0; n < 200; n++) {
+  // Pass 2: Medium-scale skin bumps (follicles, pores)
+  for (let n = 0; n < 400; n++) {
     const cx = Math.floor(Math.random() * size);
     const cy = Math.floor(Math.random() * size);
-    const r = 3 + Math.floor(Math.random() * 8);
-    const strength = 15 + Math.random() * 25;
+    const r = 2 + Math.floor(Math.random() * 6);
+    const strength = 12 + Math.random() * 20;
     const dirX = (Math.random() - 0.5) * 2;
     const dirY = (Math.random() - 0.5) * 2;
     for (let dy = -r; dy <= r; dy++) {
@@ -199,26 +244,74 @@ function _createSkinNormalMap(size = 512) {
     }
   }
 
-  // Pass 3: Fine wrinkle lines (horizontal/vertical creases)
+  // Pass 3: Large muscle/tendon ridges (anatomy detail)
   for (let n = 0; n < 60; n++) {
+    const cx = Math.floor(Math.random() * size);
+    const cy = Math.floor(Math.random() * size);
+    const r = 15 + Math.floor(Math.random() * 30);
+    const strength = 8 + Math.random() * 12;
+    const angle = Math.random() * Math.PI * 2;
+    const dirX = Math.cos(angle);
+    const dirY = Math.sin(angle);
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy > r * r) continue;
+        const px = ((cx + dx) % size + size) % size;
+        const py = ((cy + dy) % size + size) % size;
+        const idx = (py * size + px) * 4;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const falloff = Math.cos(dist / r * Math.PI * 0.5);
+        d[idx]     = Math.max(0, Math.min(255, d[idx] + dirX * strength * falloff));
+        d[idx + 1] = Math.max(0, Math.min(255, d[idx + 1] + dirY * strength * falloff));
+      }
+    }
+  }
+
+  // Pass 4: Fine wrinkle/crease lines (skin folds)
+  for (let n = 0; n < 100; n++) {
     const horizontal = Math.random() > 0.5;
     const pos = Math.floor(Math.random() * size);
-    const len = 20 + Math.floor(Math.random() * 60);
+    const len = 15 + Math.floor(Math.random() * 50);
     const start = Math.floor(Math.random() * (size - len));
-    const str = 20 + Math.random() * 15;
+    const str = 15 + Math.random() * 12;
+    const width = 1 + Math.floor(Math.random() * 2);
     for (let t = 0; t < len; t++) {
-      const x = horizontal ? start + t : pos;
-      const y = horizontal ? pos : start + t;
-      const idx = (y * size + x) * 4;
-      const ch = horizontal ? 1 : 0;  // perturb perpendicular to line
-      d[idx + ch] = Math.max(0, Math.min(255, d[idx + ch] + str));
+      for (let w = -width; w <= width; w++) {
+        const x = horizontal ? start + t : ((pos + w) % size + size) % size;
+        const y = horizontal ? ((pos + w) % size + size) % size : start + t;
+        if (x < 0 || x >= size || y < 0 || y >= size) continue;
+        const idx = (y * size + x) * 4;
+        const ch = horizontal ? 1 : 0;
+        const wFalloff = 1 - Math.abs(w) / (width + 1);
+        d[idx + ch] = Math.max(0, Math.min(255, d[idx + ch] + str * wFalloff));
+      }
+    }
+  }
+
+  // Pass 5: Cross-hatched micro-texture (diamond skin pattern)
+  for (let n = 0; n < 40; n++) {
+    const cx = Math.floor(Math.random() * size);
+    const cy = Math.floor(Math.random() * size);
+    const len = 8 + Math.floor(Math.random() * 15);
+    const str = 8 + Math.random() * 8;
+    // Diagonal line pair
+    for (const angle of [0.78, -0.78]) { // ~45 degrees
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+      for (let t = -len; t <= len; t++) {
+        const px = ((cx + Math.round(dx * t)) % size + size) % size;
+        const py = ((cy + Math.round(dy * t)) % size + size) % size;
+        const idx = (py * size + px) * 4;
+        d[idx]     = Math.max(0, Math.min(255, d[idx] + str * 0.5));
+        d[idx + 1] = Math.max(0, Math.min(255, d[idx + 1] + str * 0.5));
+      }
     }
   }
 
   ctx.putImageData(imgData, 0, 0);
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(6, 6);
+  tex.repeat.set(5, 5);
   return tex;
 }
 
@@ -244,21 +337,28 @@ function _createSkinRoughnessMap(size = 256) {
 }
 
 const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
-  map:              _createSkinColorMap(),       // color variation, not flat
-  roughnessMap:     _createSkinRoughnessMap(),   // varied roughness
-  roughness:        0.6,
+  map:              _createSkinColorMap(),
+  roughnessMap:     _createSkinRoughnessMap(),
+  roughness:        0.55,
   metalness:        0.0,
   side:             THREE.DoubleSide,
-  // Subsurface scattering approximation
-  sheen:            0.5,
-  sheenRoughness:   0.5,
-  sheenColor:       new THREE.Color(0xcc7755),   // warm reddish undertone (blood)
-  // Skin sheen
-  clearcoat:        0.03,
-  clearcoatRoughness: 0.5,
-  // Normal map for surface detail
+  // Subsurface scattering approximation (warm blood undertone)
+  sheen:            0.6,
+  sheenRoughness:   0.4,
+  sheenColor:       new THREE.Color(0xcc6644),   // warm reddish undertone
+  // Subtle skin oil sheen
+  clearcoat:        0.05,
+  clearcoatRoughness: 0.4,
+  // Transmission for thin areas (ears, fingers) — subtle translucency
+  transmission:     0.02,
+  thickness:        5.0,
+  ior:              1.4,
+  // Normal map for anatomical surface detail
   normalMap:        _createSkinNormalMap(),
-  normalScale:      new THREE.Vector2(0.6, 0.6), // stronger bumps
+  normalScale:      new THREE.Vector2(0.8, 0.8),
+  // Slightly warm emissive to prevent pure black in shadows (blood glow)
+  emissive:         new THREE.Color(0x1a0800),
+  emissiveIntensity: 0.08,
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -278,9 +378,11 @@ function init() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping        = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.1;
+  renderer.toneMappingExposure = 1.05;
   renderer.shadowMap.enabled  = true;
   renderer.shadowMap.type     = THREE.PCFSoftShadowMap;
+  renderer.outputColorSpace   = THREE.SRGBColorSpace;
+  renderer.physicallyCorrectLights = true;
   container.appendChild(renderer.domElement);
 
   // Controls
@@ -422,30 +524,46 @@ function init() {
 
 // ── Lighting ──────────────────────────────────────────────────────────────────
 function _setupStudioLights() {
-  const a = new THREE.AmbientLight(0xfff5e4, 0.4);
+  // Ambient — warm, low intensity to prevent pitch black shadows
+  const a = new THREE.AmbientLight(0xfff5e4, 0.30);
   scene.add(a); _studioLightObjs.push(a);
 
-  const h = new THREE.HemisphereLight(0xffeedd, 0x334455, 0.5);
+  // Hemisphere — sky/ground bounce for natural outdoor feel
+  const h = new THREE.HemisphereLight(0xffeedd, 0x443322, 0.45);
   scene.add(h); _studioLightObjs.push(h);
 
-  const key = new THREE.DirectionalLight(0xffffff, 1.2);
-  key.position.set(0, 400, 200);
+  // Key light — main illumination, warm, high position for natural shadows
+  const key = new THREE.DirectionalLight(0xfff8f0, 1.4);
+  key.position.set(150, 450, 250);
   key.castShadow = true;
-  key.shadow.mapSize.set(1024, 1024);
-  // Expand frustum so body shadow covers room floor
+  key.shadow.mapSize.set(2048, 2048);
   key.shadow.camera.left   = -400;
   key.shadow.camera.right  =  400;
   key.shadow.camera.top    =  400;
   key.shadow.camera.bottom = -400;
+  key.shadow.bias = -0.0001;
+  key.shadow.normalBias = 0.02;
   scene.add(key); _studioLightObjs.push(key);
 
-  const fill = new THREE.DirectionalLight(0xe8f0ff, 0.4);
-  fill.position.set(-300, 100, 100);
+  // Fill light — cooler, from opposite side to define muscle contours
+  const fill = new THREE.DirectionalLight(0xd8e8ff, 0.5);
+  fill.position.set(-350, 200, 150);
   scene.add(fill); _studioLightObjs.push(fill);
 
-  const rim = new THREE.DirectionalLight(0xffffff, 0.25);
-  rim.position.set(0, 50, -400);
+  // Rim light — back edge separation, slightly warm
+  const rim = new THREE.DirectionalLight(0xffeedd, 0.35);
+  rim.position.set(0, 100, -400);
   scene.add(rim); _studioLightObjs.push(rim);
+
+  // Under-chin fill — prevents dark shadows under jaw/chin
+  const underFill = new THREE.DirectionalLight(0xffe8d0, 0.15);
+  underFill.position.set(0, -50, 200);
+  scene.add(underFill); _studioLightObjs.push(underFill);
+
+  // Side accent — accentuates muscle definition from the side
+  const accent = new THREE.DirectionalLight(0xfff0e0, 0.25);
+  accent.position.set(400, 250, -100);
+  scene.add(accent); _studioLightObjs.push(accent);
 }
 
 function _setupRoomLights() {
@@ -473,43 +591,60 @@ function _setupEnvironment() {
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
 
-  // Warm studio-like environment for skin-flattering reflections
+  // Professional photography studio environment for skin rendering
   const envScene = new THREE.Scene();
-  envScene.background = new THREE.Color(0x2a2535);
+  envScene.background = new THREE.Color(0x252030);
 
-  // Sky dome — warm overhead light
-  const domeGeo = new THREE.SphereGeometry(900, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+  // Sky dome — warm gradient (golden hour feel)
+  const domeGeo = new THREE.SphereGeometry(900, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
   const domeMat = new THREE.MeshBasicMaterial({
-    color: 0x665544, side: THREE.BackSide,
+    color: 0x776655, side: THREE.BackSide,
   });
   envScene.add(new THREE.Mesh(domeGeo, domeMat));
 
-  // Ground plane — subtle warm bounce fill
+  // Ground plane — warm bounce (fills shadows from below)
   const floorGeo = new THREE.PlaneGeometry(2000, 2000);
-  const floorMat = new THREE.MeshBasicMaterial({ color: 0x443333 });
+  const floorMat = new THREE.MeshBasicMaterial({ color: 0x554433 });
   const floor = new THREE.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI / 2;
   floor.position.y = -10;
   envScene.add(floor);
 
-  // Emissive panels for soft fill (studio softbox simulation)
-  const panelGeo = new THREE.PlaneGeometry(400, 600);
-  const panelMat = new THREE.MeshBasicMaterial({ color: 0xffeedd });
-  // Front-left softbox
-  const p1 = new THREE.Mesh(panelGeo, panelMat);
-  p1.position.set(-500, 300, 300);
-  p1.lookAt(0, 150, 0);
-  envScene.add(p1);
-  // Front-right softbox
-  const p2 = new THREE.Mesh(panelGeo, panelMat);
-  p2.position.set(500, 300, 300);
-  p2.lookAt(0, 150, 0);
-  envScene.add(p2);
-  // Back rim panel (cooler)
-  const p3 = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xccddff }));
-  p3.position.set(0, 200, -500);
-  p3.lookAt(0, 150, 0);
-  envScene.add(p3);
+  // Large softboxes for smooth, wrap-around reflections
+  const panelGeo = new THREE.PlaneGeometry(500, 700);
+  // Key softbox — warm, front-left (main light source reflection)
+  const keyPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xfff0dd }));
+  keyPanel.position.set(-450, 350, 350);
+  keyPanel.lookAt(0, 150, 0);
+  envScene.add(keyPanel);
+  // Fill softbox — slightly cooler, front-right
+  const fillPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xe8eeff }));
+  fillPanel.position.set(450, 280, 300);
+  fillPanel.lookAt(0, 150, 0);
+  envScene.add(fillPanel);
+  // Back rim panel (cool edge light)
+  const rimPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xbbccee }));
+  rimPanel.position.set(0, 250, -500);
+  rimPanel.lookAt(0, 150, 0);
+  envScene.add(rimPanel);
+  // Top panel (overhead fill — prevents dark crown)
+  const topPanel = new THREE.Mesh(
+    new THREE.PlaneGeometry(600, 600),
+    new THREE.MeshBasicMaterial({ color: 0xeee8dd })
+  );
+  topPanel.position.set(0, 800, 0);
+  topPanel.rotation.x = Math.PI / 2;
+  envScene.add(topPanel);
+  // Side accent panels (subtle warm fill for muscle definition)
+  for (const sx of [-600, 600]) {
+    const side = new THREE.Mesh(
+      new THREE.PlaneGeometry(300, 500),
+      new THREE.MeshBasicMaterial({ color: 0xddd8cc })
+    );
+    side.position.set(sx, 200, 0);
+    side.lookAt(0, 150, 0);
+    envScene.add(side);
+  }
 
   const envTex = pmrem.fromScene(envScene, 0.04).texture;
   scene.environment = envTex;
@@ -622,21 +757,26 @@ function _loadOBJ(url) {
 function _applyDefaultMaterial(object) {
   object.traverse(child => {
     if (child.isMesh) {
-      // Store original material for texture toggle
-      _originalMaterials.set(child, child.material);
-      origMaterials.push({ mesh: child, mat: child.material });
-      // Upgrade all body meshes to the physical skin material for realism
-      const hasTexture = child.material && child.material.map;
-      if (hasTexture) {
-        // Keep embedded texture but upgrade material properties
-        const tex = child.material.map;
+      // Store the original loaded material (may have embedded texture)
+      const loadedMat = child.material;
+      const hasEmbeddedTexture = loadedMat && loadedMat.map;
+
+      // Save original for "Textured" toggle
+      origMaterials.push({ mesh: child, mat: loadedMat });
+
+      if (hasEmbeddedTexture) {
+        // Upgrade material properties but keep embedded texture
+        const tex = loadedMat.map;
         const mat = SKIN_MATERIAL.clone();
         mat.map = tex;
         child.material = mat;
+        // Store textured version as original (for toggle back)
+        _originalMaterials.set(child, mat);
       } else {
+        // No texture — use procedural skin
         child.material = SKIN_MATERIAL.clone();
+        _originalMaterials.set(child, child.material);
       }
-      _originalMaterials.set(child, child.material);
       child.castShadow    = true;
       child.receiveShadow = true;
     }

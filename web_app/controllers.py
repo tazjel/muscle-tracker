@@ -2338,6 +2338,8 @@ def generate_body_model(customer_id):
         mesh = build_body_mesh(profile)
         verts = mesh['vertices']
         faces = mesh['faces']
+        # Anny provides UVs; use as fallback when no texture projection runs
+        _anny_uvs = mesh.get('uvs')
 
         # ── Optional silhouette refinement ─────────────────────────────────────
         # Accept front_image / back_image / left_image / right_image as
@@ -2382,7 +2384,7 @@ def generate_body_model(customer_id):
 
         # ── Texture projection (when silhouette images are available) ───────────
         texture_image = None
-        uvs_for_glb   = None
+        uvs_for_glb   = _anny_uvs  # seed from Anny; overwritten if texture projection runs
         normal_map    = None
         if silhouette_views:
             try:
@@ -2427,6 +2429,8 @@ def generate_body_model(customer_id):
                 export_glb(verts, faces, glb_path,
                            uvs=uvs_for_glb, texture_image=texture_image,
                            normal_map=normal_map)
+            elif uvs_for_glb is not None:
+                export_glb(verts, faces, glb_path, uvs=uvs_for_glb)
             else:
                 export_glb(verts, faces, glb_path)
             glb_path_out = glb_path

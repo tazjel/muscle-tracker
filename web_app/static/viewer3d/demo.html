@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Demo — Quick Test</title>
+  <style>
+    body { margin: 0; background: #1a1a2e; overflow: hidden; font-family: sans-serif; }
+    #info {
+      position: absolute; top: 10px; left: 10px; z-index: 10;
+      color: #e0e0e0; background: rgba(0,0,0,0.7); padding: 12px 18px;
+      border-radius: 8px; font-size: 13px; max-width: 320px;
+    }
+    #info h2 { margin: 0 0 6px; font-size: 16px; color: #4a9eff; }
+    #info .stat { color: #94a3b8; }
+    #log { margin-top: 8px; font-size: 11px; color: #888; max-height: 120px; overflow-y: auto; }
+    #log div { margin: 1px 0; }
+    .ok  { color: #22c55e; }
+    .err { color: #ef4444; }
+  </style>
+</head>
+<body>
+  <div id="info">
+    <h2>3D Body Viewer — Demo</h2>
+    <div id="status">Initialising…</div>
+    <div class="stat">Vertices: <span id="verts">0</span> &middot; Faces: <span id="faces">0</span></div>
+    <div id="log"></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
+
+    const log = (msg, cls) => {
+      const d = document.createElement('div');
+      d.textContent = msg;
+      if (cls) d.className = cls;
+      document.getElementById('log').prepend(d);
+    };
+    const status = (msg) => document.getElementById('status').textContent = msg;
+
+    // ── Scene ──
+    log('Creating scene…');
+    const scene    = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a2e);
+    const camera   = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 5000);
+    camera.position.set(0, 150, 400);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+    log('Renderer OK', 'ok');
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 130, 0);
+    controls.update();
+
+    // ── Lights (professional studio setup) ──
+    scene.add(new THREE.AmbientLight(0xfff5e4, 0.30));
+    scene.add(new THREE.HemisphereLight(0xffeedd, 0x443322, 0.45));
+
+    const key = new THREE.DirectionalLight(0xfff8f0, 1.4);
+    key.position.set(150, 450, 250);
+    key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.bias = -0.0001;
+    scene.add(key);
+
+    const fill = new THREE.DirectionalLight(0xd8e8ff, 0.5);
+    fill.position.set(-350, 200, 150);
+    scene.add(fill);
+
+    const rim = new THREE.DirectionalLight(0xffeedd, 0.35);
+    rim.position.set(0, 100, -400);
+    scene.add(rim);
+
+    scene.add(new THREE.DirectionalLight(0xffe8d0, 0.15)).position.set(0, -50, 200);
+    scene.add(new THREE.DirectionalLight(0xfff0e0, 0.25)).position.set(400, 250, -100);
+    log('Studio lights OK', 'ok');
+
+    // ── Floor ──
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(800, 800),
+      new THREE.MeshStandardMaterial({ color: 0x2a2a4a })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // ── Grid ──
+    const grid = new THREE.GridHelper(800, 40, 0x444466, 0x333355);
+    scene.add(grid);
+
+    // ── Environment map (studio softboxes) ──
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    pmrem.compileEquirectangularShader();
+    const envScene = new THREE.Scene();
+    envScene.background = new THREE.Color(0x252030);
+    const domeGeo = new THREE.SphereGeometry(900, 32, 16, 0, Math.PI*2, 0, Math.PI/2);
+    envScene.add(new THREE.Mesh(domeGeo, new THREE.MeshBasicMaterial({ color: 0x776655, side: THREE.BackSide })));
+    const envFloor = new THREE.Mesh(new THREE.PlaneGeometry(2000,2000), new THREE.MeshBasicMaterial({ color: 0x554433 }));
+    envFloor.rotation.x = -Math.PI/2; envFloor.position.y = -10; envScene.add(envFloor);
+    const pGeo = new THREE.PlaneGeometry(500, 700);
+    for (const [pos, col] of [[[-450,350,350], 0xfff0dd], [[450,280,300], 0xe8eeff], [[0,250,-500], 0xbbccee]]) {
+      const p = new THREE.Mesh(pGeo, new THREE.MeshBasicMaterial({ color: col }));
+      p.position.set(...pos); p.lookAt(0,150,0); envScene.add(p);
+    }
+    scene.environment = pmrem.fromScene(envScene, 0.04).texture;
+    pmrem.dispose();
+    log('Environment map OK', 'ok');
+
+    // ── Procedural skin material ──
+    function makeSkinColorMap(sz=1024) {
+      const c = document.createElement('canvas'); c.width = c.height = sz;
+      const x = c.getContext('2d');
+      x.fillStyle = '#C4956A'; x.fillRect(0,0,sz,sz);
+      const zones = [
+        {c:'rgba(190,90,80,0.10)',n:15,r0:60,r1:150},{c:'rgba(160,115,80,0.08)',n:20,r0:40,r1:120},
+        {c:'rgba(200,135,100,0.07)',n:15,r0:50,r1:100},{c:'rgba(140,85,65,0.06)',n:10,r0:30,r1:90},
+      ];
+      for (const z of zones) for (let i=0;i<z.n;i++) {
+        const px=Math.random()*sz, py=Math.random()*sz, r=z.r0+Math.random()*(z.r1-z.r0);
+        const g=x.createRadialGradient(px,py,0,px,py,r);
+        g.addColorStop(0,z.c); g.addColorStop(1,'rgba(196,149,106,0)');
+        x.fillStyle=g; x.fillRect(0,0,sz,sz);
+      }
+      const id=x.getImageData(0,0,sz,sz), d=id.data;
+      for (let i=0;i<d.length;i+=4) { const v=(Math.random()-0.5)*14; d[i]+=v; d[i+1]+=v*0.7; d[i+2]+=v*0.4; }
+      x.putImageData(id,0,0);
+      const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(3,3); t.colorSpace=THREE.SRGBColorSpace; return t;
+    }
+    function makeSkinNormalMap(sz=1024) {
+      const c=document.createElement('canvas'); c.width=c.height=sz;
+      const x=c.getContext('2d'); x.fillStyle='rgb(128,128,255)'; x.fillRect(0,0,sz,sz);
+      const id=x.getImageData(0,0,sz,sz), d=id.data;
+      for (let i=0;i<d.length;i+=4) { d[i]=128+(Math.random()-0.5)*20; d[i+1]=128+(Math.random()-0.5)*20; }
+      for (let n=0;n<400;n++) {
+        const cx=~~(Math.random()*sz), cy=~~(Math.random()*sz), r=2+~~(Math.random()*6), s=12+Math.random()*20;
+        const dx2=(Math.random()-0.5)*2, dy2=(Math.random()-0.5)*2;
+        for (let dy=-r;dy<=r;dy++) for (let dx=-r;dx<=r;dx++) {
+          if (dx*dx+dy*dy>r*r) continue;
+          const px=((cx+dx)%sz+sz)%sz, py=((cy+dy)%sz+sz)%sz, idx=(py*sz+px)*4;
+          const f=1-Math.sqrt(dx*dx+dy*dy)/r;
+          d[idx]=Math.max(0,Math.min(255,d[idx]+dx2*s*f)); d[idx+1]=Math.max(0,Math.min(255,d[idx+1]+dy2*s*f));
+        }
+      }
+      x.putImageData(id,0,0);
+      const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(5,5); return t;
+    }
+    const skinMat = new THREE.MeshPhysicalMaterial({
+      map: makeSkinColorMap(), roughness: 0.55, metalness: 0.0, side: THREE.DoubleSide,
+      sheen: 0.6, sheenRoughness: 0.4, sheenColor: new THREE.Color(0xcc6644),
+      clearcoat: 0.05, clearcoatRoughness: 0.4,
+      normalMap: makeSkinNormalMap(), normalScale: new THREE.Vector2(0.8, 0.8),
+      emissive: new THREE.Color(0x1a0800), emissiveIntensity: 0.08,
+    });
+    log('Skin material OK', 'ok');
+
+    // ── Load GLB ──
+    status('Loading demo.glb…');
+    log('Fetching demo.glb…');
+
+    const loader = new GLTFLoader();
+    loader.load('demo.glb',
+      (gltf) => {
+        const model = gltf.scene;
+        log('GLB parsed — processing…');
+
+        // Count geometry
+        let verts = 0, tris = 0;
+        model.traverse(child => {
+          if (child.isMesh) {
+            const g = child.geometry;
+            verts += g.attributes.position?.count || 0;
+            tris  += g.index ? g.index.count / 3 : (g.attributes.position?.count || 0) / 3;
+            child.castShadow = true;
+            child.receiveShadow = true;
+            // Apply realistic skin material
+            child.material = skinMat.clone();
+          }
+        });
+
+        // Rotate Z-up → Y-up for Three.js
+        model.rotation.x = -Math.PI / 2;
+
+        // Measure raw bounds
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        log(`Raw bounds: ${size.x.toFixed(0)} × ${size.y.toFixed(0)} × ${size.z.toFixed(0)}`);
+
+        // Scale so tallest dimension (Y after rotation) = 300 scene units
+        const targetH = 300;
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const tallDim = size.y > 0 ? size.y : maxDim;
+        const scale = targetH / tallDim;
+        model.scale.setScalar(scale);
+
+        // Center horizontally, feet on floor
+        const box2 = new THREE.Box3().setFromObject(model);
+        const center2 = box2.getCenter(new THREE.Vector3());
+        model.position.x -= center2.x;
+        model.position.z -= center2.z;
+        model.position.y -= box2.min.y;  // feet on floor
+
+        scene.add(model);
+        log(`Added to scene — ${verts} verts, ${Math.round(tris)} faces`, 'ok');
+        document.getElementById('verts').textContent = verts;
+        document.getElementById('faces').textContent = Math.round(tris);
+        status('Model loaded');
+
+        // Frame camera to see full body
+        const box3 = new THREE.Box3().setFromObject(model);
+        const size3 = box3.getSize(new THREE.Vector3());
+        const fov = camera.fov * (Math.PI / 180);
+        const camZ = Math.max(size3.x, size3.y, size3.z) / (2 * Math.tan(fov / 2)) * 1.6;
+        const midY = size3.y * 0.45;
+        controls.target.set(0, midY, 0);
+        camera.position.set(0, midY, camZ);
+        controls.update();
+      },
+      (xhr) => {
+        if (xhr.total > 0) {
+          const pct = Math.round(xhr.loaded / xhr.total * 100);
+          status(`Loading… ${pct}%`);
+        }
+      },
+      (err) => {
+        log('LOAD ERROR: ' + err.message, 'err');
+        status('Error loading model');
+        console.error(err);
+      }
+    );
+
+    // ── Animate ──
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+    log('Render loop started', 'ok');
+
+    // ── Resize ──
+    window.addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+  </script>
+</body>
+</html>
