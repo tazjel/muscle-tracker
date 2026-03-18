@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Muscle Tracker — 3D Viewer</title>
   <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="ui-overlay">
@@ -24,6 +32,8 @@
                 onclick="setViewMode('textured')">Textured</button>
         <button class="view-mode-btn" id="btn-labels"
                 onclick="toggleLabels()">Labels</button>
+        <button class="view-mode-btn" id="btn-rings"
+                onclick="toggleRings()">Rings</button>
       </div>
 
       <!-- V7: Room controls -->
@@ -40,6 +50,27 @@
                 onclick="toggleBodyStats()">Stats</button>
         <button class="view-mode-btn" id="btn-spin"
                 onclick="toggleAutoRotate()">Spin</button>
+      </div>
+
+      <!-- V14/V15: Visualization modes -->
+      <div class="view-modes" style="margin-top:4px;">
+        <button class="view-mode-btn" id="btn-growth"
+                onclick="toggleGrowthMap()">Growth</button>
+        <button class="view-mode-btn" id="btn-slices"
+                onclick="toggleSliceView()">Slices</button>
+        <button class="view-mode-btn" id="btn-profile"
+                onclick="toggleProfile()">Profile</button>
+        <button class="view-mode-btn" id="btn-axis"
+                onclick="togglePostureAxis()">Axis</button>
+      </div>
+
+      <!-- V10: Camera presets -->
+      <div class="view-modes" style="margin-top:4px;">
+        <button class="view-mode-btn" onclick="setCameraPreset('front')">Front</button>
+        <button class="view-mode-btn" onclick="setCameraPreset('back')">Back</button>
+        <button class="view-mode-btn" onclick="setCameraPreset('left')">Left</button>
+        <button class="view-mode-btn" onclick="setCameraPreset('right')">Right</button>
+        <button class="view-mode-btn" onclick="setCameraPreset('top')">Top</button>
       </div>
 
       <!-- Body stats -->
@@ -91,6 +122,7 @@
                  oninput="switchMesh(this.value)">
         </label>
         <div id="timeline-date" style="font-size:11px;color:#94a3b8;margin-top:2px;"></div>
+        <button id="btn-play" onclick="toggleTimelinePlay()" style="font-size:11px;margin-top:4px;">Play</button>
       </div>
 
       <!-- Cross-section tool -->
@@ -101,18 +133,33 @@
           <span id="section-height-val">50</span>%
         </label>
         <div id="section-stats" style="font-size:11px;margin-top:4px;color:#aaa;"></div>
+        <div style="margin-top:4px;">
+          <button onclick="quickSection('chest')" style="font-size:10px;padding:3px 6px;">Chest</button>
+          <button onclick="quickSection('waist')" style="font-size:10px;padding:3px 6px;">Waist</button>
+          <button onclick="quickSection('hip')" style="font-size:10px;padding:3px 6px;">Hip</button>
+          <button onclick="quickSection('thigh')" style="font-size:10px;padding:3px 6px;">Thigh</button>
+        </div>
+      </div>
+
+      <!-- V13: Scan Analysis -->
+      <div id="analysis-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+        <h3 style="margin:0 0 6px;font-size:13px;">Scan Analysis</h3>
+        <canvas id="radar-canvas" width="160" height="160" style="display:none;margin:0 auto 8px;"></canvas>
+        <div id="analysis-content" style="font-size:11px;line-height:1.8;"></div>
       </div>
 
       <div class="controls">
         <button onclick="resetCamera()">Reset Camera</button>
         <button id="btn-measure" onclick="toggleMeasure()">Measure</button>
         <button onclick="takeScreenshot()">Screenshot</button>
+        <button onclick="copyStats()">Copy Stats</button>
         <button onclick="clearMeasurements()">Clear Pins</button>
       </div>
 
       <div style="font-size:9px;color:#555;margin-top:6px;">
         Keys: 1-4 views · 5 walk · 6 room · 7 mirror · 8 props<br>
-        9 stats · 0 spin · F full · L labels · M measure · R reset
+        9 stats · 0 spin · F full · L labels · C rings · M measure<br>
+        G growth · X slices · P profile · Q axis
       </div>
 
       <div class="stats">
@@ -129,6 +176,19 @@
     <div class="heatmap-gradient"></div>
     <div class="heatmap-labels">
       <span>Low</span><span>Mid</span><span>High</span>
+    </div>
+  </div>
+
+  <!-- Profile silhouette panel (shown when profile mode on) -->
+  <canvas id="profile-canvas" width="150" height="300"
+          style="position:fixed;top:20px;right:20px;z-index:10;display:none;border-radius:8px;border:1px solid rgba(74,158,255,0.5);"></canvas>
+
+  <!-- Growth legend (shown only in growth mode) -->
+  <div id="growth-legend" style="position:absolute;bottom:20px;right:20px;z-index:10;background:rgba(22,33,62,0.9);padding:12px 16px;border-radius:8px;border:1px solid #4a9eff;display:none;min-width:200px;">
+    <h3 style="margin:0 0 8px;font-size:0.8rem;color:#4a9eff;letter-spacing:0.05em;">BODY CHANGES</h3>
+    <div style="width:100%;height:14px;border-radius:4px;background:linear-gradient(to right, #3b82f6, #d4d4d4, #ef4444);margin:6px 0 4px;"></div>
+    <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:#94a3b8;">
+      <span>Shrink</span><span>Neutral</span><span>Grow</span>
     </div>
   </div>
 

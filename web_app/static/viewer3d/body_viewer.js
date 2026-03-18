@@ -74,6 +74,24 @@ let _ghostMesh   = null;
 let _autoRotate  = false;
 let _gridHelper  = null;
 let _camTransition = null;
+let _timelineTimer = null;
+
+// ── V12 globals ──────────────────────────────────────────────────────────────
+let _ringGroup      = null;
+let _ghostRingGroup = null;
+let _ringsVisible   = false;
+let _ringLabels     = [];  // DOM elements for ring labels
+
+// ── V14 globals ──────────────────────────────────────────────────────────────
+let _growthMode  = false;
+let _sliceMode   = false;
+let _sliceGroup  = null;
+
+// ── V15 globals ──────────────────────────────────────────────────────────────
+let _axisGroup      = null;
+let _axisVisible    = false;
+let _profileVisible = false;
+let _ghostRich      = {};
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 let _viewerToken = null;
@@ -236,7 +254,12 @@ function init() {
       case '0': window.toggleAutoRotate();       break;
       case 'f': case 'F': window.toggleFullscreen(); break;
       case 'l': case 'L': window.toggleLabels();  break;
-      case 'm': case 'M': window.toggleMeasure(); break;
+      case 'c': case 'C': window.toggleRings();     break;
+      case 'g': case 'G': window.toggleGrowthMap();    break;
+      case 'x': case 'X': window.toggleSliceView();    break;
+      case 'p': case 'P': window.toggleProfile();      break;
+      case 'q': case 'Q': window.togglePostureAxis();  break;
+      case 'm': case 'M': window.toggleMeasure();   break;
       case 'r': case 'R': window.resetCamera();   break;
       case 's': case 'S':
         if (_walkMode) _moveState.backward = true;
@@ -393,11 +416,6 @@ function _loadGLB(url, onLoaded) {
   _setStatus('Loading model…');
   const loader = new GLTFLoader();
 
-  // Draco compression support
-  const draco = new DRACOLoader();
-  draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
-  loader.setDRACOLoader(draco);
-
   loader.load(url,
     (gltf) => {
       bodyMesh = gltf.scene;
@@ -407,6 +425,10 @@ function _loadGLB(url, onLoaded) {
       _updateStats(bodyMesh);
       _setStatus('');
       _createRegionLabels();
+      _computeAnalysis();
+      if (_ringsVisible) _buildRings();
+      _resetVisModes();
+      _ghostRich = {};
       _hideProgress();
       if (onLoaded) onLoaded();
     },
@@ -995,17 +1017,48 @@ window.resetCamera = function() {
 };
 
 window.takeScreenshot = function() {
-  // Render at 2× resolution for sharper export
+  const scale = 2;
   const w = renderer.domElement.width;
   const h = renderer.domElement.height;
-  renderer.setSize(w * 2, h * 2, false);
+
+  // Render at high resolution
+  renderer.setSize(w * scale, h * scale, false);
   renderer.render(scene, camera);
-  const dataUrl = renderer.domElement.toDataURL('image/png');
+
+  // Capture to offscreen canvas
+  const canvas = document.createElement('canvas');
+  canvas.width = w * scale;
+  canvas.height = h * scale;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(renderer.domElement, 0, 0);
+
+  // Restore renderer immediately
   renderer.setSize(w, h, false);
   renderer.render(scene, camera);
+
+  // Draw watermark bar at bottom
+  const barH = 44 * scale;
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, canvas.height - barH, canvas.width, barH);
+  ctx.fillStyle = '#e0e0e0';
+  ctx.font = `bold ${14 * scale}px sans-serif`;
+  const date = new Date().toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'});
+  ctx.fillText('GTD3D \u2014 ' + date, 12 * scale, canvas.height - barH + 20 * scale);
+  if (_bodyProfile) {
+    ctx.font = `${11 * scale}px sans-serif`;
+    ctx.fillStyle = '#94a3b8';
+    const parts = [];
+    if (_bodyProfile.height_cm) parts.push('H:' + _bodyProfile.height_cm + 'cm');
+    if (_bodyProfile.weight_kg) parts.push('W:' + _bodyProfile.weight_kg + 'kg');
+    if (_bodyProfile.chest_circumference_cm) parts.push('Ch:' + _bodyProfile.chest_circumference_cm + 'cm');
+    if (_bodyProfile.waist_circumference_cm) parts.push('Wa:' + _bodyProfile.waist_circumference_cm + 'cm');
+    if (parts.length) ctx.fillText(parts.join('  \u00b7  '), 12 * scale, canvas.height - barH + 36 * scale);
+  }
+
+  // Download
   const link = document.createElement('a');
-  link.download = `muscle_tracker_3d_${Date.now()}.png`;
-  link.href = dataUrl;
+  link.download = `gtd3d_${Date.now()}.png`;
+  link.href = canvas.toDataURL('image/png');
   link.click();
 };
 
@@ -1068,9 +1121,6 @@ window.switchMesh = function(idx) {
   _originalMaterials.clear();
   _setStatus('Loading scan #' + m.id + '…');
   const loader = new GLTFLoader();
-  const draco = new DRACOLoader();
-  draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
-  loader.setDRACOLoader(draco);
   loader.load(`/web_app/api/mesh/${m.id}.glb`, (gltf) => {
     bodyMesh = gltf.scene;
     _applyDefaultMaterial(bodyMesh);
@@ -1079,9 +1129,31 @@ window.switchMesh = function(idx) {
     _updateStats(bodyMesh);
     _setStatus('Scan #' + m.id + ' — ' + m.created_on);
     _createRegionLabels();
+    _computeAnalysis();
+    if (_ringsVisible) _buildRings();
+    _resetVisModes();
   });
   const dateEl = document.getElementById('timeline-date');
   if (dateEl) dateEl.textContent = m.created_on;
+};
+
+window.toggleTimelinePlay = function() {
+  const slider = document.getElementById('timeline-slider');
+  const btn = document.getElementById('btn-play');
+  if (!slider || _meshList.length < 2) return;
+  if (_timelineTimer) {
+    clearInterval(_timelineTimer);
+    _timelineTimer = null;
+    if (btn) btn.textContent = 'Play';
+    return;
+  }
+  if (btn) btn.textContent = 'Stop';
+  _timelineTimer = setInterval(() => {
+    let idx = parseInt(slider.value) + 1;
+    if (idx >= _meshList.length) idx = 0;
+    slider.value = idx;
+    window.switchMesh(idx);
+  }, 2500);
 };
 
 window.loadGhost = function() {
@@ -1091,9 +1163,6 @@ window.loadGhost = function() {
   if (_ghostMesh) { scene.remove(_ghostMesh); _ghostMesh = null; }
   _setStatus('Loading ghost…');
   const loader = new GLTFLoader();
-  const draco = new DRACOLoader();
-  draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
-  loader.setDRACOLoader(draco);
   loader.load(`/web_app/api/mesh/${meshId}.glb`, (gltf) => {
     _ghostMesh = gltf.scene;
     _ghostMesh.traverse(c => {
@@ -1108,12 +1177,30 @@ window.loadGhost = function() {
     _centerOnly(_ghostMesh);
     scene.add(_ghostMesh);
     _setStatus('Ghost: scan #' + meshId);
+    _computeAnalysis();
+    if (_ringsVisible) _buildGhostRings();
+    if (_growthMode) _applyGrowthColors();
+    if (_sliceMode) _buildSliceView();
+    if (_axisVisible) _buildPostureAxis();
+    _refreshProfile();
   });
 };
 
 window.clearGhost = function() {
   if (_ghostMesh) { scene.remove(_ghostMesh); _ghostMesh = null; }
+  if (_ghostRingGroup) { scene.remove(_ghostRingGroup); _ghostRingGroup = null; }
   _setStatus('');
+  _computeAnalysis();
+  if (_ringsVisible) _buildRings();
+  if (_growthMode) {
+    _growthMode = false; _removeGrowthColors();
+    const gl = document.getElementById('growth-legend'); if (gl) gl.style.display = 'none';
+    document.getElementById('btn-growth')?.classList.remove('active');
+  }
+  if (_sliceMode) _buildSliceView();  // rebuild without ghost outlines
+  if (_axisVisible) _buildPostureAxis();
+  _ghostRich = {};
+  _refreshProfile();
 };
 
 let _statsVisible = false;
@@ -1158,11 +1245,64 @@ window.toggleBodyStats = function() {
   document.getElementById('btn-stats')?.classList.toggle('active', _statsVisible);
 };
 
+window.copyStats = function() {
+  if (!_bodyProfile) { _setStatus('No body profile loaded'); return; }
+  const p = _bodyProfile;
+  const lines = [
+    'GTD3D Body Measurements \u2014 ' + new Date().toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'}),
+    '',
+    p.height_cm ? 'Height: ' + p.height_cm + ' cm' : null,
+    p.weight_kg ? 'Weight: ' + p.weight_kg + ' kg' : null,
+    p.chest_circumference_cm ? 'Chest: ' + p.chest_circumference_cm + ' cm' : null,
+    p.waist_circumference_cm ? 'Waist: ' + p.waist_circumference_cm + ' cm' : null,
+    p.hip_circumference_cm ? 'Hip: ' + p.hip_circumference_cm + ' cm' : null,
+    p.thigh_circumference_cm ? 'Thigh: ' + p.thigh_circumference_cm + ' cm' : null,
+    p.bicep_circumference_cm ? 'Bicep: ' + p.bicep_circumference_cm + ' cm' : null,
+    p.calf_circumference_cm ? 'Calf: ' + p.calf_circumference_cm + ' cm' : null,
+    p.neck_circumference_cm ? 'Neck: ' + p.neck_circumference_cm + ' cm' : null,
+    p.shoulder_width_cm ? 'Shoulder: ' + p.shoulder_width_cm + ' cm' : null,
+  ].filter(Boolean).join('\n');
+  const ta = document.createElement('textarea');
+  ta.value = lines;
+  ta.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  ta.remove();
+  _setStatus('Measurements copied!');
+  setTimeout(() => _setStatus(''), 2000);
+};
+
 window.toggleAutoRotate = function() {
   _autoRotate = !_autoRotate;
   controls.autoRotate = _autoRotate;
   controls.autoRotateSpeed = 2.0;
   document.getElementById('btn-spin')?.classList.toggle('active', _autoRotate);
+};
+
+window.setCameraPreset = function(preset) {
+  if (!bodyMesh) return;
+  const box = new THREE.Box3().setFromObject(bodyMesh);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const fov = camera.fov * (Math.PI / 180);
+  const dist = maxDim / (2 * Math.tan(fov / 2)) * 1.6;
+  const midY = size.y * 0.45;
+  let endPos, endTarget = new THREE.Vector3(0, midY, 0);
+  switch (preset) {
+    case 'front': endPos = new THREE.Vector3(0, midY, dist);      break;
+    case 'back':  endPos = new THREE.Vector3(0, midY, -dist);     break;
+    case 'left':  endPos = new THREE.Vector3(-dist, midY, 0);     break;
+    case 'right': endPos = new THREE.Vector3(dist, midY, 0);      break;
+    case 'top':   endPos = new THREE.Vector3(0, dist, 0.01);
+                  endTarget = new THREE.Vector3(0, 0, 0);         break;
+    default: return;
+  }
+  _camTransition = {
+    startPos: camera.position.clone(), startTarget: controls.target.clone(),
+    endPos, endTarget, startTime: performance.now(), duration: 600,
+  };
 };
 
 window.toggleFullscreen = function() {
@@ -1255,6 +1395,40 @@ function _showMeasureLabel(p1, p2, distMm) {
   updatePos();
 }
 
+// ── V11: Mesh cross-section helper ───────────────────────────────────────────
+function _meshCrossSection(mesh, heightRatio) {
+  if (!mesh) return null;
+  const box = new THREE.Box3().setFromObject(mesh);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const sliceY = box.min.y + size.y * heightRatio;
+  const sceneToMm = size.y > 0 ? 1680 / size.y : 1;
+  const pts = [];
+  mesh.traverse(child => {
+    if (!child.isMesh || !child.geometry) return;
+    const pos = child.geometry.attributes.position;
+    const idx = child.geometry.index;
+    const mat = child.matrixWorld;
+    const getV = (i) => new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mat);
+    const triCount = idx ? idx.count / 3 : pos.count / 3;
+    for (let t = 0; t < triCount; t++) {
+      const i0 = idx ? idx.getX(t * 3) : t * 3;
+      const i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+      const i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+      const v0 = getV(i0), v1 = getV(i1), v2 = getV(i2);
+      for (const [a, b] of [[v0,v1],[v1,v2],[v2,v0]]) {
+        if ((a.y - sliceY) * (b.y - sliceY) < 0) {
+          const f = (sliceY - a.y) / (b.y - a.y);
+          pts.push(new THREE.Vector3(a.x + f*(b.x-a.x), sliceY, a.z + f*(b.z-a.z)));
+        }
+      }
+    }
+  });
+  let perim = 0;
+  for (let i = 0; i + 1 < pts.length; i += 2) perim += pts[i].distanceTo(pts[i+1]);
+  return { circumferenceCm: (perim * sceneToMm) / 10, points: pts, sceneToMm };
+}
+
 // ── Cross-section ─────────────────────────────────────────────────────────────
 function _updateCrossSection(ratio) {
   if (!bodyMesh) return;
@@ -1324,6 +1498,834 @@ function _updateCrossSection(ratio) {
     }
   }
 }
+
+window.quickSection = function(region) {
+  const HEIGHTS = { chest: 64, waist: 54, hip: 45, thigh: 34 };
+  const pct = HEIGHTS[region];
+  if (pct == null) return;
+  const slider = document.getElementById('section-height');
+  if (slider) {
+    slider.value = pct;
+    document.getElementById('section-height-val').textContent = pct;
+  }
+  _updateCrossSection(pct / 100);
+};
+
+// ── V12: Sorted cross-section for ring rendering ────────────────────────────
+function _sortedCrossSection(mesh, heightRatio) {
+  const data = _meshCrossSection(mesh, heightRatio);
+  if (!data || data.points.length < 4) return null;
+  // Compute centroid
+  const cx = data.points.reduce((s, p) => s + p.x, 0) / data.points.length;
+  const cz = data.points.reduce((s, p) => s + p.z, 0) / data.points.length;
+  // Sort by angle around centroid
+  data.points.sort((a, b) => Math.atan2(a.z - cz, a.x - cx) - Math.atan2(b.z - cz, b.x - cx));
+  // Close the loop
+  data.points.push(data.points[0].clone());
+  data.centroidX = cx;
+  data.centroidZ = cz;
+  return data;
+}
+
+// ── V13: Rich cross-section (width, depth, area, roundness) ─────────────────
+function _richCrossSection(mesh, heightRatio) {
+  const data = _sortedCrossSection(mesh, heightRatio);
+  if (!data) return null;
+  const sm = data.sceneToMm || 1;            // scene units → mm
+  const pts = data.points;
+  const xs  = pts.map(p => p.x);
+  const zs  = pts.map(p => p.z);
+  const widthCm  = (Math.max(...xs) - Math.min(...xs)) * sm / 10;
+  const depthCm  = (Math.max(...zs) - Math.min(...zs)) * sm / 10;
+  // Shoelace area (scene units²) → cm²
+  let area = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    area += pts[i].x * pts[i + 1].z - pts[i + 1].x * pts[i].z;
+  }
+  const areaCm2 = Math.abs(area) * 0.5 * (sm / 10) ** 2;
+  // ISO circularity / roundness: 1.0 = perfect circle, lower = flatter
+  const circ      = data.circumferenceCm;
+  const roundness = circ > 0 ? (4 * Math.PI * areaCm2) / (circ * circ) : 0;
+  return { ...data, widthCm, depthCm, areaCm2, roundness };
+}
+
+// ── V14: Growth slice computation ───────────────────────────────────────────
+function _computeGrowthSlices(currMesh, ghostMesh, numSlices) {
+  const slices = [];
+  for (let i = 0; i < numSlices; i++) {
+    const ratio = 0.10 + (i / (numSlices - 1)) * 0.75;
+    const curr = _meshCrossSection(currMesh, ratio);
+    const prev = ghostMesh ? _meshCrossSection(ghostMesh, ratio) : null;
+    slices.push({
+      ratio,
+      currCirc: curr ? curr.circumferenceCm : 0,
+      prevCirc: prev ? prev.circumferenceCm : 0,
+      delta: curr && prev ? curr.circumferenceCm - prev.circumferenceCm : 0,
+    });
+  }
+  return slices;
+}
+
+// ── V15: Fast mesh helpers ────────────────────────────────────────────────────
+function _computeProfileFast(mesh, numBuckets) {
+  if (!mesh) return null;
+  const box = new THREE.Box3().setFromObject(mesh);
+  const minY = box.min.y, rangeY = box.max.y - box.min.y;
+  if (rangeY < 1) return null;
+  const buckets = Array.from({ length: numBuckets }, () =>
+    ({ minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity }));
+  const v = new THREE.Vector3();
+  mesh.traverse(child => {
+    if (!child.isMesh || !child.geometry) return;
+    const pos = child.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(child.matrixWorld);
+      const bin = Math.min(numBuckets - 1, Math.floor((v.y - minY) / rangeY * numBuckets));
+      if (bin >= 0) {
+        buckets[bin].minX = Math.min(buckets[bin].minX, v.x);
+        buckets[bin].maxX = Math.max(buckets[bin].maxX, v.x);
+        buckets[bin].minZ = Math.min(buckets[bin].minZ, v.z);
+        buckets[bin].maxZ = Math.max(buckets[bin].maxZ, v.z);
+      }
+    }
+  });
+  // Fill empty buckets by borrowing from neighbors
+  for (let i = 1; i < numBuckets; i++) {
+    if (!isFinite(buckets[i].maxX)) buckets[i] = { ...buckets[i - 1] };
+  }
+  return { buckets, box };
+}
+
+function _computeCentroidAxis(mesh, numLevels) {
+  if (!mesh) return null;
+  const box = new THREE.Box3().setFromObject(mesh);
+  const minY = box.min.y, rangeY = box.max.y - box.min.y;
+  if (rangeY < 1) return null;
+  const bins = Array.from({ length: numLevels }, () => ({ sumX: 0, sumZ: 0, count: 0 }));
+  const v = new THREE.Vector3();
+  mesh.traverse(child => {
+    if (!child.isMesh || !child.geometry) return;
+    const pos = child.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(child.matrixWorld);
+      const bin = Math.min(numLevels - 1, Math.floor((v.y - minY) / rangeY * numLevels));
+      if (bin >= 0) { bins[bin].sumX += v.x; bins[bin].sumZ += v.z; bins[bin].count++; }
+    }
+  });
+  const sceneToMm = rangeY > 0 ? 1680 / rangeY : 1;
+  return bins.map((b, i) => ({
+    y: minY + (i + 0.5) * rangeY / numLevels,
+    cx: b.count > 0 ? b.sumX / b.count : 0,
+    cz: b.count > 0 ? b.sumZ / b.count : 0,
+    devMm: b.count > 0 ? Math.sqrt((b.sumX / b.count) ** 2 + (b.sumZ / b.count) ** 2) * sceneToMm : 0,
+  }));
+}
+
+// ── V11: Scan Analysis ───────────────────────────────────────────────────────
+const _ANALYSIS_LANDMARKS = { Shoulder: 0.76, Chest: 0.64, Waist: 0.54, Hip: 0.45, Thigh: 0.34 };
+
+function _computeAnalysis() {
+  if (!bodyMesh) return;
+  const el = document.getElementById('analysis-content');
+  if (!el) return;
+  let html = '';
+  const curr      = {};
+  const currRich  = {};
+  const ghostCurr = {};
+  _ghostRich      = {};
+
+  // Mesh-derived circumferences
+  html += '<div style="color:#4a9eff;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">From 3D Mesh</div>';
+  for (const [name, ratio] of Object.entries(_ANALYSIS_LANDMARKS)) {
+    const data = _richCrossSection(bodyMesh, ratio);
+    curr[name]     = data ? data.circumferenceCm : null;
+    currRich[name] = data;
+    html += `<div style="display:flex;justify-content:space-between;"><span style="color:#94a3b8;">${name}</span><strong>${curr[name] ? curr[name].toFixed(1) : '\u2014'}</strong><span style="color:#666;">cm</span></div>`;
+  }
+
+  // Ghost comparison deltas
+  if (_ghostMesh) {
+    html += '<div style="margin-top:6px;color:#44ff88;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">vs Previous Scan</div>';
+    for (const [name, ratio] of Object.entries(_ANALYSIS_LANDMARKS)) {
+      const prev = _richCrossSection(_ghostMesh, ratio);
+      const prevCm = prev ? prev.circumferenceCm : null;
+      ghostCurr[name] = prevCm;
+      _ghostRich[name] = prev;
+      if (prevCm && curr[name]) {
+        const delta = curr[name] - prevCm;
+        const color = delta > 0.5 ? '#22c55e' : delta < -0.5 ? '#ef4444' : '#94a3b8';
+        const sign = delta > 0 ? '+' : '';
+        html += `<div style="display:flex;justify-content:space-between;"><span style="color:#94a3b8;">${name}</span><span style="color:${color};font-weight:bold;">${sign}${delta.toFixed(1)}cm</span></div>`;
+      }
+    }
+  }
+
+  // Extensible sections
+  html += _computeWidthDepthHtml(currRich);
+  html += _computeVolumeZonesHtml(currRich, Object.keys(ghostCurr).length > 0 ? _ghostRich : null);
+  html += _computeSymmetryHtml();
+  html += _computeRatiosHtml(curr);
+
+  el.innerHTML = html;
+  _redrawRadar(curr, Object.keys(ghostCurr).length > 0 ? ghostCurr : null);
+}
+
+function _computeSymmetryHtml() {
+  if (!bodyMesh) return '';
+  let html = '<div style="margin-top:6px;color:#4a9eff;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Symmetry L/R</div>';
+  for (const [name, ratio] of Object.entries(_ANALYSIS_LANDMARKS)) {
+    const data = _meshCrossSection(bodyMesh, ratio);
+    if (!data || data.points.length < 4) continue;
+    let leftMax = 0, rightMax = 0;
+    for (const pt of data.points) {
+      if (pt.x < 0) leftMax = Math.max(leftMax, -pt.x);
+      else rightMax = Math.max(rightMax, pt.x);
+    }
+    const wider = Math.max(leftMax, rightMax);
+    const pct = wider > 0 ? (1 - Math.abs(leftMax - rightMax) / wider) * 100 : 100;
+    const color = pct >= 95 ? '#22c55e' : pct >= 90 ? '#f59e0b' : '#ef4444';
+    html += `<div style="display:flex;justify-content:space-between;"><span style="color:#94a3b8;">${name}</span><span style="color:${color};font-weight:bold;">${pct.toFixed(0)}%</span></div>`;
+  }
+  return html;
+}
+function _computeBarChartHtml(measurements) {
+  if (!measurements) return '';
+  const entries = Object.entries(measurements).filter(([_, v]) => v != null);
+  if (entries.length === 0) return '';
+  const maxVal = Math.max(...entries.map(([_, v]) => v));
+  let html = '<div style="margin-top:6px;">';
+  for (const [name, val] of entries) {
+    const pct = maxVal > 0 ? (val / maxVal) * 100 : 0;
+    html += `<div style="display:flex;align-items:center;margin-bottom:3px;">`;
+    html += `<span style="color:#94a3b8;width:55px;font-size:9px;flex-shrink:0;">${name}</span>`;
+    html += `<div style="flex:1;height:8px;background:rgba(74,158,255,0.1);border-radius:4px;overflow:hidden;">`;
+    html += `<div style="width:${pct.toFixed(0)}%;height:100%;background:#4a9eff;border-radius:4px;"></div>`;
+    html += `</div>`;
+    html += `<span style="color:#4a9eff;width:42px;text-align:right;font-size:9px;flex-shrink:0;">${val.toFixed(1)}</span>`;
+    html += `</div>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+function _computeVolumeZonesHtml(richMap, ghostRichMap) {
+  if (!richMap || !richMap.Shoulder) return '';
+  const H_CM = 168;  // body height in cm
+  // Define zones: [name, bottom_ratio, top_ratio, area_landmarks...]
+  const zones = [
+    { name: 'Legs',    h: 0.34, area: richMap.Thigh?.areaCm2 || 0 },
+    { name: 'Thighs',  h: 0.11, area: ((richMap.Thigh?.areaCm2||0) + (richMap.Hip?.areaCm2||0)) / 2 },
+    { name: 'Pelvis',  h: 0.09, area: ((richMap.Hip?.areaCm2||0) + (richMap.Waist?.areaCm2||0)) / 2 },
+    { name: 'Torso',   h: 0.10, area: ((richMap.Waist?.areaCm2||0) + (richMap.Chest?.areaCm2||0)) / 2 },
+    { name: 'Chest',   h: 0.12, area: ((richMap.Chest?.areaCm2||0) + (richMap.Shoulder?.areaCm2||0)) / 2 },
+    { name: 'Upper',   h: 0.24, area: richMap.Shoulder?.areaCm2 || 0 },
+  ];
+  zones.forEach(z => { z.vol = z.area * z.h * H_CM; });
+  const totalVol = zones.reduce((s, z) => s + z.vol, 0);
+  if (totalVol < 1) return '';
+
+  // Ghost volumes
+  if (ghostRichMap && ghostRichMap.Shoulder) {
+    const gz = [
+      { area: ghostRichMap.Thigh?.areaCm2 || 0 },
+      { area: ((ghostRichMap.Thigh?.areaCm2||0) + (ghostRichMap.Hip?.areaCm2||0)) / 2 },
+      { area: ((ghostRichMap.Hip?.areaCm2||0) + (ghostRichMap.Waist?.areaCm2||0)) / 2 },
+      { area: ((ghostRichMap.Waist?.areaCm2||0) + (ghostRichMap.Chest?.areaCm2||0)) / 2 },
+      { area: ((ghostRichMap.Chest?.areaCm2||0) + (ghostRichMap.Shoulder?.areaCm2||0)) / 2 },
+      { area: ghostRichMap.Shoulder?.areaCm2 || 0 },
+    ];
+    zones.forEach((z, i) => { z.ghostVol = gz[i].area * z.h * H_CM; });
+  }
+
+  let html = '<div style="margin-top:6px;color:#4a9eff;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Volume Zones</div>';
+  for (const z of zones) {
+    const pct = (z.vol / totalVol * 100).toFixed(0);
+    let delta = '';
+    if (z.ghostVol != null) {
+      const d = z.vol - z.ghostVol;
+      const c = d > 50 ? '#22c55e' : d < -50 ? '#ef4444' : '#94a3b8';
+      delta = ` <span style="color:${c};font-size:9px;">${d > 0 ? '+' : ''}${(d / 1000).toFixed(2)}L</span>`;
+    }
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;">`;
+    html += `<span style="color:#94a3b8;">${z.name}</span>`;
+    html += `<span style="color:#e0e0e0;font-size:10px;">${pct}%${delta}</span>`;
+    html += `</div>`;
+  }
+  return html;
+}
+
+function _computeRatiosHtml(measurements) {
+  if (!measurements || !measurements.Waist) return '';
+  let html = '<div style="margin-top:6px;color:#4a9eff;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Body Ratios</div>';
+  if (measurements.Shoulder && measurements.Waist) {
+    const r = measurements.Shoulder / measurements.Waist;
+    const color = r >= 1.30 ? '#22c55e' : r >= 1.15 ? '#f59e0b' : '#94a3b8';
+    html += `<div style="display:flex;justify-content:space-between;"><span style="color:#94a3b8;">Shoulder/Waist</span><span style="color:${color};font-weight:bold;">${r.toFixed(2)}</span></div>`;
+  }
+  if (measurements.Waist && measurements.Hip) {
+    const r = measurements.Waist / measurements.Hip;
+    const color = r <= 0.90 ? '#22c55e' : r <= 1.0 ? '#f59e0b' : '#ef4444';
+    html += `<div style="display:flex;justify-content:space-between;"><span style="color:#94a3b8;">Waist/Hip</span><span style="color:${color};font-weight:bold;">${r.toFixed(2)}</span></div>`;
+  }
+  return html;
+}
+
+// ── V13: Radar chart ────────────────────────────────────────────────────────
+function _drawRadarChart(canvas, curr, ghost) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = W / 2, cy = H / 2, R = W * 0.34;
+  ctx.clearRect(0, 0, W, H);
+
+  const names  = Object.keys(_ANALYSIS_LANDMARKS);
+  const N      = names.length;
+  const angles = names.map((_, i) => (i * 2 * Math.PI / N) - Math.PI / 2);
+  const vals   = names.map(k => curr[k] || 0);
+  const maxVal = Math.max(...vals, 1);
+
+  // Grid circles
+  ctx.lineWidth = 0.5;
+  for (let g = 1; g <= 3; g++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * g / 3, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(74,158,255,0.15)';
+    ctx.stroke();
+  }
+  // Axes
+  for (let i = 0; i < N; i++) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + R * Math.cos(angles[i]), cy + R * Math.sin(angles[i]));
+    ctx.strokeStyle = 'rgba(74,158,255,0.25)';
+    ctx.stroke();
+  }
+
+  // Ghost polygon
+  if (ghost) {
+    ctx.beginPath();
+    for (let i = 0; i < N; i++) {
+      const r = R * (ghost[names[i]] || 0) / maxVal;
+      const x = cx + r * Math.cos(angles[i]);
+      const y = cy + r * Math.sin(angles[i]);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle   = 'rgba(68,255,136,0.10)';
+    ctx.fill();
+    ctx.strokeStyle = '#44ff88';
+    ctx.lineWidth   = 1;
+    ctx.stroke();
+  }
+
+  // Current polygon
+  ctx.beginPath();
+  for (let i = 0; i < N; i++) {
+    const r = R * vals[i] / maxVal;
+    const x = cx + r * Math.cos(angles[i]);
+    const y = cy + r * Math.sin(angles[i]);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle   = 'rgba(74,158,255,0.18)';
+  ctx.fill();
+  ctx.strokeStyle = '#4a9eff';
+  ctx.lineWidth   = 1.5;
+  ctx.stroke();
+
+  // Labels: axis name + value
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < N; i++) {
+    const lx = cx + (R + 22) * Math.cos(angles[i]);
+    const ly = cy + (R + 22) * Math.sin(angles[i]);
+    ctx.font      = '9px sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(names[i], lx, ly - 5);
+    ctx.font      = 'bold 9px sans-serif';
+    ctx.fillStyle = '#4a9eff';
+    ctx.fillText((vals[i] > 0 ? vals[i].toFixed(0) : '\u2014') + 'cm', lx, ly + 5);
+  }
+}
+
+function _redrawRadar(curr, ghost) {
+  const canvas = document.getElementById('radar-canvas');
+  if (!canvas) return;
+  const hasData = Object.values(curr).some(v => v != null);
+  if (!hasData) { canvas.style.display = 'none'; return; }
+  canvas.style.display = 'block';
+  _drawRadarChart(canvas, curr, ghost);
+}
+
+function _computeWidthDepthHtml(richMap) {
+  if (!richMap) return '';
+  let html = '<div style="margin-top:6px;color:#4a9eff;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Width \u00d7 Depth</div>';
+  for (const [name, data] of Object.entries(richMap)) {
+    if (!data) continue;
+    const w = data.widthCm.toFixed(1);
+    const d = data.depthCm.toFixed(1);
+    const r = data.depthCm > 0 ? (data.widthCm / data.depthCm).toFixed(2) : '\u2014';
+    html += `<div style="display:flex;justify-content:space-between;align-items:baseline;">`;
+    html += `<span style="color:#94a3b8;">${name}</span>`;
+    html += `<span style="color:#e0e0e0;font-size:10px;">${w}\u00d7${d}<span style="color:#555;font-size:9px;"> (${r})</span></span>`;
+    html += `</div>`;
+  }
+  return html;
+}
+
+// ── V14: Growth heatmap ─────────────────────────────────────────────────────
+function _growthToRGB(delta, maxDelta) {
+  const dz = 0.3;  // dead zone in cm (measurement noise)
+  const absD = Math.abs(delta);
+  if (absD < dz) return [0.83, 0.83, 0.83];
+  const t = Math.min(1, (absD - dz) / Math.max(maxDelta - dz, 0.1));
+  if (delta > 0) return [0.83 + 0.11 * t, 0.83 - 0.56 * t, 0.83 - 0.56 * t];
+  return [0.83 - 0.60 * t, 0.83 - 0.32 * t, 0.83 + 0.13 * t];
+}
+
+function _applyGrowthColors() {
+  if (!bodyMesh || !_ghostMesh) return;
+  const slices = _computeGrowthSlices(bodyMesh, _ghostMesh, 30);
+  const maxDelta = Math.max(...slices.map(s => Math.abs(s.delta)), 0.5);
+  const box = new THREE.Box3().setFromObject(bodyMesh);
+  const minY = box.min.y, rangeY = box.max.y - box.min.y;
+
+  bodyMesh.traverse(child => {
+    if (!child.isMesh || !child.geometry) return;
+    const pos = child.geometry.attributes.position;
+    const colors = new Float32Array(pos.count * 3);
+    const v = new THREE.Vector3();
+
+    for (let i = 0; i < pos.count; i++) {
+      v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(child.matrixWorld);
+      const hRatio = rangeY > 0 ? (v.y - minY) / rangeY : 0.5;
+
+      // Interpolate delta from nearest slices
+      let delta = 0;
+      if (hRatio <= slices[0].ratio) delta = slices[0].delta;
+      else if (hRatio >= slices[slices.length - 1].ratio) delta = slices[slices.length - 1].delta;
+      else {
+        for (let s = 0; s < slices.length - 1; s++) {
+          if (hRatio <= slices[s + 1].ratio) {
+            const f = (hRatio - slices[s].ratio) / (slices[s + 1].ratio - slices[s].ratio);
+            delta = slices[s].delta + f * (slices[s + 1].delta - slices[s].delta);
+            break;
+          }
+        }
+      }
+
+      const rgb = _growthToRGB(delta, maxDelta);
+      colors[i * 3] = rgb[0]; colors[i * 3 + 1] = rgb[1]; colors[i * 3 + 2] = rgb[2];
+    }
+
+    child.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    if (!child._preGrowthMat) child._preGrowthMat = child.material;
+    child.material = new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.6, metalness: 0.1
+    });
+  });
+}
+
+function _removeGrowthColors() {
+  if (!bodyMesh) return;
+  bodyMesh.traverse(child => {
+    if (child.isMesh && child._preGrowthMat) {
+      child.material = child._preGrowthMat;
+      delete child._preGrowthMat;
+      if (child.geometry.attributes.color) child.geometry.deleteAttribute('color');
+      // Maintain slice transparency if active
+      if (_sliceMode) {
+        child.material.transparent = true;
+        child.material.opacity = 0.15;
+        child.material.needsUpdate = true;
+      }
+    }
+  });
+}
+
+window.toggleGrowthMap = function() {
+  if (!_ghostMesh) return;
+  _growthMode = !_growthMode;
+  if (_growthMode) {
+    _applyGrowthColors();
+    const legend = document.getElementById('growth-legend');
+    if (legend) legend.style.display = 'block';
+  } else {
+    _removeGrowthColors();
+    const legend = document.getElementById('growth-legend');
+    if (legend) legend.style.display = 'none';
+  }
+  const btn = document.getElementById('btn-growth');
+  if (btn) btn.classList.toggle('active', _growthMode);
+};
+
+// ── V14: Slice explorer ─────────────────────────────────────────────────────
+function _buildSliceView() {
+  if (_sliceGroup) scene.remove(_sliceGroup);
+  _sliceGroup = new THREE.Group();
+  if (!bodyMesh) return;
+
+  const numSlices = 12;
+  const box = new THREE.Box3().setFromObject(bodyMesh);
+  const bodyH = box.max.y - box.min.y;
+
+  for (let i = 0; i < numSlices; i++) {
+    const ratio = 0.10 + i * (0.72 / (numSlices - 1));
+    const data = _sortedCrossSection(bodyMesh, ratio);
+    if (!data || data.points.length < 4) continue;
+
+    // Determine fill color based on growth delta (with ghost)
+    let fillColor = 0x4a9eff;
+    if (_ghostMesh) {
+      const gCirc = _meshCrossSection(_ghostMesh, ratio);
+      if (gCirc) {
+        const delta = data.circumferenceCm - gCirc.circumferenceCm;
+        if (delta > 0.5) fillColor = 0xef4444;
+        else if (delta < -0.5) fillColor = 0x3b82f6;
+        else fillColor = 0x999999;
+      }
+    }
+
+    // Build filled polygon from cross-section
+    const shape = new THREE.Shape();
+    shape.moveTo(data.points[0].x, data.points[0].z);
+    for (let j = 1; j < data.points.length; j++) {
+      shape.lineTo(data.points[j].x, data.points[j].z);
+    }
+
+    const origY = box.min.y + bodyH * ratio;
+    const spreadY = box.min.y + (origY - box.min.y) * 1.6;
+
+    const fill = new THREE.Mesh(
+      new THREE.ShapeGeometry(shape),
+      new THREE.MeshBasicMaterial({ color: fillColor, transparent: true, opacity: 0.25, side: THREE.DoubleSide })
+    );
+    fill.rotation.x = -Math.PI / 2;
+    fill.position.y = spreadY;
+    _sliceGroup.add(fill);
+
+    // Outline
+    const outPts = data.points.map(p => new THREE.Vector3(p.x, 0, p.z));
+    const outline = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(outPts),
+      new THREE.LineBasicMaterial({ color: 0x4a9eff })
+    );
+    outline.rotation.x = -Math.PI / 2;
+    outline.position.y = spreadY;
+    _sliceGroup.add(outline);
+
+    // Ghost outline if loaded
+    if (_ghostMesh) {
+      const gData = _sortedCrossSection(_ghostMesh, ratio);
+      if (gData && gData.points.length >= 4) {
+        const gPts = gData.points.map(p => new THREE.Vector3(p.x, 0, p.z));
+        const gOutline = new THREE.LineLoop(
+          new THREE.BufferGeometry().setFromPoints(gPts),
+          new THREE.LineBasicMaterial({ color: 0x44ff88, transparent: true, opacity: 0.6 })
+        );
+        gOutline.rotation.x = -Math.PI / 2;
+        gOutline.position.y = spreadY;
+        _sliceGroup.add(gOutline);
+      }
+    }
+  }
+
+  scene.add(_sliceGroup);
+}
+
+function _clearSliceView() {
+  if (_sliceGroup) { scene.remove(_sliceGroup); _sliceGroup = null; }
+}
+
+window.toggleSliceView = function() {
+  _sliceMode = !_sliceMode;
+  if (_sliceMode) {
+    _buildSliceView();
+    if (bodyMesh) bodyMesh.traverse(c => {
+      if (c.isMesh && c.material) {
+        c.material.transparent = true;
+        c.material.opacity = 0.15;
+        c.material.needsUpdate = true;
+      }
+    });
+  } else {
+    _clearSliceView();
+    if (bodyMesh) bodyMesh.traverse(c => {
+      if (c.isMesh && c.material) {
+        c.material.transparent = false;
+        c.material.opacity = 1.0;
+        c.material.needsUpdate = true;
+      }
+    });
+  }
+  const btn = document.getElementById('btn-slices');
+  if (btn) btn.classList.toggle('active', _sliceMode);
+};
+
+function _resetVisModes() {
+  if (_axisVisible) {
+    _axisVisible = false;
+    if (_axisGroup) { scene.remove(_axisGroup); _axisGroup = null; }
+    document.getElementById('btn-axis')?.classList.remove('active');
+  }
+  if (_profileVisible) {
+    _profileVisible = false;
+    const pc = document.getElementById('profile-canvas'); if (pc) pc.style.display = 'none';
+    document.getElementById('btn-profile')?.classList.remove('active');
+  }
+  if (_growthMode) {
+    _growthMode = false; _removeGrowthColors();
+    const gl = document.getElementById('growth-legend'); if (gl) gl.style.display = 'none';
+    const gb = document.getElementById('btn-growth'); if (gb) gb.classList.remove('active');
+  }
+  if (_sliceMode) {
+    _sliceMode = false; _clearSliceView();
+    const sb = document.getElementById('btn-slices'); if (sb) sb.classList.remove('active');
+    if (bodyMesh) bodyMesh.traverse(c => {
+      if (c.isMesh && c.material) { c.material.transparent = false; c.material.opacity = 1; c.material.needsUpdate = true; }
+    });
+  }
+}
+
+// ── V15: Silhouette profile panel ────────────────────────────────────────────
+function _drawSilhouetteProfile(canvas, currData, ghostData) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(22,33,62,0.92)';
+  ctx.fillRect(0, 0, W, H);
+
+  const N = currData.buckets.length;
+  const plotTop = 18, plotH = H - 24, labelW = 26;
+  const colW = (W - labelW - 4) / 2;
+  const frontCx = labelW + colW / 2;
+  const sideCx  = labelW + colW + 4 + colW / 2;
+
+  // Headers
+  ctx.font = 'bold 8px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#4a9eff';
+  ctx.fillText('FRONT', frontCx, 10);
+  ctx.fillText('SIDE', sideCx, 10);
+  ctx.strokeStyle = 'rgba(74,158,255,0.2)'; ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(labelW + colW + 2, 12); ctx.lineTo(labelW + colW + 2, H - 4); ctx.stroke();
+
+  // Find max extents for normalization
+  const maxHalfW = Math.max(...currData.buckets.map(b => Math.max(Math.abs(b.maxX), Math.abs(b.minX))), 1);
+  const maxHalfD = Math.max(...currData.buckets.map(b => Math.max(Math.abs(b.maxZ), Math.abs(b.minZ))), 1);
+
+  function drawOutline(data, cx, getRight, getLeft, isGhost) {
+    const buckets = data.buckets;
+    const N2 = buckets.length;
+    const scale = cx === frontCx ? colW * 0.46 / maxHalfW : colW * 0.46 / maxHalfD;
+    ctx.beginPath();
+    // Right edge top→bottom
+    for (let i = N2 - 1; i >= 0; i--) {
+      const y = plotTop + (1 - i / (N2 - 1)) * plotH;
+      ctx.lineTo(cx + getRight(buckets[i]) * scale, y);
+    }
+    // Left edge bottom→top
+    for (let i = 0; i < N2; i++) {
+      const y = plotTop + (1 - i / (N2 - 1)) * plotH;
+      ctx.lineTo(cx + getLeft(buckets[i]) * scale, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = isGhost ? 'rgba(68,255,136,0.08)' : 'rgba(74,158,255,0.12)';
+    ctx.fill();
+    ctx.strokeStyle = isGhost ? 'rgba(68,255,136,0.7)' : '#4a9eff';
+    ctx.lineWidth = isGhost ? 0.8 : 1.2;
+    ctx.stroke();
+  }
+
+  if (ghostData) {
+    drawOutline(ghostData, frontCx, b => b.maxX, b => b.minX, true);
+    drawOutline(ghostData, sideCx, b => b.maxZ, b => b.minZ, true);
+  }
+  drawOutline(currData, frontCx, b => b.maxX, b => b.minX, false);
+  drawOutline(currData, sideCx, b => b.maxZ, b => b.minZ, false);
+
+  // Landmark height markers
+  const NAMES = Object.keys(_ANALYSIS_LANDMARKS);
+  const RATIOS = Object.values(_ANALYSIS_LANDMARKS);
+  ctx.font = '7px sans-serif'; ctx.textAlign = 'right'; ctx.lineWidth = 0.4;
+  for (let li = 0; li < NAMES.length; li++) {
+    const y = plotTop + (1 - RATIOS[li]) * plotH;
+    ctx.fillStyle = '#555'; ctx.strokeStyle = 'rgba(74,158,255,0.2)';
+    ctx.beginPath(); ctx.moveTo(labelW, y); ctx.lineTo(W, y); ctx.stroke();
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(NAMES[li].slice(0, 3), labelW - 1, y + 3);
+  }
+}
+
+window.toggleProfile = function() {
+  _profileVisible = !_profileVisible;
+  let canvas = document.getElementById('profile-canvas');
+  if (!canvas) return;
+  canvas.style.display = _profileVisible ? 'block' : 'none';
+  const btn = document.getElementById('btn-profile');
+  if (btn) btn.classList.toggle('active', _profileVisible);
+  if (_profileVisible) _refreshProfile();
+};
+
+function _refreshProfile() {
+  if (!_profileVisible || !bodyMesh) return;
+  const canvas = document.getElementById('profile-canvas');
+  if (!canvas) return;
+  const curr  = _computeProfileFast(bodyMesh, 120);
+  const ghost = _ghostMesh ? _computeProfileFast(_ghostMesh, 120) : null;
+  if (curr) _drawSilhouetteProfile(canvas, curr, ghost);
+}
+
+// ── V15: Posture axis ────────────────────────────────────────────────────────
+function _buildPostureAxis() {
+  if (_axisGroup) { scene.remove(_axisGroup); _axisGroup = null; }
+  if (!bodyMesh) return;
+
+  _axisGroup = new THREE.Group();
+  const NUM = 20;
+  const centroids = _computeCentroidAxis(bodyMesh, NUM);
+  if (!centroids) return;
+
+  const points = centroids.map(c => new THREE.Vector3(c.cx, c.y, c.cz));
+  const colorArr = new Float32Array(NUM * 3);
+  centroids.forEach((c, i) => {
+    const t = Math.min(1, c.devMm / 20);  // 0=straight, 1=20mm+ deviation
+    colorArr[i * 3]     = 0.3 + 0.7 * t;  // R: low→high
+    colorArr[i * 3 + 1] = 0.9 - 0.7 * t;  // G: high→low
+    colorArr[i * 3 + 2] = 0.3 * (1 - t);  // B: fades
+  });
+  const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
+  lineGeo.setAttribute('color', new THREE.Float32BufferAttribute(colorArr, 3));
+  _axisGroup.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ vertexColors: true })));
+
+  // Sphere at each centroid (colored same as line)
+  centroids.forEach((c, i) => {
+    const t = Math.min(1, c.devMm / 20);
+    const color = new THREE.Color(0.3 + 0.7 * t, 0.9 - 0.7 * t, 0.3 * (1 - t));
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(2, 6, 4),
+      new THREE.MeshBasicMaterial({ color })
+    );
+    sphere.position.set(c.cx, c.y, c.cz);
+    _axisGroup.add(sphere);
+  });
+
+  // Ghost axis if loaded
+  if (_ghostMesh) {
+    const gCentroids = _computeCentroidAxis(_ghostMesh, NUM);
+    if (gCentroids) {
+      const gPoints = gCentroids.map(c => new THREE.Vector3(c.cx, c.y, c.cz));
+      const gGeo = new THREE.BufferGeometry().setFromPoints(gPoints);
+      _axisGroup.add(new THREE.Line(gGeo, new THREE.LineBasicMaterial({ color: 0x44ff88, transparent: true, opacity: 0.5 })));
+    }
+  }
+
+  _axisGroup.visible = _axisVisible;
+  scene.add(_axisGroup);
+}
+
+window.togglePostureAxis = function() {
+  _axisVisible = !_axisVisible;
+  if (_axisVisible && !_axisGroup) _buildPostureAxis();
+  if (_axisGroup) _axisGroup.visible = _axisVisible;
+  const btn = document.getElementById('btn-axis');
+  if (btn) btn.classList.toggle('active', _axisVisible);
+};
+
+// ── V12: Measurement rings ──────────────────────────────────────────────────
+function _buildRings() {
+  if (_ringGroup) { scene.remove(_ringGroup); _ringGroup = null; }
+  _clearRingLabels();
+  if (!bodyMesh) return;
+  _ringGroup = new THREE.Group();
+  _ringGroup.visible = _ringsVisible;
+
+  for (const [name, ratio] of Object.entries(_ANALYSIS_LANDMARKS)) {
+    const data = _sortedCrossSection(bodyMesh, ratio);
+    if (!data) continue;
+    const geom = new THREE.BufferGeometry().setFromPoints(data.points);
+    const mat = new THREE.LineBasicMaterial({ color: 0x4a9eff, linewidth: 2 });
+    const ring = new THREE.Line(geom, mat);
+    ring.userData.landmarkName = name;
+    ring.userData.circumferenceCm = data.circumferenceCm;
+    _ringGroup.add(ring);
+
+    // Create HTML label
+    const label = document.createElement('div');
+    label.style.cssText = 'position:fixed;z-index:20;background:rgba(22,33,62,0.9);color:#4a9eff;border:1px solid #4a9eff;border-radius:4px;padding:2px 6px;font-size:11px;font-weight:bold;pointer-events:none;white-space:nowrap;display:none;';
+    label.innerHTML = `<span style="color:#94a3b8;font-size:9px;">${name}</span> ${data.circumferenceCm.toFixed(1)}cm`;
+    // Find rightmost point for label anchor
+    let rightmost = data.points[0];
+    for (const p of data.points) { if (p.x > rightmost.x) rightmost = p; }
+    label.userData = { anchor: rightmost.clone() };
+    document.body.appendChild(label);
+    _ringLabels.push(label);
+  }
+  scene.add(_ringGroup);
+}
+
+function _clearRingLabels() {
+  for (const el of _ringLabels) el.remove();
+  _ringLabels = [];
+}
+
+function _updateRingLabels() {
+  if (!_ringsVisible || _walkMode || _ringLabels.length === 0) return;
+  for (const label of _ringLabels) {
+    const pos = label.userData.anchor.clone();
+    pos.project(camera);
+    if (pos.z > 1) { label.style.display = 'none'; continue; }
+    const x = (pos.x * 0.5 + 0.5) * window.innerWidth;
+    const y = (-pos.y * 0.5 + 0.5) * window.innerHeight;
+    label.style.left = (x + 10) + 'px';
+    label.style.top = (y - 8) + 'px';
+    label.style.display = 'block';
+  }
+}
+
+function _buildGhostRings() {
+  if (_ghostRingGroup) { scene.remove(_ghostRingGroup); _ghostRingGroup = null; }
+  if (!_ghostMesh) return;
+  _ghostRingGroup = new THREE.Group();
+  _ghostRingGroup.visible = _ringsVisible;
+
+  for (const [name, ratio] of Object.entries(_ANALYSIS_LANDMARKS)) {
+    const data = _sortedCrossSection(_ghostMesh, ratio);
+    if (!data) continue;
+    const geom = new THREE.BufferGeometry().setFromPoints(data.points);
+    const mat = new THREE.LineBasicMaterial({ color: 0x44ff88, linewidth: 2, transparent: true, opacity: 0.6 });
+    const ring = new THREE.Line(geom, mat);
+    ring.userData.landmarkName = name;
+    ring.userData.circumferenceCm = data.circumferenceCm;
+    _ghostRingGroup.add(ring);
+  }
+  scene.add(_ghostRingGroup);
+  _updateRingLabelDeltas();
+}
+
+function _updateRingLabelDeltas() {
+  if (!_ghostRingGroup || _ringLabels.length === 0) return;
+  for (const label of _ringLabels) {
+    const name = label.innerHTML.match(/<span[^>]*>(\w+)<\/span>/)?.[1];
+    if (!name) continue;
+    const ghostRing = _ghostRingGroup.children.find(r => r.userData.landmarkName === name);
+    if (!ghostRing) continue;
+    const curr = parseFloat(label.innerHTML.match(/([\d.]+)cm/)?.[1]);
+    if (!curr) continue;
+    const delta = curr - ghostRing.userData.circumferenceCm;
+    const color = delta > 0.5 ? '#22c55e' : delta < -0.5 ? '#ef4444' : '#94a3b8';
+    const sign = delta > 0 ? '+' : '';
+    const deltaSpan = ` <span style="color:${color};font-size:9px;">${sign}${delta.toFixed(1)}</span>`;
+    label.innerHTML = label.innerHTML.replace(/ <span style="color:#[0-9a-f]+;font-size:9px;">[^<]+<\/span>$/, '') + deltaSpan;
+  }
+}
+
+window.toggleRings = function() {
+  _ringsVisible = !_ringsVisible;
+  if (_ringsVisible && !_ringGroup) _buildRings();
+  if (_ringGroup) _ringGroup.visible = _ringsVisible;
+  if (_ghostRingGroup) _ghostRingGroup.visible = _ringsVisible;
+  for (const el of _ringLabels) el.style.display = _ringsVisible ? '' : 'none';
+  const btn = document.getElementById('btn-rings');
+  if (btn) btn.classList.toggle('active', _ringsVisible);
+};
 
 // ── Room shell (P1) ──────────────────────────────────────────────────────────
 function _buildRoom() {
@@ -1628,6 +2630,7 @@ function _animate() {
   if (++_mirrorFrame % 2 === 0) _updateMirror();
   renderer.render(scene, camera);
   _updateRegionLabels();
+  _updateRingLabels();
 }
 
 function _onResize() {
