@@ -375,9 +375,13 @@ def cmd_body3d(args):
         print(f"[body3d] Request failed: {e}"); return
 
     if result.get("status") == "success":
-        glb_url = result.get("glb_url", "")
-        host = args.server.rsplit("/", 1)[0]  # strip /web_app
-        viewer = f"{host}/web_app/static/viewer3d/index.html?model={glb_url}"
+        if result.get("viewer_url"):
+            host = args.server.split("/web_app")[0]
+            viewer = f"{host}{result['viewer_url']}"
+        else:
+            glb_url = result.get("glb_url", "")
+            host = args.server.rsplit("/", 1)[0]
+            viewer = f"{host}/web_app/static/viewer3d/index.html?model={glb_url}"
         print(f"\n[body3d] mesh_id={result['mesh_id']}  "
               f"verts={result['num_vertices']}  "
               f"silhouette_views_used={result.get('silhouette_views_used', 0)}")

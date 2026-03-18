@@ -2324,6 +2324,33 @@ def generate_body_model(customer_id):
         overrides = {}
     profile = {**db_profile, **overrides}
 
+    # ── Cache check: skip rebuild if profile unchanged ────────────────────────
+    import hashlib, json as _json
+    profile_hash = hashlib.md5(
+        _json.dumps(profile, sort_keys=True, default=str).encode()
+    ).hexdigest()[:12]
+
+    latest_mesh = db(
+        (db.mesh_model.customer_id == customer_id) &
+        (db.mesh_model.model_type == 'body')
+    ).select(orderby=~db.mesh_model.id, limitby=(0, 1)).first()
+
+    has_images = any(request.files.get(f'{d}_image') for d in ('front', 'back', 'left', 'right'))
+    if not has_images and latest_mesh and latest_mesh.glb_path:
+        stored_hash = (latest_mesh.notes or '').split('hash:')[-1].strip() if latest_mesh.notes and 'hash:' in (latest_mesh.notes or '') else ''
+        if stored_hash == profile_hash and os.path.exists(latest_mesh.glb_path):
+            return dict(
+                status='success',
+                mesh_id=int(latest_mesh.id),
+                glb_url=f'/web_app/api/mesh/{latest_mesh.id}.glb',
+                obj_url=f'/web_app/api/mesh/{latest_mesh.id}.obj',
+                volume_cm3=latest_mesh.volume_cm3 or 0,
+                num_vertices=latest_mesh.num_vertices or 0,
+                num_faces=latest_mesh.num_faces or 0,
+                viewer_url=f'/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/{latest_mesh.id}.glb',
+                cached=True,
+            )
+
     try:
         import time
         from core.smpl_fitting import build_body_mesh
@@ -2446,18 +2473,20 @@ def generate_body_model(customer_id):
             volume_cm3=mesh['volume_cm3'],
             num_vertices=int(len(verts)),
             num_faces=int(len(faces)),
+            notes=f'hash:{profile_hash}',
         )
         db.commit()
 
         return dict(
             status='success',
             mesh_id=mesh_id,
-            glb_url=f'/api/mesh/{mesh_id}.glb' if glb_path_out else None,
-            obj_url=f'/api/mesh/{mesh_id}.obj',
+            glb_url=f'/web_app/api/mesh/{mesh_id}.glb' if glb_path_out else None,
+            obj_url=f'/web_app/api/mesh/{mesh_id}.obj',
             volume_cm3=mesh['volume_cm3'],
             num_vertices=int(len(verts)),
             num_faces=int(len(faces)),
             silhouette_views_used=len(silhouette_views),
+            viewer_url=f'/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/{mesh_id}.glb',
         )
     except Exception:
         logger.exception('Body model generation failed for customer %d', customer_id)

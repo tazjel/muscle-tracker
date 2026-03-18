@@ -190,6 +190,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   int _step = 0;
   bool _submitting = false;
   String? _error;
+  String _gender = 'Male';
 
   // Step 0 — essentials
   final _heightCtrl   = TextEditingController();
@@ -239,6 +240,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       add('thigh_circumference_cm', _parse(_thighCtrl));
       add('calf_circumference_cm',  _parse(_calfCtrl));
       profile['skin_tone_hex'] = 'C4956A'; // default light-brown
+      profile['gender'] = _gender;
 
       await http.post(
         Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_profile'),
@@ -337,6 +339,19 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                   const SizedBox(height: 12),
                   _field('Height *', _heightCtrl, 'cm'),
                   _field('Weight *', _weightCtrl, 'kg'),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: _gender,
+                    dropdownColor: AppTheme.cardBg,
+                    decoration: const InputDecoration(
+                      labelText: 'Gender',
+                      prefixIcon: Icon(Icons.people, size: 18),
+                    ),
+                    items: ['Male', 'Female', 'Other']
+                        .map((g) => DropdownMenuItem(value: g, child: Text(g)))
+                        .toList(),
+                    onChanged: (v) => setState(() => _gender = v!),
+                  ),
                 ],
                 if (_step == 1) ...[
                   const Text('Upper body — all optional but improves 3D accuracy.',

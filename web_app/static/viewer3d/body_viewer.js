@@ -457,6 +457,25 @@ function init() {
     h3.addEventListener('click', () => h3.parentElement.classList.toggle('collapsed'));
   });
 
+  // ── Tab switching ──────────────────────────────────────────────────────────
+  window.switchTab = function(tabName) {
+    document.querySelectorAll('.tab-content').forEach(el => {
+      el.classList.toggle('active', el.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+  };
+
+  const _featureTabMap = {
+    'growth': 'analyze', 'slices': 'analyze', 'profile': 'analyze', 'axis': 'analyze',
+    'walk': 'scene', 'room': 'scene', 'mirror': 'scene', 'props': 'scene', 'stats': 'scene',
+  };
+  function _autoTab(feature) {
+    const tab = _featureTabMap[feature];
+    if (tab) switchTab(tab);
+  }
+
   // Authenticate for save/regenerate calls then load mesh list + room textures
   _autoLogin().then(() => { _loadMeshList(); _loadRoomTextures(); _loadBodyStats(); });
 
@@ -718,7 +737,8 @@ function _loadGLB(url, onLoaded) {
       _centerAndScale(bodyMesh);
       scene.add(bodyMesh);
       _updateStats(bodyMesh);
-      _setStatus('');
+      const dateEntry = _meshList.find(m => url.includes(`/mesh/${m.id}.glb`));
+      _setStatus(dateEntry?.created_on ? dateEntry.created_on.slice(0, 10) : '');
       _createRegionLabels();
       _computeAnalysis();
       if (_ringsVisible) _buildRings();
@@ -1359,6 +1379,9 @@ window.takeScreenshot = function() {
     if (_bodyProfile.weight_kg) parts.push('W:' + _bodyProfile.weight_kg + 'kg');
     if (_bodyProfile.chest_circumference_cm) parts.push('Ch:' + _bodyProfile.chest_circumference_cm + 'cm');
     if (_bodyProfile.waist_circumference_cm) parts.push('Wa:' + _bodyProfile.waist_circumference_cm + 'cm');
+    const name = _bodyProfile.name || '';
+    const gender = _bodyProfile.gender || '';
+    if (name || gender) parts.unshift([name, gender].filter(Boolean).join(' · '));
     if (parts.length) ctx.fillText(parts.join('  \u00b7  '), 12 * scale, canvas.height - barH + 36 * scale);
   }
 
@@ -1483,7 +1506,9 @@ window.loadGhost = function() {
     });
     _centerOnly(_ghostMesh);
     scene.add(_ghostMesh);
-    _setStatus('Ghost: scan #' + meshId);
+    const ghostEntry = _meshList.find(m => String(m.id) === String(meshId));
+    const ghostDate = ghostEntry ? ` (${ghostEntry.created_on.slice(0, 10)})` : '';
+    _setStatus('Ghost: #' + meshId + ghostDate);
     _computeAnalysis();
     if (_ringsVisible) _buildGhostRings();
     if (_growthMode) _applyGrowthColors();

@@ -5,6 +5,43 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Muscle Tracker — 3D Viewer</title>
   <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Tab bar */
+    .tab-bar {
+      display: flex;
+      gap: 2px;
+      margin: 8px 0 4px;
+      border-bottom: 1px solid #333;
+      padding-bottom: 4px;
+    }
+    .tab-btn {
+      flex: 1;
+      background: transparent;
+      color: #94a3b8;
+      border: none;
+      padding: 5px 4px;
+      font-size: 0.72rem;
+      font-weight: bold;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover { color: #e0e0e0; }
+    .tab-btn.active {
+      color: #4a9eff;
+      border-bottom-color: #4a9eff;
+      background: transparent;
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    /* Card scrollable safety net */
+    .card {
+      max-height: calc(100vh - 40px);
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #4a9eff44 transparent;
+    }
+  </style>
   <script type="importmap">
   {
     "imports": {
@@ -20,132 +57,142 @@
       <h2>3D Muscle Model</h2>
       <div id="mesh-info">Loading model…</div>
 
-      <!-- View-mode toggle -->
-      <div class="view-modes">
-        <button class="view-mode-btn active" id="btn-solid"
-                onclick="setViewMode('solid')">Solid</button>
-        <button class="view-mode-btn" id="btn-wireframe"
-                onclick="setViewMode('wireframe')">Wire</button>
-        <button class="view-mode-btn" id="btn-heatmap"
-                onclick="setViewMode('heatmap')">Heat</button>
-        <button class="view-mode-btn" id="btn-textured"
-                onclick="setViewMode('textured')">Textured</button>
-        <button class="view-mode-btn" id="btn-labels"
-                onclick="toggleLabels()">Labels</button>
-        <button class="view-mode-btn" id="btn-rings"
-                onclick="toggleRings()">Rings</button>
+      <!-- Tab bar -->
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="view" onclick="switchTab('view')">View</button>
+        <button class="tab-btn" data-tab="scene" onclick="switchTab('scene')">Scene</button>
+        <button class="tab-btn" data-tab="analyze" onclick="switchTab('analyze')">Analyze</button>
+        <button class="tab-btn" data-tab="camera" onclick="switchTab('camera')">Camera</button>
       </div>
 
-      <!-- V7: Room controls -->
-      <div class="view-modes" style="margin-top:4px;">
-        <button class="view-mode-btn" id="btn-walk"
-                onclick="toggleWalkMode()">Walk</button>
-        <button class="view-mode-btn" id="btn-room"
-                onclick="toggleRoom()">Room</button>
-        <button class="view-mode-btn" id="btn-mirror"
-                onclick="toggleMirror()">Mirror</button>
-        <button class="view-mode-btn" id="btn-props"
-                onclick="toggleProps()">Props</button>
-        <button class="view-mode-btn" id="btn-stats"
-                onclick="toggleBodyStats()">Stats</button>
-        <button class="view-mode-btn" id="btn-spin"
-                onclick="toggleAutoRotate()">Spin</button>
-      </div>
-
-      <!-- V14/V15: Visualization modes -->
-      <div class="view-modes" style="margin-top:4px;">
-        <button class="view-mode-btn" id="btn-growth"
-                onclick="toggleGrowthMap()">Growth</button>
-        <button class="view-mode-btn" id="btn-slices"
-                onclick="toggleSliceView()">Slices</button>
-        <button class="view-mode-btn" id="btn-profile"
-                onclick="toggleProfile()">Profile</button>
-        <button class="view-mode-btn" id="btn-axis"
-                onclick="togglePostureAxis()">Axis</button>
-      </div>
-
-      <!-- V10: Camera presets -->
-      <div class="view-modes" style="margin-top:4px;">
-        <button class="view-mode-btn" onclick="setCameraPreset('front')">Front</button>
-        <button class="view-mode-btn" onclick="setCameraPreset('back')">Back</button>
-        <button class="view-mode-btn" onclick="setCameraPreset('left')">Left</button>
-        <button class="view-mode-btn" onclick="setCameraPreset('right')">Right</button>
-        <button class="view-mode-btn" onclick="setCameraPreset('top')">Top</button>
-      </div>
-
-      <!-- Body stats -->
-      <div id="body-stats-panel" style="display:none;margin-top:10px;border-top:1px solid #444;padding-top:8px;">
-        <h3 style="margin:0 0 6px;font-size:13px;">Body Measurements</h3>
-        <div id="body-stats-content" style="font-size:11px;line-height:1.8;"></div>
-      </div>
-
-      <!-- Body region adjustment panel (shown on click) -->
-      <div id="adjust-panel" style="display:none;margin-top:10px;border-top:1px solid #444;padding-top:8px;">
-        <h3 id="adjust-region" style="margin:0 0 6px;font-size:13px;">Region</h3>
-        <label style="display:block;font-size:11px;margin-bottom:4px;">
-          Width&nbsp;<input type="range" id="adj-width" min="-30" max="30" value="0" style="width:90px;">
-          <span id="adj-width-val">0</span>mm
-        </label>
-        <label style="display:block;font-size:11px;margin-bottom:4px;">
-          Depth&nbsp;<input type="range" id="adj-depth" min="-30" max="30" value="0" style="width:90px;">
-          <span id="adj-depth-val">0</span>mm
-        </label>
-        <label style="display:block;font-size:11px;margin-bottom:6px;">
-          Length&nbsp;<input type="range" id="adj-length" min="-30" max="30" value="0" style="width:90px;">
-          <span id="adj-length-val">0</span>mm
-        </label>
-        <button onclick="applyAdjustment()" style="font-size:11px;margin-right:4px;">Apply</button>
-        <button onclick="resetAdjustment()" style="font-size:11px;margin-right:4px;">Reset</button>
-        <button onclick="saveAdjustments()" style="font-size:11px;">Save to Profile</button>
-      </div>
-
-      <!-- Mesh comparison -->
-      <div id="compare-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
-        <h3 style="margin:0 0 6px;font-size:13px;">Compare Growth</h3>
-        <label style="font-size:11px;display:block;margin-bottom:4px;">
-          Before: <select id="compare-old" style="width:130px;font-size:11px;background:#1e2035;color:#e2e4f0;border:1px solid #444;border-radius:3px;"></select>
-        </label>
-        <label style="font-size:11px;display:block;margin-bottom:6px;">
-          After: <select id="compare-new" style="width:130px;font-size:11px;background:#1e2035;color:#e2e4f0;border:1px solid #444;border-radius:3px;"></select>
-        </label>
-        <button onclick="runComparison()" style="font-size:11px;margin-right:4px;">Compare</button>
-        <button onclick="loadGhost()" style="font-size:11px;margin-right:4px;">Ghost</button>
-        <button onclick="clearComparison(); clearGhost()" style="font-size:11px;">Clear</button>
-        <div id="compare-stats" style="font-size:11px;margin-top:4px;color:#00b4cc;display:none;"></div>
-      </div>
-
-      <!-- Scan timeline -->
-      <div id="timeline-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
-        <h3 style="margin:0 0 6px;font-size:13px;">Scan Timeline</h3>
-        <label style="font-size:11px;display:block;">
-          <input type="range" id="timeline-slider" min="0" max="0" value="0" style="width:140px;"
-                 oninput="switchMesh(this.value)">
-        </label>
-        <div id="timeline-date" style="font-size:11px;color:#94a3b8;margin-top:2px;"></div>
-        <button id="btn-play" onclick="toggleTimelinePlay()" style="font-size:11px;margin-top:4px;">Play</button>
-      </div>
-
-      <!-- Cross-section tool -->
-      <div id="section-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
-        <h3 style="margin:0 0 6px;font-size:13px;">Cross Section</h3>
-        <label style="font-size:11px;display:block;">
-          Height:&nbsp;<input type="range" id="section-height" min="0" max="100" value="50" style="width:100px;">
-          <span id="section-height-val">50</span>%
-        </label>
-        <div id="section-stats" style="font-size:11px;margin-top:4px;color:#aaa;"></div>
-        <div style="margin-top:4px;">
-          <button onclick="quickSection('chest')" style="font-size:10px;padding:3px 6px;">Chest</button>
-          <button onclick="quickSection('waist')" style="font-size:10px;padding:3px 6px;">Waist</button>
-          <button onclick="quickSection('hip')" style="font-size:10px;padding:3px 6px;">Hip</button>
-          <button onclick="quickSection('thigh')" style="font-size:10px;padding:3px 6px;">Thigh</button>
+      <!-- View tab -->
+      <div class="tab-content active" data-tab="view">
+        <div class="view-modes">
+          <button class="view-mode-btn active" id="btn-solid"
+                  onclick="setViewMode('solid')">Solid</button>
+          <button class="view-mode-btn" id="btn-wireframe"
+                  onclick="setViewMode('wireframe')">Wire</button>
+          <button class="view-mode-btn" id="btn-heatmap"
+                  onclick="setViewMode('heatmap')">Heat</button>
+          <button class="view-mode-btn" id="btn-textured"
+                  onclick="setViewMode('textured')">Textured</button>
+          <button class="view-mode-btn" id="btn-labels"
+                  onclick="toggleLabels()">Labels</button>
+          <button class="view-mode-btn" id="btn-rings"
+                  onclick="toggleRings()">Rings</button>
         </div>
       </div>
 
-      <!-- V13: Scan Analysis -->
-      <div id="analysis-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
-        <h3 style="margin:0 0 6px;font-size:13px;">Scan Analysis</h3>
-        <canvas id="radar-canvas" width="160" height="160" style="display:none;margin:0 auto 8px;"></canvas>
-        <div id="analysis-content" style="font-size:11px;line-height:1.8;"></div>
+      <!-- Scene tab -->
+      <div class="tab-content" data-tab="scene">
+        <div class="view-modes" style="margin-top:4px;">
+          <button class="view-mode-btn" id="btn-walk"
+                  onclick="toggleWalkMode()">Walk</button>
+          <button class="view-mode-btn" id="btn-room"
+                  onclick="toggleRoom()">Room</button>
+          <button class="view-mode-btn" id="btn-mirror"
+                  onclick="toggleMirror()">Mirror</button>
+          <button class="view-mode-btn" id="btn-props"
+                  onclick="toggleProps()">Props</button>
+          <button class="view-mode-btn" id="btn-stats"
+                  onclick="toggleBodyStats()">Stats</button>
+          <button class="view-mode-btn" id="btn-spin"
+                  onclick="toggleAutoRotate()">Spin</button>
+        </div>
+        <!-- Body stats -->
+        <div id="body-stats-panel" style="display:none;margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+          <h3 style="margin:0 0 6px;font-size:13px;">Body Measurements</h3>
+          <div id="body-stats-content" style="font-size:11px;line-height:1.8;"></div>
+        </div>
+        <!-- Body region adjustment panel -->
+        <div id="adjust-panel" style="display:none;margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+          <h3 id="adjust-region" style="margin:0 0 6px;font-size:13px;">Region</h3>
+          <label style="display:block;font-size:11px;margin-bottom:4px;">
+            Width&nbsp;<input type="range" id="adj-width" min="-30" max="30" value="0" style="width:90px;">
+            <span id="adj-width-val">0</span>mm
+          </label>
+          <label style="display:block;font-size:11px;margin-bottom:4px;">
+            Depth&nbsp;<input type="range" id="adj-depth" min="-30" max="30" value="0" style="width:90px;">
+            <span id="adj-depth-val">0</span>mm
+          </label>
+          <label style="display:block;font-size:11px;margin-bottom:6px;">
+            Length&nbsp;<input type="range" id="adj-length" min="-30" max="30" value="0" style="width:90px;">
+            <span id="adj-length-val">0</span>mm
+          </label>
+          <button onclick="applyAdjustment()" style="font-size:11px;margin-right:4px;">Apply</button>
+          <button onclick="resetAdjustment()" style="font-size:11px;margin-right:4px;">Reset</button>
+          <button onclick="saveAdjustments()" style="font-size:11px;">Save to Profile</button>
+        </div>
+      </div>
+
+      <!-- Analyze tab -->
+      <div class="tab-content" data-tab="analyze">
+        <div class="view-modes" style="margin-top:4px;">
+          <button class="view-mode-btn" id="btn-growth"
+                  onclick="toggleGrowthMap()">Growth</button>
+          <button class="view-mode-btn" id="btn-slices"
+                  onclick="toggleSliceView()">Slices</button>
+          <button class="view-mode-btn" id="btn-profile"
+                  onclick="toggleProfile()">Profile</button>
+          <button class="view-mode-btn" id="btn-axis"
+                  onclick="togglePostureAxis()">Axis</button>
+        </div>
+        <!-- Mesh comparison -->
+        <div id="compare-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+          <h3 style="margin:0 0 6px;font-size:13px;">Compare Growth</h3>
+          <label style="font-size:11px;display:block;margin-bottom:4px;">
+            Before: <select id="compare-old" style="width:130px;font-size:11px;background:#1e2035;color:#e2e4f0;border:1px solid #444;border-radius:3px;"></select>
+          </label>
+          <label style="font-size:11px;display:block;margin-bottom:6px;">
+            After: <select id="compare-new" style="width:130px;font-size:11px;background:#1e2035;color:#e2e4f0;border:1px solid #444;border-radius:3px;"></select>
+          </label>
+          <button onclick="runComparison()" style="font-size:11px;margin-right:4px;">Compare</button>
+          <button onclick="loadGhost()" style="font-size:11px;margin-right:4px;">Ghost</button>
+          <button onclick="clearComparison(); clearGhost()" style="font-size:11px;">Clear</button>
+          <div id="compare-stats" style="font-size:11px;margin-top:4px;color:#00b4cc;display:none;"></div>
+        </div>
+        <!-- Scan timeline -->
+        <div id="timeline-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+          <h3 style="margin:0 0 6px;font-size:13px;">Scan Timeline</h3>
+          <label style="font-size:11px;display:block;">
+            <input type="range" id="timeline-slider" min="0" max="0" value="0" style="width:140px;"
+                   oninput="switchMesh(this.value)">
+          </label>
+          <div id="timeline-date" style="font-size:11px;color:#94a3b8;margin-top:2px;"></div>
+          <button id="btn-play" onclick="toggleTimelinePlay()" style="font-size:11px;margin-top:4px;">Play</button>
+        </div>
+        <!-- Cross-section tool -->
+        <div id="section-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+          <h3 style="margin:0 0 6px;font-size:13px;">Cross Section</h3>
+          <label style="font-size:11px;display:block;">
+            Height:&nbsp;<input type="range" id="section-height" min="0" max="100" value="50" style="width:100px;">
+            <span id="section-height-val">50</span>%
+          </label>
+          <div id="section-stats" style="font-size:11px;margin-top:4px;color:#aaa;"></div>
+          <div style="margin-top:4px;">
+            <button onclick="quickSection('chest')" style="font-size:10px;padding:3px 6px;">Chest</button>
+            <button onclick="quickSection('waist')" style="font-size:10px;padding:3px 6px;">Waist</button>
+            <button onclick="quickSection('hip')" style="font-size:10px;padding:3px 6px;">Hip</button>
+            <button onclick="quickSection('thigh')" style="font-size:10px;padding:3px 6px;">Thigh</button>
+          </div>
+        </div>
+        <!-- Scan Analysis -->
+        <div id="analysis-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+          <h3 style="margin:0 0 6px;font-size:13px;">Scan Analysis</h3>
+          <canvas id="radar-canvas" width="160" height="160" style="display:none;margin:0 auto 8px;"></canvas>
+          <div id="analysis-content" style="font-size:11px;line-height:1.8;"></div>
+        </div>
+      </div>
+
+      <!-- Camera tab -->
+      <div class="tab-content" data-tab="camera">
+        <div class="view-modes" style="margin-top:4px;">
+          <button class="view-mode-btn" onclick="setCameraPreset('front')">Front</button>
+          <button class="view-mode-btn" onclick="setCameraPreset('back')">Back</button>
+          <button class="view-mode-btn" onclick="setCameraPreset('left')">Left</button>
+          <button class="view-mode-btn" onclick="setCameraPreset('right')">Right</button>
+          <button class="view-mode-btn" onclick="setCameraPreset('top')">Top</button>
+        </div>
       </div>
 
       <div class="controls">
