@@ -1,333 +1,164 @@
-/* =========================================================
-   Muscle Tracker — 3D Viewer Stylesheet
-   Covers: base layout, viewer controls, heatmap legend,
-           measurement pins/lines/tooltips, loading spinner,
-           view-mode toggles, responsive adjustments.
-   ========================================================= */
+body { margin: 0; background-color: #1a1a2e; color: #e0e0e0; font-family: sans-serif; overflow: hidden; }       
+#canvas-container { width: 100vw; height: 100vh; }
+#ui-overlay { position: absolute; top: 20px; left: 20px; z-index: 10; pointer-events: none; }
+.card { background: rgba(22, 33, 62, 0.8); padding: 15px; border-radius: 8px; border: 1px solid #4a9eff; pointer-events: auto; }
+h2 { margin: 0 0 10px 0; color: #4a9eff; font-size: 1.2rem; }
+.controls { display: flex; flex-direction: column; gap: 10px; margin-top: 15px; }
+button { background: #4a9eff; color: #1a1a2e; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+button:hover { filter: brightness(1.1); }
+.stats { font-size: 0.8rem; margin-top: 10px; color: #94a3b8; }
+#loader { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
 
-/* ── Base ────────────────────────────────────────────────── */
-body {
-  margin: 0;
-  background-color: #1a1a2e;
-  color: #e0e0e0;
-  font-family: sans-serif;
-  overflow: hidden;
-}
-
-#canvas-container {
-  width: 100vw;
-  height: 100vh;
-}
-
-/* ── Control panel (top-left) ────────────────────────────── */
-#ui-overlay {
-  position: absolute;
-  top: 20px;
-  left: 20px;
-  z-index: 10;
-  pointer-events: none;
-}
-
-.card {
-  background: rgba(22, 33, 62, 0.85);
-  padding: 15px;
-  border-radius: 8px;
-  border: 1px solid #4a9eff;
-  pointer-events: auto;
-  min-width: 180px;
-}
-
-.card h2 {
-  margin: 0 0 10px 0;
-  color: #4a9eff;
-  font-size: 1.1rem;
-  letter-spacing: 0.05em;
-}
-
-/* legacy buttons kept for backward compat */
-.controls {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-button {
-  background: #4a9eff;
-  color: #1a1a2e;
-  border: none;
-  padding: 8px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-weight: bold;
-  font-size: 0.8rem;
-  letter-spacing: 0.03em;
-  transition: filter 0.15s ease;
-}
-
-button:hover  { filter: brightness(1.15); }
-button:active { filter: brightness(0.9); }
-
-.stats {
-  font-size: 0.78rem;
-  margin-top: 10px;
-  color: #94a3b8;
-  line-height: 1.6;
-}
-
-/* ── Loading spinner ─────────────────────────────────────── */
-#loader {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  display: none;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  color: #94a3b8;
-  font-size: 0.85rem;
-}
-
-#loader.visible { display: flex; }
-
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid rgba(74, 158, 255, 0.2);
-  border-top-color: #4a9eff;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* ── View-mode toggle buttons ────────────────────────────── */
-.view-modes {
-  display: flex;
-  gap: 4px;
-  margin-top: 10px;
-}
-
-.view-mode-btn {
-  flex: 1;
-  background: rgba(74, 158, 255, 0.1);
-  color: #4a9eff;
-  border: 1px solid rgba(74, 158, 255, 0.3);
-  padding: 5px 4px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: bold;
-  text-align: center;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.view-mode-btn:hover  { background: rgba(74, 158, 255, 0.25); }
-.view-mode-btn.active {
-  background: #4a9eff;
-  color: #1a1a2e;
-  border-color: #4a9eff;
-}
-
-/* ── Heatmap legend (bottom-right) ───────────────────────── */
+/* Heatmap legend — positioned bottom-right */
 .heatmap-legend {
-  position: absolute;
-  bottom: 20px;
-  right: 20px;
-  z-index: 10;
-  background: rgba(22, 33, 62, 0.9);
-  padding: 12px 16px;
-  border-radius: 8px;
-  border: 1px solid #4a9eff;
-  display: none;
-  min-width: 200px;
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    z-index: 10;
+    background: rgba(22, 33, 62, 0.9);
+    padding: 12px 16px;
+    border-radius: 8px;
+    border: 1px solid #4a9eff;
+    display: none;  /* shown via JS when heatmap active */
 }
 
-.heatmap-legend.visible { display: block; }
-
-.heatmap-legend h3 {
-  margin: 0 0 8px 0;
-  font-size: 0.8rem;
-  color: #4a9eff;
-  letter-spacing: 0.05em;
+.heatmap-legend.visible {
+    display: block;
 }
 
 .heatmap-gradient {
-  width: 100%;
-  height: 14px;
-  border-radius: 4px;
-  background: linear-gradient(to right, #3b82f6, #22c55e, #ef4444);
-  margin: 6px 0 4px;
+    width: 200px;
+    height: 16px;
+    border-radius: 4px;
+    background: linear-gradient(to right, #3b82f6, #22c55e, #ef4444);
+    margin: 8px 0;
 }
 
 .heatmap-labels {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.68rem;
-  color: #94a3b8;
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.7rem;
+    color: #94a3b8;
 }
 
-/* ── Measurement tooltip ─────────────────────────────────── */
+/* Measurement tooltip — follows cursor over mesh */
 .measurement-tooltip {
-  position: absolute;
-  z-index: 20;
-  background: rgba(0, 0, 0, 0.88);
-  color: #e0e0e0;
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 0.8rem;
-  pointer-events: none;
-  display: none;
-  white-space: nowrap;
-  border: 1px solid #4a9eff;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+    position: absolute;
+    z-index: 20;
+    background: rgba(0, 0, 0, 0.85);
+    color: #e0e0e0;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    pointer-events: none;
+    display: none;
+    white-space: nowrap;
+    border: 1px solid #4a9eff;
 }
 
-.measurement-tooltip.visible { display: block; }
-
-.measurement-tooltip .tip-label {
-  color: #94a3b8;
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  display: block;
-  margin-bottom: 2px;
+.measurement-tooltip .label {
+    color: #94a3b8;
+    font-size: 0.7rem;
 }
 
-.measurement-tooltip .tip-value {
-  color: #4a9eff;
-  font-weight: bold;
-  font-size: 1rem;
+.measurement-tooltip .value {
+    color: #4a9eff;
+    font-weight: bold;
+    font-size: 1rem;
 }
 
-/* ── Measurement pins ────────────────────────────────────── */
+/* Measurement pin markers on the 3D view */
 .measurement-pin {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  background: #4a9eff;
-  border: 2px solid #ffffff;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  cursor: pointer;
-  z-index: 15;
-  pointer-events: auto;
-  transition: transform 0.15s ease, background 0.15s ease;
-  box-shadow: 0 0 6px rgba(74, 158, 255, 0.6);
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    background: #4a9eff;
+    border: 2px solid #ffffff;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    cursor: pointer;
+    z-index: 15;
+    pointer-events: auto;
+    transition: transform 0.15s ease;
 }
 
-.measurement-pin:hover  { transform: translate(-50%, -50%) scale(1.5); }
-.measurement-pin.second { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, 0.6); }
-.measurement-pin.hidden { display: none; }
+.measurement-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
 
-/* ── Measurement line (dashed, between pins) ─────────────── */
+.measurement-pin.active {
+    background: #ef4444;
+}
+
+/* Measurement line connecting two pins */
 .measurement-line {
-  position: absolute;
-  z-index: 14;
-  height: 0;
-  border-top: 2px dashed rgba(74, 158, 255, 0.7);
-  transform-origin: left center;
-  pointer-events: none;
+    position: absolute;
+    z-index: 14;
+    border-top: 2px dashed rgba(74, 158, 255, 0.6);
+    transform-origin: left center;
+    pointer-events: none;
 }
 
-/* ── Distance badge on the line mid-point ────────────────── */
-.measurement-badge {
-  position: absolute;
-  z-index: 16;
-  background: rgba(22, 33, 62, 0.9);
-  color: #4a9eff;
-  border: 1px solid #4a9eff;
-  border-radius: 4px;
-  padding: 2px 7px;
-  font-size: 0.75rem;
-  font-weight: bold;
-  pointer-events: none;
-  transform: translate(-50%, -50%);
-  white-space: nowrap;
+/* Loading spinner */
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid rgba(74, 158, 255, 0.2);
+    border-top-color: #4a9eff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
 }
 
-/* ── Responsive ──────────────────────────────────────────── */
-@media (max-width: 480px) {
-  #ui-overlay { top: 10px; left: 10px; right: 10px; }
-  .card { padding: 10px; min-width: unset; }
-  .heatmap-legend { bottom: 10px; right: 10px; left: 10px; }
-  .view-mode-btn { font-size: 0.65rem; padding: 4px 2px; }
+@keyframes spin {
+    to { transform: rotate(360deg); }
 }
 
-/* ── Mobile touch optimizations ───────────────────────────────────────────── */
-@media (max-width: 768px), (pointer: coarse) {
-  #ui-overlay .card {
-    max-width: 180px;
-    padding: 8px;
-    font-size: 11px;
-    max-height: 70vh;
-    overflow-y: auto;
-  }
+/* View mode toggle buttons (solid / wireframe / heatmap) */
+.view-modes {
+    display: flex;
+    gap: 4px;
+    margin-top: 10px;
+}
 
-  .view-modes {
-    flex-wrap: wrap;
-    gap: 3px;
-  }
-
-  .view-mode-btn {
-    min-width: 44px;
-    min-height: 44px;
-    font-size: 11px;
+.view-mode-btn {
+    flex: 1;
+    background: rgba(74, 158, 255, 0.15);
+    color: #4a9eff;
+    border: 1px solid rgba(74, 158, 255, 0.3);
     padding: 6px 8px;
-  }
-
-  .controls button {
-    min-width: 44px;
-    min-height: 44px;
-    font-size: 11px;
-    padding: 6px;
-  }
-
-  #adjust-panel input[type="range"] {
-    width: 70px;
-    height: 28px;
-  }
-
-  .heatmap-legend {
-    bottom: 10px;
-    right: 10px;
-    padding: 6px 10px;
-    font-size: 10px;
-  }
-
-  #section-panel input[type="range"] {
-    width: 80px;
-  }
-
-  #compare-panel select {
-    width: 100px !important;
-  }
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: bold;
+    text-align: center;
+    transition: all 0.15s ease;
 }
 
-/* ── Collapsible panels (V9) ────────────────────────────── */
-.collapsible > h3 {
-  cursor: pointer;
-  user-select: none;
-}
-.collapsible > h3::after {
-  content: ' \25BE';
-  font-size: 9px;
-  color: #666;
-}
-.collapsible.collapsed > h3::after {
-  content: ' \25B8';
-}
-.collapsible.collapsed > *:not(h3) {
-  display: none !important;
+.view-mode-btn:hover {
+    background: rgba(74, 158, 255, 0.3);
 }
 
-/* ── Loading pulse (V9) ─────────────────────────────────── */
-#mesh-info.loading {
-  animation: info-pulse 1.5s ease-in-out infinite;
-  color: #4a9eff;
+.view-mode-btn.active {
+    background: #4a9eff;
+    color: #1a1a2e;
 }
-@keyframes info-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+
+/* Responsive: stack controls vertically on narrow screens */
+@media (max-width: 480px) {
+    #ui-overlay {
+        top: 10px;
+        left: 10px;
+        right: 10px;
+    }
+    .card {
+        padding: 10px;
+    }
+    .heatmap-legend {
+        bottom: 10px;
+        right: 10px;
+        left: 10px;
+    }
+    .heatmap-gradient {
+        width: 100%;
+    }
 }
