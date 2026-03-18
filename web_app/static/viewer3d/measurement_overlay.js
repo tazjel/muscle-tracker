@@ -1,6 +1,7 @@
 /**
- * Measurement Overlay Module V3
- * Adds interactive multi-measurement pins, persistent labels, angle mode, and clipboard export.
+ * Measurement Overlay Module V4
+ * Adds interactive multi-measurement pins, persistent labels, angle mode, clipboard export,
+ * and body region hover detection.
  *
  * Usage: Sonnet's body_viewer.js will call `MeasurementOverlay.init(container)`
  *        after the viewer is ready.
@@ -16,6 +17,7 @@ const MeasurementOverlay = {
     angleMode: false,
     pendingAnglePins: [],   // Collects up to 3 pins for angle measurement
     _angleMeasurement: null, // {pins, lines, label, angle}
+    _meshBounds: null,       // Cached bounds for region detection
 
     /**
      * Initialize the overlay system.
@@ -47,21 +49,97 @@ const MeasurementOverlay = {
             }
         });
 
-        // 3. Register mousemove handler for tooltip positioning
+        // 3. Register mousemove handler for tooltip positioning and hover region detection
         this.mouseX = 0;
         this.mouseY = 0;
+        let _hoverThrottle = 0;
+
         this.container.addEventListener('mousemove', (e) => {
             this.mouseX = e.clientX;
             this.mouseY = e.clientY;
 
+            // Position tooltip
             if (this.tooltip.style.display === 'block') {
                 this.tooltip.style.left = (this.mouseX + 15) + 'px';
                 this.tooltip.style.top = (this.mouseY + 15) + 'px';
+            }
+
+            // Region detection throttle
+            const now = Date.now();
+            if (now - _hoverThrottle < 80) return;  // Throttle to ~12fps
+            _hoverThrottle = now;
+
+            if (!window.bodyViewer || !window.bodyViewer.getMeshIntersection) return;
+
+            // Don't show region tooltip during active measurement or angle mode
+            if (this.pendingPin || this.angleMode || this.measurements.length > 0 || this._angleMeasurement) {
+                // If we have active measurements but just hovering (not placing), we can still show region
+                // but the prompt says: "Don't show region tooltip during active measurement"
+                // Let's interpret "active measurement" as the process of placing pins.
+            }
+            
+            if (this.pendingPin || (this.angleMode && this.pendingAnglePins.length > 0)) return;
+
+            const hit = window.bodyViewer.getMeshIntersection(e);
+            if (hit && hit.point) {
+                const region = this._getBodyRegion(hit.point);
+                if (region) {
+                    this.showTooltip(e.clientX, e.clientY, {
+                        label: 'Region',
+                        value: region
+                    });
+                }
+            } else {
+                // Only hide if we were showing a "Region" tooltip
+                if (this.tooltip.innerHTML.includes('Region:')) {
+                    this.hideTooltip();
+                }
             }
         });
 
         // 4. Start update loop
         this.update();
+    },
+
+    /**
+     * Body region detection by height ratio (Y-up coordinate system).
+     * Uses mesh bounding info from body_viewer.
+     */
+    _getBodyRegion(worldPos) {
+        if (!window.bodyViewer || !window.bodyViewer.mesh) return null;
+
+        // Walk the mesh to find bounds (cached after first call)
+        if (!this._meshBounds) {
+            let minY = Infinity, maxY = -Infinity, minX = Infinity, maxX = -Infinity;
+            window.bodyViewer.mesh.traverse(child => {
+                if (!child.isMesh || !child.geometry) return;
+                const pos = child.geometry.attributes.position;
+                for (let i = 0; i < pos.count; i++) {
+                    const y = pos.getY(i), x = pos.getX(i);
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                }
+            });
+            this._meshBounds = { minY, maxY, rangeY: maxY - minY, halfW: (maxX - minX) / 2 };
+        }
+
+        const b = this._meshBounds;
+        if (b.rangeY < 1) return null;
+        const ratio = (worldPos.y - b.minY) / b.rangeY;
+        const xRatio = Math.abs(worldPos.x) / (b.halfW || 1);
+
+        if (ratio > 0.92) return 'Head';
+        if (ratio > 0.85) return 'Neck';
+        if (ratio > 0.78) return xRatio > 0.6 ? 'Shoulder' : 'Upper Chest';
+        if (ratio > 0.65) return xRatio > 0.7 ? 'Upper Arm' : (ratio > 0.72 ? 'Chest' : 'Waist');
+        if (ratio > 0.55) return xRatio > 0.7 ? 'Forearm' : 'Hip';
+        if (ratio > 0.45) return 'Upper Thigh';
+        if (ratio > 0.30) return 'Thigh';
+        if (ratio > 0.15) return 'Calf';
+        if (ratio > 0.05) return 'Ankle';
+        return 'Foot';
     },
 
     /**
@@ -415,6 +493,7 @@ const MeasurementOverlay = {
         }
         this._clearAnglePins();
         this.angleMode = false;
+        this._meshBounds = null;
         this.hideTooltip();
     },
 };

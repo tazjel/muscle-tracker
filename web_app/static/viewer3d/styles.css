@@ -298,6 +298,53 @@ input[type="range"]::-moz-range-thumb {
     text-shadow: 0 0 4px rgba(245, 158, 11, 0.3);
 }
 
+/* Touch-friendly measurement pins on mobile/tablet */
+@media (pointer: coarse) {
+    .measurement-pin {
+        width: 20px;
+        height: 20px;
+        border-width: 3px;
+    }
+
+    .measurement-pin:hover {
+        transform: translate(-50%, -50%) scale(1.3);
+    }
+
+    .measurement-label {
+        font-size: 0.85rem;
+        padding: 5px 10px;
+    }
+
+    .measurement-tooltip {
+        font-size: 0.9rem;
+        padding: 10px 14px;
+    }
+}
+
+/* Print styles — hide 3D canvas, show measurements summary */
+@media print {
+    body { background: white; color: black; overflow: visible; }
+    #canvas-container { display: none; }
+    #ui-overlay { position: static; }
+    .card {
+        background: white;
+        border-color: #ccc;
+        max-height: none;
+        overflow: visible;
+    }
+    .view-modes, .tab-bar, .controls, .heatmap-legend,
+    #growth-legend, #hover-tooltip, #profile-canvas {
+        display: none !important;
+    }
+    .measurement-pin, .measurement-line, .measurement-tooltip {
+        display: none !important;
+    }
+    button { display: none; }
+    .stats { color: #333; }
+    .collapsible { max-height: none; opacity: 1; }
+    .collapsible.collapsed { max-height: none; opacity: 1; display: block; }
+}
+
 @media (max-width: 480px) {
     #ui-overlay {
         top: 10px;
