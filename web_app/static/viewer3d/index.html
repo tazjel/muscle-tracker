@@ -55,6 +55,8 @@
   <div id="ui-overlay">
     <div class="card">
       <h2>3D Muscle Model</h2>
+      <select id="customer-select" style="width:100%;font-size:11px;background:#1e2035;color:#e2e4f0;border:1px solid #444;border-radius:3px;padding:4px;margin-bottom:4px;display:none;"
+              onchange="switchCustomer(this.value)"></select>
       <div id="mesh-info">Loading model…</div>
 
       <!-- Tab bar -->
@@ -98,6 +100,15 @@
                   onclick="toggleBodyStats()">Stats</button>
           <button class="view-mode-btn" id="btn-spin"
                   onclick="toggleAutoRotate()">Spin</button>
+        </div>
+        <!-- Lighting presets -->
+        <div class="view-modes" style="margin-top:4px;">
+          <button class="light-preset-btn view-mode-btn active" data-preset="studio"
+                  onclick="setLightPreset('studio')">Studio</button>
+          <button class="light-preset-btn view-mode-btn" data-preset="clinical"
+                  onclick="setLightPreset('clinical')">Clinical</button>
+          <button class="light-preset-btn view-mode-btn" data-preset="outdoor"
+                  onclick="setLightPreset('outdoor')">Outdoor</button>
         </div>
         <!-- Body stats -->
         <div id="body-stats-panel" style="display:none;margin-top:10px;border-top:1px solid #444;padding-top:8px;">
@@ -201,12 +212,18 @@
         <button onclick="takeScreenshot()">Screenshot</button>
         <button onclick="copyStats()">Copy Stats</button>
         <button onclick="clearMeasurements()">Clear Pins</button>
+        <button onclick="exportDataCSV()">Export CSV</button>
+      </div>
+      <div style="font-size:10px;margin-top:4px;">
+        <a href="#" id="link-report" style="color:#4a9eff;text-decoration:none;"
+           onclick="event.preventDefault();window.open('report.html?customer='+(new URLSearchParams(location.search).get('customer')||'1'),'_blank')">📊 Progress Report</a>
       </div>
 
       <div style="font-size:9px;color:#555;margin-top:6px;">
         Keys: 1-4 views · 5 walk · 6 room · 7 mirror · 8 props<br>
         9 stats · 0 spin · F full · L labels · C rings · M measure<br>
-        G growth · X slices · P profile · Q axis · [ ] tabs
+        G growth · X slices · P profile · Q axis · [ ] tabs<br>
+        E export · R reset
       </div>
 
       <div class="stats">

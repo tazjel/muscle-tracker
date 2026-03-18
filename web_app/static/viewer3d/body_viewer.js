@@ -65,8 +65,9 @@ let _propsGroup = null;
 let _propsOn    = false;
 
 // ── Light groups ─────────────────────────────────────────────────────────────
-let _studioLightObjs = [];
-let _roomLightObjs   = [];
+let _studioLightObjs    = [];
+let _roomLightObjs      = [];
+let _currentLightPreset = 'studio';
 
 // ── V8 globals ───────────────────────────────────────────────────────────────
 let _meshList    = [];
@@ -393,13 +394,6 @@ function init() {
   controls.minDistance      = 200;
   controls.maxDistance      = 3000;
 
-  // Double-tap to reset camera (mobile)
-  let _lastTap = 0;
-  renderer.domElement.addEventListener('touchend', (e) => {
-    const now = Date.now();
-    if (now - _lastTap < 300) { e.preventDefault(); window.resetCamera(); }
-    _lastTap = now;
-  });
   controls.target.set(0, 80, 0);  // roughly mid-torso height
   controls.update();
 
@@ -474,6 +468,7 @@ function init() {
     document.querySelectorAll('.tab-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.tab === tabName);
     });
+    _saveViewerSettings();
   };
 
   const _featureTabMap = {
@@ -486,7 +481,7 @@ function init() {
   }
 
   // Authenticate for save/regenerate calls then load mesh list + room textures
-  _autoLogin().then(() => { _loadMeshList(); _loadRoomTextures(); _loadBodyStats(); });
+  _autoLogin().then(() => { _loadMeshList(); _loadRoomTextures(); _loadBodyStats(); _loadCustomerList(); });
 
   // Load model from URL params
   _loadFromUrl();
@@ -523,6 +518,7 @@ function init() {
       case 'q': case 'Q': window.togglePostureAxis();  break;
       case 'm': case 'M': window.toggleMeasure();   break;
       case 'r': case 'R': window.resetCamera();   break;
+      case 'e': case 'E': exportDataCSV();         break;
       case 's': case 'S':
         if (_walkMode) _moveState.backward = true;
         else if (!e.ctrlKey) window.takeScreenshot();
@@ -559,6 +555,9 @@ function init() {
       case 'd': case 'D': _moveState.right    = false; break;
     }
   });
+
+  // Restore saved viewer settings
+  _restoreViewerSettings();
 
   // Start render loop
   _animate();
@@ -626,6 +625,77 @@ function _setupRoomLights() {
 function _clearLights(arr) {
   arr.forEach(l => scene.remove(l));
   arr.length = 0;
+}
+
+function _setupClinicalLights() {
+  // Even, shadow-free lighting for accurate body assessment
+  const a = new THREE.AmbientLight(0xffffff, 0.5);
+  scene.add(a); _studioLightObjs.push(a);
+  [[0,400,400],[0,400,-400],[400,400,0],[-400,400,0]].forEach(([x,y,z]) => {
+    const d = new THREE.DirectionalLight(0xffffff, 0.4);
+    d.position.set(x, y, z);
+    scene.add(d); _studioLightObjs.push(d);
+  });
+  const top = new THREE.DirectionalLight(0xffffff, 0.3);
+  top.position.set(0, 600, 0);
+  scene.add(top); _studioLightObjs.push(top);
+}
+
+function _setupOutdoorLights() {
+  // Golden hour outdoor feel
+  const hemi = new THREE.HemisphereLight(0x87ceeb, 0x556633, 0.6);
+  scene.add(hemi); _studioLightObjs.push(hemi);
+  const sun = new THREE.DirectionalLight(0xffd090, 1.6);
+  sun.position.set(300, 500, 200);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -400; sun.shadow.camera.right = 400;
+  sun.shadow.camera.top = 400;   sun.shadow.camera.bottom = -400;
+  scene.add(sun); _studioLightObjs.push(sun);
+  const fill = new THREE.DirectionalLight(0x88aacc, 0.25);
+  fill.position.set(-200, 100, -300);
+  scene.add(fill); _studioLightObjs.push(fill);
+}
+
+function setLightPreset(preset) {
+  _clearLights(_studioLightObjs);
+  _currentLightPreset = preset;
+  switch (preset) {
+    case 'clinical': _setupClinicalLights(); break;
+    case 'outdoor':  _setupOutdoorLights(); break;
+    default:         _setupStudioLights(); break;
+  }
+  _saveViewerSettings();
+  document.querySelectorAll('.light-preset-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.preset === preset);
+  });
+}
+window.setLightPreset = setLightPreset;
+
+function _saveViewerSettings() {
+  try {
+    const settings = {
+      lightPreset: _currentLightPreset,
+      activeTab: document.querySelector('.tab-btn.active')?.dataset.tab || 'view',
+      roomOn: _roomOn,
+      autoRotate: _autoRotate,
+      ringsVisible: _ringsVisible,
+    };
+    localStorage.setItem('gtd3d_viewer_settings', JSON.stringify(settings));
+  } catch (e) { /* ignore */ }
+}
+
+function _restoreViewerSettings() {
+  try {
+    const raw = localStorage.getItem('gtd3d_viewer_settings');
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (s.lightPreset && s.lightPreset !== 'studio') setLightPreset(s.lightPreset);
+    if (s.activeTab && s.activeTab !== 'view') switchTab(s.activeTab);
+    if (s.roomOn) window.toggleRoom();
+    if (s.autoRotate) window.toggleAutoRotate();
+    if (s.ringsVisible) window.toggleRings();
+  } catch (e) { /* ignore */ }
 }
 
 // ── Environment map (procedural, no file) ─────────────────────────────────────
@@ -1661,6 +1731,7 @@ window.toggleAutoRotate = function() {
   controls.autoRotate = _autoRotate;
   controls.autoRotateSpeed = 2.0;
   document.getElementById('btn-spin')?.classList.toggle('active', _autoRotate);
+  _saveViewerSettings();
 };
 
 window.setCameraPreset = function(preset) {
@@ -2709,6 +2780,7 @@ window.toggleRings = function() {
   for (const el of _ringLabels) el.style.display = _ringsVisible ? '' : 'none';
   const btn = document.getElementById('btn-rings');
   if (btn) btn.classList.toggle('active', _ringsVisible);
+  _saveViewerSettings();
 };
 
 // ── Room shell (P1) ──────────────────────────────────────────────────────────
@@ -2779,6 +2851,7 @@ window.toggleRoom = function() {
     scene.background = new THREE.Color(0x1a1a2e);
   }
   document.getElementById('btn-room')?.classList.toggle('active', _roomOn);
+  _saveViewerSettings();
 };
 
 // ── Contact shadow (P3) ─────────────────────────────────────────────────────
@@ -3023,6 +3096,89 @@ function _onResize() {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
+
+// ── CSV Export ───────────────────────────────────────────────────────────────
+async function exportDataCSV() {
+  if (!_viewerToken) await _autoLogin();
+  const params = new URLSearchParams(location.search);
+  const cid = params.get('customer') || '1';
+  try {
+    const r = await fetch(`/web_app/api/customer/${cid}/progress_report`, {
+      headers: { 'Authorization': 'Bearer ' + _viewerToken }
+    });
+    const d = await r.json();
+    if (d.status !== 'success') throw new Error(d.message);
+
+    const lines = ['GTD3D Body Data Export', ''];
+    lines.push('PROFILE', 'Field,Value');
+    const p = d.profile;
+    if (p.height_cm) lines.push(`Height (cm),${p.height_cm}`);
+    if (p.weight_kg) lines.push(`Weight (kg),${p.weight_kg}`);
+    if (p.gender)    lines.push(`Gender,${p.gender}`);
+
+    lines.push('', 'CIRCUMFERENCES', 'Region,Value (cm)');
+    Object.entries(d.circumferences || {}).forEach(([k, v]) => lines.push(`${k},${v}`));
+
+    lines.push('', 'SCAN HISTORY', 'Mesh ID,Date,Volume (cm³)');
+    (d.meshes || []).forEach(m => lines.push(`${m.id},${m.date},${m.volume_cm3 || ''}`));
+
+    if (window.MeasurementOverlay && window.MeasurementOverlay.measurements?.length) {
+      lines.push('', 'VIEWER MEASUREMENTS', 'Name,Distance (mm)');
+      window.MeasurementOverlay.measurements.forEach((m, i) =>
+        lines.push(`${m.name || 'Distance ' + (i+1)},${m.distance_mm.toFixed(1)}`));
+    }
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `body_data_${cid}_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error('Export failed:', e);
+    alert('Export failed: ' + e.message);
+  }
+}
+window.exportDataCSV = exportDataCSV;
+
+// ── Customer selector ─────────────────────────────────────────────────────────
+async function _loadCustomerList() {
+  if (!_viewerToken) return;
+  try {
+    const r = await fetch('/web_app/api/customers', {
+      headers: { 'Authorization': 'Bearer ' + _viewerToken }
+    });
+    const d = await r.json();
+    if (d.status !== 'success' || !d.customers) return;
+    const sel = document.getElementById('customer-select');
+    if (!sel) return;
+    if (d.customers.length <= 1) return;
+
+    const params = new URLSearchParams(location.search);
+    const currentCid = params.get('customer') || '1';
+    sel.innerHTML = d.customers.map(c =>
+      `<option value="${c.id}" ${c.id == currentCid ? 'selected' : ''}>${c.name} (${c.mesh_count} scans)</option>`
+    ).join('');
+    sel.style.display = 'block';
+  } catch (e) { /* ignore */ }
+}
+
+function switchCustomer(cid) {
+  const params = new URLSearchParams(location.search);
+  params.set('customer', cid);
+  fetch(`/web_app/api/customer/${cid}/meshes`, {
+    headers: { 'Authorization': 'Bearer ' + _viewerToken }
+  }).then(r => r.json()).then(d => {
+    const meshes = d.meshes || [];
+    if (meshes.length > 0) params.set('model', `/web_app/api/mesh/${meshes[0].id}.glb`);
+    location.search = params.toString();
+  }).catch(() => {
+    params.delete('model');
+    location.search = params.toString();
+  });
+}
+window.switchCustomer = switchCustomer;
 
 // ── MCP WebSocket Bridge ─────────────────────────────────────────────────────
 // Connects to three-js-mcp server (port 8082) so Claude can remotely

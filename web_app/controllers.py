@@ -113,18 +113,29 @@ def index():
 @action('api/customers', method=['GET'])
 @action.uses(db, cors)
 def list_customers():
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
-    if not token:
-        return dict(status='error', message='Authentication required')
-    payload = verify_jwt(token)
-    if not payload:
-        return dict(status='error', message='Invalid or expired token')
-    
-    if payload.get('role') != 'admin':
-        return dict(status='error', message='Admin access required')
-        
-    customers = db(db.customer.is_active == True).select().as_list()
-    return dict(status='success', customers=customers)
+    """List all customers with scan counts (for customer selector)."""
+    payload, err = _auth_check()
+    if err: return err
+    rows = db(db.customer.id > 0).select(
+        db.customer.id,
+        db.customer.name,
+        db.customer.email,
+        db.customer.gender,
+        db.customer.profile_completed,
+        orderby=db.customer.id
+    )
+    result = []
+    for r in rows:
+        mesh_count = db(db.mesh_model.customer_id == r.id).count()
+        result.append(dict(
+            id=int(r.id),
+            name=r.name or f'Customer {r.id}',
+            email=r.email,
+            gender=r.gender if r.gender else '',
+            profile_completed=bool(r.profile_completed),
+            mesh_count=mesh_count,
+        ))
+    return dict(status='success', customers=result)
 
 
 @action('api/customers', method=['POST'])
