@@ -1,7 +1,7 @@
 /**
- * Measurement Overlay Module V4
+ * Measurement Overlay Module V5
  * Adds interactive multi-measurement pins, persistent labels, angle mode, clipboard export,
- * and body region hover detection.
+ * body region hover detection, and a live summary panel.
  *
  * Usage: Sonnet's body_viewer.js will call `MeasurementOverlay.init(container)`
  *        after the viewer is ready.
@@ -13,6 +13,7 @@ const MeasurementOverlay = {
     pendingPin: null,        // Single pin waiting for its pair, or null
     maxMeasurements: 5,
     tooltip: null,
+    summaryPanel: null,
     
     angleMode: false,
     pendingAnglePins: [],   // Collects up to 3 pins for angle measurement
@@ -30,7 +31,13 @@ const MeasurementOverlay = {
         this.tooltip.className = 'measurement-tooltip';
         this.container.appendChild(this.tooltip);
 
-        // 2. Register click handler on container for placing pins
+        // 2. Create measurement summary panel
+        this.summaryPanel = document.createElement('div');
+        this.summaryPanel.className = 'measurement-summary';
+        this.summaryPanel.innerHTML = '<h4>Measurements</h4><ul></ul>';
+        this.container.appendChild(this.summaryPanel);
+
+        // 3. Register click handler on container for placing pins
         this.container.addEventListener('click', (e) => {
             // Ignore clicks on UI elements or existing pins
             if (e.target.closest('#ui-overlay') || e.target.classList.contains('measurement-pin')) {
@@ -49,7 +56,7 @@ const MeasurementOverlay = {
             }
         });
 
-        // 3. Register mousemove handler for tooltip positioning and hover region detection
+        // 4. Register mousemove handler for tooltip positioning and hover region detection
         this.mouseX = 0;
         this.mouseY = 0;
         let _hoverThrottle = 0;
@@ -71,14 +78,10 @@ const MeasurementOverlay = {
 
             if (!window.bodyViewer || !window.bodyViewer.getMeshIntersection) return;
 
-            // Don't show region tooltip during active measurement or angle mode
-            if (this.pendingPin || this.angleMode || this.measurements.length > 0 || this._angleMeasurement) {
-                // If we have active measurements but just hovering (not placing), we can still show region
-                // but the prompt says: "Don't show region tooltip during active measurement"
-                // Let's interpret "active measurement" as the process of placing pins.
+            // Don't show region tooltip during active pin placement
+            if (this.pendingPin || (this.angleMode && this.pendingAnglePins.length > 0)) {
+                return;
             }
-            
-            if (this.pendingPin || (this.angleMode && this.pendingAnglePins.length > 0)) return;
 
             const hit = window.bodyViewer.getMeshIntersection(e);
             if (hit && hit.point) {
@@ -90,25 +93,23 @@ const MeasurementOverlay = {
                     });
                 }
             } else {
-                // Only hide if we were showing a "Region" tooltip
+                // Hide region tooltip if we move off mesh
                 if (this.tooltip.innerHTML.includes('Region:')) {
                     this.hideTooltip();
                 }
             }
         });
 
-        // 4. Start update loop
+        // 5. Start update loop
         this.update();
     },
 
     /**
      * Body region detection by height ratio (Y-up coordinate system).
-     * Uses mesh bounding info from body_viewer.
      */
     _getBodyRegion(worldPos) {
         if (!window.bodyViewer || !window.bodyViewer.mesh) return null;
 
-        // Walk the mesh to find bounds (cached after first call)
         if (!this._meshBounds) {
             let minY = Infinity, maxY = -Infinity, minX = Infinity, maxX = -Infinity;
             window.bodyViewer.mesh.traverse(child => {
@@ -148,7 +149,6 @@ const MeasurementOverlay = {
     toggleAngleMode() {
         this.angleMode = !this.angleMode;
         this.pendingAnglePins = [];
-        // Update button state if it exists
         const btn = document.getElementById('btn-measure-angle');
         if (btn) btn.classList.toggle('active', this.angleMode);
     },
@@ -158,15 +158,12 @@ const MeasurementOverlay = {
      */
     placePin(worldPosition) {
         if (this.pendingPin === null) {
-            // First pin of a new measurement
             if (this.measurements.length >= this.maxMeasurements) {
-                // Remove oldest measurement to make room
                 this._removeMeasurement(0);
             }
             const pinEl = this._createPinElement();
             this.pendingPin = { worldPos: worldPosition.clone(), element: pinEl };
         } else {
-            // Second pin — complete the measurement
             const pinEl = this._createPinElement();
             const pinB = { worldPos: worldPosition.clone(), element: pinEl };
 
@@ -191,6 +188,7 @@ const MeasurementOverlay = {
                 distance_mm: dist,
             });
             this.pendingPin = null;
+            this._updateSummary();
         }
     },
 
@@ -199,7 +197,6 @@ const MeasurementOverlay = {
      */
     _placeAnglePin(worldPos) {
         if (this.pendingAnglePins.length >= 3) {
-            // Clear previous angle measurement
             this._clearAnglePins();
         }
 
@@ -208,7 +205,6 @@ const MeasurementOverlay = {
         this.pendingAnglePins.push({ worldPos: worldPos.clone(), element: el });
 
         if (this.pendingAnglePins.length === 3) {
-            // Calculate angle at middle pin (B)
             const A = this.pendingAnglePins[0].worldPos;
             const B = this.pendingAnglePins[1].worldPos;
             const C = this.pendingAnglePins[2].worldPos;
@@ -220,7 +216,6 @@ const MeasurementOverlay = {
             const angleRad = Math.acos(Math.max(-1, Math.min(1, dot / (cross || 1))));
             const angleDeg = (angleRad * 180 / Math.PI).toFixed(1);
 
-            // Create two lines: A→B and B→C
             const line1 = document.createElement('div');
             line1.className = 'measurement-line angle-line';
             this.container.appendChild(line1);
@@ -229,7 +224,6 @@ const MeasurementOverlay = {
             line2.className = 'measurement-line angle-line';
             this.container.appendChild(line2);
 
-            // Label at B (the vertex of the angle)
             const label = document.createElement('div');
             label.className = 'measurement-label angle-label';
             label.textContent = angleDeg + '°';
@@ -241,6 +235,7 @@ const MeasurementOverlay = {
                 label: label,
                 angle: parseFloat(angleDeg),
             };
+            this._updateSummary();
         }
     },
 
@@ -257,6 +252,7 @@ const MeasurementOverlay = {
             this._angleMeasurement.label.remove();
             this._angleMeasurement = null;
         }
+        this._updateSummary();
     },
 
     /**
@@ -265,11 +261,9 @@ const MeasurementOverlay = {
     _createPinElement() {
         const el = document.createElement('div');
         el.className = 'measurement-pin';
-        // Click on pin to remove its measurement
         el.addEventListener('click', (e) => {
             e.stopPropagation();
             
-            // Check distance measurements
             const idx = this.measurements.findIndex(
                 m => m.pinA.element === el || m.pinB.element === el
             );
@@ -278,20 +272,18 @@ const MeasurementOverlay = {
                 return;
             }
             
-            // Check pending distance pin
             if (this.pendingPin && this.pendingPin.element === el) {
                 el.remove();
                 this.pendingPin = null;
+                this._updateSummary();
                 return;
             }
 
-            // Check angle measurement
             if (this._angleMeasurement && this._angleMeasurement.pins.some(p => p.element === el)) {
                 this._clearAnglePins();
                 return;
             }
 
-            // Check pending angle pins
             const aIdx = this.pendingAnglePins.findIndex(p => p.element === el);
             if (aIdx >= 0) {
                 this._clearAnglePins();
@@ -313,6 +305,32 @@ const MeasurementOverlay = {
         m.lineEl.remove();
         m.labelEl.remove();
         this.measurements.splice(index, 1);
+        this._updateSummary();
+    },
+
+    /**
+     * Update the floating summary panel with all current measurements.
+     */
+    _updateSummary() {
+        if (!this.summaryPanel) return;
+        const ul = this.summaryPanel.querySelector('ul');
+        if (!ul) return;
+
+        const items = [];
+        this.measurements.forEach((m, i) => {
+            const dist = m.distance_mm;
+            const formatted = dist >= 100
+                ? (dist / 10).toFixed(1) + ' cm'
+                : dist.toFixed(1) + ' mm';
+            items.push(`<li><span class="msr-idx">${i + 1}</span> ${formatted}</li>`);
+        });
+
+        if (this._angleMeasurement) {
+            items.push(`<li><span class="msr-idx">∠</span> ${this._angleMeasurement.angle}°</li>`);
+        }
+
+        ul.innerHTML = items.join('');
+        this.summaryPanel.style.display = items.length > 0 ? 'block' : 'none';
     },
 
     /**
@@ -338,7 +356,6 @@ const MeasurementOverlay = {
      * Update loop — repositions all pins, lines and labels every frame.
      */
     update() {
-        // Update pending pin (distance mode)
         if (this.pendingPin) {
             const s = this.projectToScreen(this.pendingPin.worldPos);
             this.pendingPin.element.style.display = s.visible ? 'block' : 'none';
@@ -346,7 +363,6 @@ const MeasurementOverlay = {
             this.pendingPin.element.style.top = s.y + 'px';
         }
 
-        // Update all completed distance measurements
         for (const m of this.measurements) {
             const pA = this.projectToScreen(m.pinA.worldPos);
             const pB = this.projectToScreen(m.pinB.worldPos);
@@ -377,7 +393,6 @@ const MeasurementOverlay = {
             }
         }
 
-        // Update angle pins
         for (const p of this.pendingAnglePins) {
             const s = this.projectToScreen(p.worldPos);
             p.element.style.display = s.visible ? 'block' : 'none';
@@ -385,7 +400,6 @@ const MeasurementOverlay = {
             p.element.style.top = s.y + 'px';
         }
 
-        // Update angle measurement lines + label
         if (this._angleMeasurement) {
             const am = this._angleMeasurement;
             const sA = this.projectToScreen(am.pins[0].worldPos);
@@ -393,7 +407,6 @@ const MeasurementOverlay = {
             const sC = this.projectToScreen(am.pins[2].worldPos);
             const allVis = sA.visible && sB.visible && sC.visible;
 
-            // Line A→B
             am.lines[0].style.display = allVis ? 'block' : 'none';
             if (allVis) {
                 const dx = sB.x - sA.x, dy = sB.y - sA.y;
@@ -403,7 +416,6 @@ const MeasurementOverlay = {
                 am.lines[0].style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
             }
 
-            // Line B→C
             am.lines[1].style.display = allVis ? 'block' : 'none';
             if (allVis) {
                 const dx = sC.x - sB.x, dy = sC.y - sB.y;
@@ -413,7 +425,6 @@ const MeasurementOverlay = {
                 am.lines[1].style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
             }
 
-            // Label at B
             am.label.style.display = allVis ? 'block' : 'none';
             if (allVis) {
                 am.label.style.left = sB.x + 'px';
@@ -429,35 +440,21 @@ const MeasurementOverlay = {
      */
     copyToClipboard() {
         const lines = [];
-
-        // Distance measurements
         this.measurements.forEach((m, i) => {
             const dist = m.distance_mm;
-            const formatted = dist >= 100
-                ? (dist / 10).toFixed(1) + ' cm'
-                : dist.toFixed(1) + ' mm';
+            const formatted = dist >= 100 ? (dist / 10).toFixed(1) + ' cm' : dist.toFixed(1) + ' mm';
             lines.push(`Distance ${i + 1}: ${formatted}`);
         });
-
-        // Angle measurement
         if (this._angleMeasurement) {
             lines.push(`Angle: ${this._angleMeasurement.angle}°`);
         }
-
-        if (lines.length === 0) {
-            lines.push('No measurements');
-        }
+        if (lines.length === 0) lines.push('No measurements');
 
         const text = 'GTD3D Measurements\n' + lines.join('\n');
-
         navigator.clipboard.writeText(text).then(() => {
-            // Brief visual feedback
-            this.showTooltip(window.innerWidth / 2, 60, {
-                label: 'Copied', value: lines.length + ' measurement(s)'
-            });
+            this.showTooltip(window.innerWidth / 2, 60, { label: 'Copied', value: lines.length + ' measurement(s)' });
             setTimeout(() => this.hideTooltip(), 1500);
         }).catch(() => {
-            // Fallback for older browsers
             const ta = document.createElement('textarea');
             ta.value = text;
             ta.style.cssText = 'position:fixed;opacity:0';
@@ -495,5 +492,6 @@ const MeasurementOverlay = {
         this.angleMode = false;
         this._meshBounds = null;
         this.hideTooltip();
+        this._updateSummary();
     },
 };

@@ -299,6 +299,109 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* Touch-friendly measurement pins on mobile/tablet */
+/* Measurement summary panel — bottom-left floating list */  
+.measurement-summary {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    z-index: 10;
+    background: rgba(22, 33, 62, 0.9);
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(74, 158, 255, 0.3);
+    display: none;
+    min-width: 140px;
+    max-width: 200px;
+    pointer-events: auto;
+}
+
+.measurement-summary h4 {
+    margin: 0 0 6px;
+    font-size: 0.75rem;
+    color: #4a9eff;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.measurement-summary ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.measurement-summary li {
+    font-size: 0.8rem;
+    color: #e0e0e0;
+    padding: 3px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);      
+}
+
+.measurement-summary li:last-child {
+    border-bottom: none;
+}
+
+.measurement-summary .msr-idx {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    line-height: 18px;
+    text-align: center;
+    background: rgba(74, 158, 255, 0.2);
+    color: #4a9eff;
+    border-radius: 50%;
+    font-size: 0.65rem;
+    font-weight: bold;
+    margin-right: 6px;
+}
+
+/* Hide summary on mobile (too little space) */
+@media (max-width: 480px) {
+    .measurement-summary {
+        display: none !important;
+    }
+}
+
+/* Hide summary in print */
+@media print {
+    .measurement-summary { display: none !important; }       
+}
+
+/* Pin placement animation */
+@keyframes pinDrop {
+    0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
+    60% { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
+    100% { transform: translate(-50%, -50%) scale(1); }      
+}
+
+.measurement-pin {
+    animation: pinDrop 0.25s ease-out;
+}
+
+/* Label fade-in */
+@keyframes labelFade {
+    from { opacity: 0; transform: translate(-50%, -100%) translateY(8px); }
+    to { opacity: 1; transform: translate(-50%, -100%) translateY(0); }
+}
+
+.measurement-label {
+    animation: labelFade 0.3s ease-out;
+}
+
+/* Summary panel slide-in */
+@keyframes summarySlide {
+    from { opacity: 0; transform: translateY(10px); }        
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.measurement-summary {
+    animation: summarySlide 0.3s ease-out;
+}
+
+/* Tooltip fade */
+.measurement-tooltip {
+    transition: opacity 0.15s ease;
+}
+
 @media (pointer: coarse) {
     .measurement-pin {
         width: 20px;
@@ -322,6 +425,109 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* Print styles — hide 3D canvas, show measurements summary */
+/* Measurement summary panel — bottom-left floating list */  
+.measurement-summary {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    z-index: 10;
+    background: rgba(22, 33, 62, 0.9);
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(74, 158, 255, 0.3);
+    display: none;
+    min-width: 140px;
+    max-width: 200px;
+    pointer-events: auto;
+}
+
+.measurement-summary h4 {
+    margin: 0 0 6px;
+    font-size: 0.75rem;
+    color: #4a9eff;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.measurement-summary ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.measurement-summary li {
+    font-size: 0.8rem;
+    color: #e0e0e0;
+    padding: 3px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);      
+}
+
+.measurement-summary li:last-child {
+    border-bottom: none;
+}
+
+.measurement-summary .msr-idx {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    line-height: 18px;
+    text-align: center;
+    background: rgba(74, 158, 255, 0.2);
+    color: #4a9eff;
+    border-radius: 50%;
+    font-size: 0.65rem;
+    font-weight: bold;
+    margin-right: 6px;
+}
+
+/* Hide summary on mobile (too little space) */
+@media (max-width: 480px) {
+    .measurement-summary {
+        display: none !important;
+    }
+}
+
+/* Hide summary in print */
+@media print {
+    .measurement-summary { display: none !important; }       
+}
+
+/* Pin placement animation */
+@keyframes pinDrop {
+    0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
+    60% { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
+    100% { transform: translate(-50%, -50%) scale(1); }      
+}
+
+.measurement-pin {
+    animation: pinDrop 0.25s ease-out;
+}
+
+/* Label fade-in */
+@keyframes labelFade {
+    from { opacity: 0; transform: translate(-50%, -100%) translateY(8px); }
+    to { opacity: 1; transform: translate(-50%, -100%) translateY(0); }
+}
+
+.measurement-label {
+    animation: labelFade 0.3s ease-out;
+}
+
+/* Summary panel slide-in */
+@keyframes summarySlide {
+    from { opacity: 0; transform: translateY(10px); }        
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.measurement-summary {
+    animation: summarySlide 0.3s ease-out;
+}
+
+/* Tooltip fade */
+.measurement-tooltip {
+    transition: opacity 0.15s ease;
+}
+
 @media print {
     body { background: white; color: black; overflow: visible; }
     #canvas-container { display: none; }
@@ -343,6 +549,109 @@ input[type="range"]::-moz-range-thumb {
     .stats { color: #333; }
     .collapsible { max-height: none; opacity: 1; }
     .collapsible.collapsed { max-height: none; opacity: 1; display: block; }
+}
+
+/* Measurement summary panel — bottom-left floating list */  
+.measurement-summary {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    z-index: 10;
+    background: rgba(22, 33, 62, 0.9);
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(74, 158, 255, 0.3);
+    display: none;
+    min-width: 140px;
+    max-width: 200px;
+    pointer-events: auto;
+}
+
+.measurement-summary h4 {
+    margin: 0 0 6px;
+    font-size: 0.75rem;
+    color: #4a9eff;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.measurement-summary ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.measurement-summary li {
+    font-size: 0.8rem;
+    color: #e0e0e0;
+    padding: 3px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);      
+}
+
+.measurement-summary li:last-child {
+    border-bottom: none;
+}
+
+.measurement-summary .msr-idx {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    line-height: 18px;
+    text-align: center;
+    background: rgba(74, 158, 255, 0.2);
+    color: #4a9eff;
+    border-radius: 50%;
+    font-size: 0.65rem;
+    font-weight: bold;
+    margin-right: 6px;
+}
+
+/* Hide summary on mobile (too little space) */
+@media (max-width: 480px) {
+    .measurement-summary {
+        display: none !important;
+    }
+}
+
+/* Hide summary in print */
+@media print {
+    .measurement-summary { display: none !important; }       
+}
+
+/* Pin placement animation */
+@keyframes pinDrop {
+    0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
+    60% { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
+    100% { transform: translate(-50%, -50%) scale(1); }      
+}
+
+.measurement-pin {
+    animation: pinDrop 0.25s ease-out;
+}
+
+/* Label fade-in */
+@keyframes labelFade {
+    from { opacity: 0; transform: translate(-50%, -100%) translateY(8px); }
+    to { opacity: 1; transform: translate(-50%, -100%) translateY(0); }
+}
+
+.measurement-label {
+    animation: labelFade 0.3s ease-out;
+}
+
+/* Summary panel slide-in */
+@keyframes summarySlide {
+    from { opacity: 0; transform: translateY(10px); }        
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.measurement-summary {
+    animation: summarySlide 0.3s ease-out;
+}
+
+/* Tooltip fade */
+.measurement-tooltip {
+    transition: opacity 0.15s ease;
 }
 
 @media (max-width: 480px) {
