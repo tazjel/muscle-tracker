@@ -94,7 +94,8 @@ let _profileVisible = false;
 let _ghostRich      = {};
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-let _viewerToken = null;
+let _viewerToken    = null;
+let _currentMeshId  = null;
 
 async function _autoLogin() {
   try {
@@ -389,8 +390,16 @@ function init() {
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping    = true;
   controls.dampingFactor    = 0.08;
-  controls.minDistance      = 50;
-  controls.maxDistance      = 2000;
+  controls.minDistance      = 200;
+  controls.maxDistance      = 3000;
+
+  // Double-tap to reset camera (mobile)
+  let _lastTap = 0;
+  renderer.domElement.addEventListener('touchend', (e) => {
+    const now = Date.now();
+    if (now - _lastTap < 300) { e.preventDefault(); window.resetCamera(); }
+    _lastTap = now;
+  });
   controls.target.set(0, 80, 0);  // roughly mid-torso height
   controls.update();
 
@@ -688,6 +697,9 @@ function _setupEnvironment() {
 function _loadFromUrl() {
   const params      = new URLSearchParams(window.location.search);
   const glbUrl      = params.get('model');
+  // Track mesh ID from URL for screenshot upload
+  const meshIdMatch = (glbUrl || '').match(/mesh\/(\d+)/);
+  if (meshIdMatch) _currentMeshId = parseInt(meshIdMatch[1]);
   const objUrl      = params.get('obj');
   const volStr      = params.get('volume');
   const compareOld  = params.get('compare_old');
@@ -765,7 +777,13 @@ function _loadGLB(url, onLoaded) {
       if (xhr.total > 0) _showProgress(Math.round(xhr.loaded / xhr.total * 100));
       _setStatus(`Loading… ${xhr.total > 0 ? Math.round(xhr.loaded / xhr.total * 100) + '%' : ''}`);
     },
-    (err) => { console.error(err); _setStatus('Error loading model'); _hideProgress(); },
+    (err) => {
+      console.error(err);
+      _setStatus('Error loading model');
+      _hideProgress();
+      const info = document.getElementById('mesh-info');
+      if (info) { info.textContent = 'Failed to load model'; info.style.color = '#ef4444'; }
+    },
   );
 }
 
@@ -1399,11 +1417,22 @@ window.takeScreenshot = function() {
     if (parts.length) ctx.fillText(parts.join('  \u00b7  '), 12 * scale, canvas.height - barH + 36 * scale);
   }
 
+  const dataURL = canvas.toDataURL('image/png');
+
   // Download
   const link = document.createElement('a');
   link.download = `gtd3d_${Date.now()}.png`;
-  link.href = canvas.toDataURL('image/png');
+  link.href = dataURL;
   link.click();
+
+  // Upload screenshot to server (non-blocking, best-effort)
+  if (_currentMeshId && _viewerToken) {
+    fetch(`/web_app/api/mesh/${_currentMeshId}/screenshot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${_viewerToken}` },
+      body: JSON.stringify({ image: dataURL }),
+    }).catch(() => {});
+  }
 };
 
 window.clearMeasurements = function() {
@@ -1469,6 +1498,7 @@ window.switchMesh = function(idx) {
   if (_ghostMesh) { scene.remove(_ghostMesh); _ghostMesh = null; }
   origMaterials = [];
   _originalMaterials.clear();
+  _currentMeshId = m.id;
   _setStatus('Loading scan #' + m.id + '…');
   const loader = new GLTFLoader();
   loader.load(`/web_app/api/mesh/${m.id}.glb`, (gltf) => {

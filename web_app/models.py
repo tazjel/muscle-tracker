@@ -158,6 +158,7 @@ db.define_table('mesh_model',
     Field('num_faces', 'integer'),
     Field('scan_before_id', 'reference mesh_model'),
     Field('notes', 'text'),
+    Field('screenshot_path', 'string', length=512),
 )
 
 # 8. DEVICE PROFILES

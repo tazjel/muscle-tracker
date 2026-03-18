@@ -2092,6 +2092,101 @@ def get_body_profile(customer_id):
     return dict(status='success', profile=profile)
 
 
+@action('api/customer/<customer_id:int>/progress_report', method=['GET'])
+@action.uses(db, cors)
+def progress_report(customer_id):
+    """Aggregate customer data for progress report page."""
+    payload, err = _auth_check()
+    if err: return err
+    customer = db.customer[customer_id]
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    # Profile
+    profile = {f: getattr(customer, f, None) for f in _BODY_PROFILE_FIELDS}
+    profile['name'] = customer.name or ''
+    profile['gender'] = customer.gender if hasattr(customer, 'gender') else ''
+
+    # Mesh history (all body meshes, newest first)
+    meshes = db(db.mesh_model.customer_id == customer_id).select(
+        db.mesh_model.id,
+        db.mesh_model.volume_cm3,
+        db.mesh_model.num_vertices,
+        db.mesh_model.num_faces,
+        db.mesh_model.created_on,
+        orderby=~db.mesh_model.id
+    )
+    mesh_list = [dict(
+        id=int(r.id),
+        volume_cm3=round(float(r.volume_cm3), 1) if r.volume_cm3 else None,
+        vertices=r.num_vertices,
+        faces=r.num_faces,
+        date=str(r.created_on)[:16] if r.created_on else '',
+    ) for r in meshes]
+
+    # Volume trend (oldest → newest for chart)
+    volume_trend = [
+        dict(date=m['date'], volume=m['volume_cm3'])
+        for m in reversed(mesh_list) if m['volume_cm3']
+    ]
+
+    # Body composition history
+    comp_rows = db(
+        db.body_composition_log.customer_id == customer_id
+    ).select(orderby=db.body_composition_log.assessed_on)
+    comp_history = [dict(
+        date=str(r.assessed_on)[:16] if r.assessed_on else '',
+        body_fat_pct=r.body_fat_pct,
+        lean_mass_kg=r.lean_mass_kg,
+    ) for r in comp_rows]
+
+    # Key circumferences for progress tracking
+    circ_fields = ['chest_circumference_cm', 'waist_circumference_cm',
+                   'hip_circumference_cm', 'bicep_circumference_cm',
+                   'thigh_circumference_cm', 'calf_circumference_cm']
+    circumferences = {f.replace('_circumference_cm', '').replace('_cm', ''): getattr(customer, f, None)
+                      for f in circ_fields if getattr(customer, f, None)}
+
+    return dict(
+        status='success',
+        profile=profile,
+        meshes=mesh_list,
+        volume_trend=volume_trend,
+        body_composition=comp_history,
+        circumferences=circumferences,
+        total_scans=len(mesh_list),
+    )
+
+
+@action('api/mesh/<mesh_id:int>/screenshot', method=['POST'])
+@action.uses(db, cors)
+def save_mesh_screenshot(mesh_id):
+    """Save a screenshot PNG for a mesh (thumbnail for report/timeline)."""
+    payload, err = _auth_check()
+    if err: return err
+    mesh = db.mesh_model[mesh_id]
+    if not mesh:
+        return dict(status='error', message='Mesh not found')
+    data = request.json or {}
+    b64 = data.get('image', '')
+    if not b64:
+        return dict(status='error', message='No image data')
+    import base64
+    try:
+        img_bytes = base64.b64decode(b64.split(',')[-1])
+    except Exception:
+        return dict(status='error', message='Invalid base64 image')
+    screenshots_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'screenshots')
+    os.makedirs(screenshots_dir, exist_ok=True)
+    fname = f'mesh_{mesh_id}.png'
+    fpath = os.path.join(screenshots_dir, fname)
+    with open(fpath, 'wb') as f:
+        f.write(img_bytes)
+    mesh.update_record(screenshot_path=fpath)
+    db.commit()
+    return dict(status='success', path=fname)
+
+
 @action('api/customer/<customer_id:int>/body_profile', method=['POST'])
 @action.uses(db, cors)
 def update_body_profile(customer_id):
