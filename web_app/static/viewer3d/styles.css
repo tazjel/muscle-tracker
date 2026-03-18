@@ -275,6 +275,29 @@ input[type="range"]::-moz-range-thumb {
     margin-right: 4px;
 }
 
+/* Angle measurement pins — orange accent to distinguish from distance */
+.measurement-pin.angle-pin {
+    background: #f59e0b;
+    border-color: #ffffff;
+}
+
+.measurement-pin.angle-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* Angle measurement lines — solid orange instead of dashed blue */
+.measurement-line.angle-line {
+    border-top: 2px solid rgba(245, 158, 11, 0.7);
+}
+
+/* Angle label — orange accent */
+.measurement-label.angle-label {
+    color: #f59e0b;
+    border-color: rgba(245, 158, 11, 0.4);
+    font-size: 0.85rem;
+    text-shadow: 0 0 4px rgba(245, 158, 11, 0.3);
+}
+
 @media (max-width: 480px) {
     #ui-overlay {
         top: 10px;
