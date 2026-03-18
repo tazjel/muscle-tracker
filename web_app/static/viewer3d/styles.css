@@ -410,6 +410,53 @@ input[type="range"]::-moz-range-thumb {
     animation: labelFlash 0.4s ease-out 2;
 }
 
+/* Circumference measurement pin — green accent */
+.measurement-pin.circum-pin {
+    background: #10b981;
+    border-color: #ffffff;
+}
+
+.measurement-pin.circum-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* Circumference label — green accent */
+.measurement-label.circum-label {
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.4);
+    text-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+}
+
+/* Horizontal measurement guide line */
+.measurement-guide {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(74, 158, 255, 0.3) 20%,
+        rgba(74, 158, 255, 0.5) 50%,
+        rgba(74, 158, 255, 0.3) 80%,
+        transparent 100%
+    );
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+}
+
+/* Circumference ring dots (if raycaster available) */       
+.circum-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: #10b981;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0.6;
+}
+
 @media (max-width: 480px) {
     .measurement-summary {
         display: none !important;
@@ -470,6 +517,53 @@ input[type="range"]::-moz-range-thumb {
 
 .measurement-label.label-highlight {
     animation: labelFlash 0.4s ease-out 2;
+}
+
+/* Circumference measurement pin — green accent */
+.measurement-pin.circum-pin {
+    background: #10b981;
+    border-color: #ffffff;
+}
+
+.measurement-pin.circum-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* Circumference label — green accent */
+.measurement-label.circum-label {
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.4);
+    text-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+}
+
+/* Horizontal measurement guide line */
+.measurement-guide {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(74, 158, 255, 0.3) 20%,
+        rgba(74, 158, 255, 0.5) 50%,
+        rgba(74, 158, 255, 0.3) 80%,
+        transparent 100%
+    );
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+}
+
+/* Circumference ring dots (if raycaster available) */       
+.circum-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: #10b981;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0.6;
 }
 
 @media print {
@@ -565,6 +659,53 @@ input[type="range"]::-moz-range-thumb {
 
 .measurement-label.label-highlight {
     animation: labelFlash 0.4s ease-out 2;
+}
+
+/* Circumference measurement pin — green accent */
+.measurement-pin.circum-pin {
+    background: #10b981;
+    border-color: #ffffff;
+}
+
+.measurement-pin.circum-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* Circumference label — green accent */
+.measurement-label.circum-label {
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.4);
+    text-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+}
+
+/* Horizontal measurement guide line */
+.measurement-guide {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(74, 158, 255, 0.3) 20%,
+        rgba(74, 158, 255, 0.5) 50%,
+        rgba(74, 158, 255, 0.3) 80%,
+        transparent 100%
+    );
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+}
+
+/* Circumference ring dots (if raycaster available) */       
+.circum-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: #10b981;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0.6;
 }
 
 @media (pointer: coarse) {
@@ -701,6 +842,53 @@ input[type="range"]::-moz-range-thumb {
     animation: labelFlash 0.4s ease-out 2;
 }
 
+/* Circumference measurement pin — green accent */
+.measurement-pin.circum-pin {
+    background: #10b981;
+    border-color: #ffffff;
+}
+
+.measurement-pin.circum-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* Circumference label — green accent */
+.measurement-label.circum-label {
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.4);
+    text-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+}
+
+/* Horizontal measurement guide line */
+.measurement-guide {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(74, 158, 255, 0.3) 20%,
+        rgba(74, 158, 255, 0.5) 50%,
+        rgba(74, 158, 255, 0.3) 80%,
+        transparent 100%
+    );
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+}
+
+/* Circumference ring dots (if raycaster available) */       
+.circum-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: #10b981;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0.6;
+}
+
 @media (max-width: 480px) {
     .measurement-summary {
         display: none !important;
@@ -761,6 +949,53 @@ input[type="range"]::-moz-range-thumb {
 
 .measurement-label.label-highlight {
     animation: labelFlash 0.4s ease-out 2;
+}
+
+/* Circumference measurement pin — green accent */
+.measurement-pin.circum-pin {
+    background: #10b981;
+    border-color: #ffffff;
+}
+
+.measurement-pin.circum-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* Circumference label — green accent */
+.measurement-label.circum-label {
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.4);
+    text-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+}
+
+/* Horizontal measurement guide line */
+.measurement-guide {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(74, 158, 255, 0.3) 20%,
+        rgba(74, 158, 255, 0.5) 50%,
+        rgba(74, 158, 255, 0.3) 80%,
+        transparent 100%
+    );
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+}
+
+/* Circumference ring dots (if raycaster available) */       
+.circum-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: #10b981;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0.6;
 }
 
 @media print {
@@ -856,6 +1091,53 @@ input[type="range"]::-moz-range-thumb {
 
 .measurement-label.label-highlight {
     animation: labelFlash 0.4s ease-out 2;
+}
+
+/* Circumference measurement pin — green accent */
+.measurement-pin.circum-pin {
+    background: #10b981;
+    border-color: #ffffff;
+}
+
+.measurement-pin.circum-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* Circumference label — green accent */
+.measurement-label.circum-label {
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.4);
+    text-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+}
+
+/* Horizontal measurement guide line */
+.measurement-guide {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(74, 158, 255, 0.3) 20%,
+        rgba(74, 158, 255, 0.5) 50%,
+        rgba(74, 158, 255, 0.3) 80%,
+        transparent 100%
+    );
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+}
+
+/* Circumference ring dots (if raycaster available) */       
+.circum-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: #10b981;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0.6;
 }
 
 @media print {
@@ -992,6 +1274,53 @@ input[type="range"]::-moz-range-thumb {
     animation: labelFlash 0.4s ease-out 2;
 }
 
+/* Circumference measurement pin — green accent */
+.measurement-pin.circum-pin {
+    background: #10b981;
+    border-color: #ffffff;
+}
+
+.measurement-pin.circum-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* Circumference label — green accent */
+.measurement-label.circum-label {
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.4);
+    text-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+}
+
+/* Horizontal measurement guide line */
+.measurement-guide {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(74, 158, 255, 0.3) 20%,
+        rgba(74, 158, 255, 0.5) 50%,
+        rgba(74, 158, 255, 0.3) 80%,
+        transparent 100%
+    );
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+}
+
+/* Circumference ring dots (if raycaster available) */       
+.circum-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: #10b981;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0.6;
+}
+
 @media (max-width: 480px) {
     .measurement-summary {
         display: none !important;
@@ -1052,6 +1381,53 @@ input[type="range"]::-moz-range-thumb {
 
 .measurement-label.label-highlight {
     animation: labelFlash 0.4s ease-out 2;
+}
+
+/* Circumference measurement pin — green accent */
+.measurement-pin.circum-pin {
+    background: #10b981;
+    border-color: #ffffff;
+}
+
+.measurement-pin.circum-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* Circumference label — green accent */
+.measurement-label.circum-label {
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.4);
+    text-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+}
+
+/* Horizontal measurement guide line */
+.measurement-guide {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(74, 158, 255, 0.3) 20%,
+        rgba(74, 158, 255, 0.5) 50%,
+        rgba(74, 158, 255, 0.3) 80%,
+        transparent 100%
+    );
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+}
+
+/* Circumference ring dots (if raycaster available) */       
+.circum-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: #10b981;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0.6;
 }
 
 @media print {
@@ -1147,6 +1523,53 @@ input[type="range"]::-moz-range-thumb {
 
 .measurement-label.label-highlight {
     animation: labelFlash 0.4s ease-out 2;
+}
+
+/* Circumference measurement pin — green accent */
+.measurement-pin.circum-pin {
+    background: #10b981;
+    border-color: #ffffff;
+}
+
+.measurement-pin.circum-pin:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* Circumference label — green accent */
+.measurement-label.circum-label {
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.4);
+    text-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+}
+
+/* Horizontal measurement guide line */
+.measurement-guide {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(74, 158, 255, 0.3) 20%,
+        rgba(74, 158, 255, 0.5) 50%,
+        rgba(74, 158, 255, 0.3) 80%,
+        transparent 100%
+    );
+    pointer-events: none;
+    z-index: 5;
+    display: none;
+}
+
+/* Circumference ring dots (if raycaster available) */       
+.circum-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: #10b981;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0.6;
 }
 
 @media (max-width: 480px) {
