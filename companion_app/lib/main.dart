@@ -90,16 +90,19 @@ Future<void> main() async {
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
   // Tablet (MatePad) → landscape; phone (A24) → portrait
-  final view = WidgetsBinding.instance.platformDispatcher.views.first;
-  final shortSideDp = view.physicalSize.shortestSide / view.devicePixelRatio;
-  if (shortSideDp > 600) {
-    await SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
-  } else {
-    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  }
+  // Use addPostFrameCallback: physicalSize can be (0,0) before the first frame.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    final view = WidgetsBinding.instance.platformDispatcher.views.first;
+    final shortSideDp = view.physicalSize.shortestSide / view.devicePixelRatio;
+    if (shortSideDp > 600) {
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    } else {
+      SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    }
+  });
   _cameras = await availableCameras();
 
   // Auto-login
@@ -1182,7 +1185,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Widget _buildCaptureUI() {
     final bottomPad = MediaQuery.of(context).padding.bottom + 24;
     return Positioned(bottom: 0, left: 0, right: 0, child: Container(padding: EdgeInsets.fromLTRB(24, 16, 24, bottomPad), decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Colors.black87, Colors.transparent])), child: Column(mainAxisSize: MainAxisSize.min, children: [
-      Container(margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [_modeBtn('PHOTO', !_isRecordingMode && !_isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('VIDEO', _isRecordingMode && !_isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('AUTO', _isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('PROFILE', _isProfileMode), _modeBtn('DUAL', _isDualMode)])),
+      SingleChildScrollView(scrollDirection: Axis.horizontal, child: Container(margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [_modeBtn('PHOTO', !_isRecordingMode && !_isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('VIDEO', _isRecordingMode && !_isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('AUTO', _isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('PROFILE', _isProfileMode), _modeBtn('DUAL', _isDualMode)]))),
       AnimatedSwitcher(duration: const Duration(milliseconds: 300), child: _isRecording ? Text('00:0$_recordingCountdown', key: const ValueKey('timer'), style: const TextStyle(color: AppTheme.accentRed, fontSize: 32, fontWeight: FontWeight.bold)) : Row(mainAxisSize: MainAxisSize.min, children: [_phaseDot(0), const SizedBox(width: 6), Text(_phaseLabels[_capturePhase], key: ValueKey(_capturePhase), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2)), const SizedBox(width: 6), _phaseDot(1)])),
       const SizedBox(height: 12),
       if (_statusMessage != null) Text(_statusMessage!, style: const TextStyle(color: AppTheme.primaryTeal, fontSize: 13, fontWeight: FontWeight.w500)),
