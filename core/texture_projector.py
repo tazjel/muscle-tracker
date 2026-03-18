@@ -15,6 +15,23 @@ import numpy as np
 import math
 
 
+def _normalize_lighting(img):
+    """White-balance + CLAHE on each camera view for consistent skin tone."""
+    # Convert to LAB for perceptual uniformity
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+
+    # CLAHE on luminance only — preserves color, evens brightness
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+
+    # Simple grey-world white balance on a/b channels
+    a = cv2.add(a, int(128 - a.mean()))
+    b = cv2.add(b, int(128 - b.mean()))
+
+    return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+
+
 def project_texture(vertices: np.ndarray, faces: np.ndarray, uvs: np.ndarray,
                     camera_views: list, atlas_size: int = 2048):
     """
@@ -40,7 +57,7 @@ def project_texture(vertices: np.ndarray, faces: np.ndarray, uvs: np.ndarray,
     weight  = np.zeros((atlas_size, atlas_size), dtype=np.float32)
 
     for view in camera_views:
-        img = view['image']
+        img = _normalize_lighting(view['image'])
         h_img, w_img = img.shape[:2]
         direction = view['direction']
         dist      = float(view['distance_mm'])

@@ -9,6 +9,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:share_plus/share_plus.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 late List<CameraDescription> _cameras;
 
@@ -87,7 +88,18 @@ Future<void> main() async {
 
   // Kiosk mode — always on (dev panel is inside the app, not system UI)
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+
+  // Tablet (MatePad) → landscape; phone (A24) → portrait
+  final view = WidgetsBinding.instance.platformDispatcher.views.first;
+  final shortSideDp = view.physicalSize.shortestSide / view.devicePixelRatio;
+  if (shortSideDp > 600) {
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+  } else {
+    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  }
   _cameras = await availableCameras();
 
   // Auto-login
@@ -1480,6 +1492,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
     final grade      = r['shape_grade'];
     final calibrated = r['calibrated']  ?? false;
     final scanId     = r['scan_id'];
+    final meshId     = r['mesh_id'];
     final circCm     = r['circumference_cm']?.toDouble();
     final defScore   = r['definition_score']?.toDouble();
     final defGrade   = r['definition_grade'] as String?;
@@ -1607,6 +1620,19 @@ class _ResultsScreenState extends State<ResultsScreen> {
               label: const Text('VIEW CLINICAL REPORT'),
               style: FilledButton.styleFrom(backgroundColor: Colors.white10, foregroundColor: Colors.white),
             ),
+            const SizedBox(height: 10),
+            if (meshId != null)
+              FilledButton.icon(
+                onPressed: () => Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => ModelViewerScreen(meshId: int.parse(meshId.toString())),
+                )),
+                icon: const Icon(Icons.view_in_ar, size: 18),
+                label: const Text('VIEW 3D'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF1B5E20),
+                  foregroundColor: Colors.white,
+                ),
+              ),
             const SizedBox(height: 10),
           ],
           FilledButton.icon(
@@ -2251,4 +2277,60 @@ class ContourOverlayPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant ContourOverlayPainter old) => old.points != points || old.color != color;
+}
+
+// ── 3D Model Viewer (WebView) ─────────────────────────────────────────────────
+
+class ModelViewerScreen extends StatefulWidget {
+  final int meshId;
+  final String? title;
+  const ModelViewerScreen({super.key, required this.meshId, this.title});
+
+  @override
+  State<ModelViewerScreen> createState() => _ModelViewerScreenState();
+}
+
+class _ModelViewerScreenState extends State<ModelViewerScreen> {
+  late final WebViewController _controller;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(NavigationDelegate(
+        onPageFinished: (_) => setState(() => _loading = false),
+      ))
+      ..loadRequest(Uri.parse(
+        '${AppConfig.serverBaseUrl}/static/viewer3d/index.html'
+        '?model=/api/mesh/${widget.meshId}.glb'
+        '&customer=${_customerId ?? "1"}'
+      ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0D1117),
+      appBar: AppBar(
+        title: Text(widget.title ?? '3D Body Model',
+            style: const TextStyle(fontSize: 16)),
+        backgroundColor: const Color(0xFF161B22),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: Stack(
+        children: [
+          WebViewWidget(controller: _controller),
+          if (_loading)
+            const Center(child: CircularProgressIndicator(
+              color: AppTheme.primaryTeal,
+            )),
+        ],
+      ),
+    );
+  }
 }

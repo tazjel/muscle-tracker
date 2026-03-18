@@ -2324,6 +2324,7 @@ def generate_body_model(customer_id):
         # ── Texture projection (when silhouette images are available) ───────────
         texture_image = None
         uvs_for_glb   = None
+        normal_map    = None
         if silhouette_views:
             try:
                 import cv2 as _cv2
@@ -2346,6 +2347,14 @@ def generate_body_model(customer_id):
                         verts, faces, uvs_for_glb, cam_views, atlas_size=1024
                     )
                     logger.info('Texture projected from %d view(s)', len(cam_views))
+                    # Generate normal map for enhanced viewer lighting
+                    try:
+                        from core.mesh_reconstruction import _generate_normal_map
+                        normal_map = _generate_normal_map(verts, faces, uvs_for_glb, atlas_size=1024)
+                        logger.info('Normal map generated (1024x1024)')
+                    except Exception:
+                        normal_map = None
+                        logger.warning('Normal map generation failed')
             except Exception:
                 logger.warning('Texture projection failed — exporting untextured GLB')
                 texture_image = None
@@ -2357,7 +2366,8 @@ def generate_body_model(customer_id):
         try:
             if texture_image is not None and uvs_for_glb is not None:
                 export_glb(verts, faces, glb_path,
-                           uvs=uvs_for_glb, texture_image=texture_image)
+                           uvs=uvs_for_glb, texture_image=texture_image,
+                           normal_map=normal_map)
             else:
                 export_glb(verts, faces, glb_path)
             glb_path_out = glb_path

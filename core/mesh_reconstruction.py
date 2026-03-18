@@ -117,8 +117,35 @@ def _compute_smooth_normals(vertices, faces):
     return normals.astype(np.float32)
 
 
+def _generate_normal_map(vertices, faces, uvs, atlas_size=1024):
+    """
+    Generate a tangent-space normal map from mesh geometry.
+    Returns (atlas_size, atlas_size, 3) uint8 RGB image.
+    """
+    normal_map = np.full((atlas_size, atlas_size, 3), 128, dtype=np.uint8)  # flat normal = (128,128,255)
+    normal_map[:, :, 2] = 255  # Z always up in tangent space
+
+    normals = _compute_smooth_normals(vertices, faces)
+
+    for fi in range(len(faces)):
+        f = faces[fi]
+        for vi in f:
+            if uvs is None:
+                continue
+            uv = uvs[vi]
+            tx = int(np.clip(uv[0] * (atlas_size - 1), 0, atlas_size - 1))
+            ty = int(np.clip((1 - uv[1]) * (atlas_size - 1), 0, atlas_size - 1))
+            n = normals[vi]
+            # Tangent-space encoding: map [-1,1] → [0,255]
+            normal_map[ty, tx, 0] = int(np.clip((n[0] * 0.5 + 0.5) * 255, 0, 255))  # R = X
+            normal_map[ty, tx, 1] = int(np.clip((n[1] * 0.5 + 0.5) * 255, 0, 255))  # G = Y
+            normal_map[ty, tx, 2] = int(np.clip((n[2] * 0.5 + 0.5) * 255, 0, 255))  # B = Z
+
+    return normal_map
+
+
 def export_glb(vertices, faces, output_path, normals=True,
-               uvs=None, texture_image=None):
+               uvs=None, texture_image=None, normal_map=None):
     """
     Export mesh as a binary glTF (.glb) file using pygltflib.
 
@@ -166,8 +193,17 @@ def export_glb(vertices, faces, output_path, normals=True,
             pad = (4 - len(png_binary) % 4) % 4
             png_binary += b'\x00' * pad
 
-    # ── Assemble buffer: tris → verts → norms → uvs → png ────────────────────
-    blob  = tris_binary + verts_binary + norms_binary + uvs_binary + png_binary
+    # ── Normal map PNG ──────────────────────────────────────────────────────
+    nmap_binary = b''
+    if normal_map is not None and uvs is not None:
+        success_n, enc_n = cv2.imencode('.png', normal_map)
+        if success_n:
+            nmap_binary = enc_n.tobytes()
+            pad_n = (4 - len(nmap_binary) % 4) % 4
+            nmap_binary += b'\x00' * pad_n
+
+    # ── Assemble buffer: tris → verts → norms → uvs → png → nmap ─────────────
+    blob  = tris_binary + verts_binary + norms_binary + uvs_binary + png_binary + nmap_binary
     offset = 0
 
     buf_views = []
@@ -239,6 +275,24 @@ def export_glb(vertices, faces, output_path, normals=True,
             wrapS=pygltflib.CLAMP_TO_EDGE, wrapT=pygltflib.CLAMP_TO_EDGE,
         ))
         textures.append(pygltflib.Texture(source=0, sampler=0))
+        offset += len(png_binary)
+
+    # BV for normal map PNG (optional)
+    if nmap_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(nmap_binary),
+        ))
+        images.append(pygltflib.Image(
+            mimeType='image/png', bufferView=len(buf_views) - 1,
+        ))
+        # Reuse sampler 0 if it exists, else add one
+        if not samplers:
+            samplers.append(pygltflib.Sampler(
+                magFilter=pygltflib.LINEAR, minFilter=pygltflib.LINEAR_MIPMAP_LINEAR,
+                wrapS=pygltflib.CLAMP_TO_EDGE, wrapT=pygltflib.CLAMP_TO_EDGE,
+            ))
+        textures.append(pygltflib.Texture(source=len(images) - 1, sampler=0))
+        offset += len(nmap_binary)
 
     # ── Material ───────────────────────────────────────────────────────────────
     if png_binary and uvs_binary:
@@ -252,6 +306,12 @@ def export_glb(vertices, faces, output_path, normals=True,
             roughnessFactor=0.65, metallicFactor=0.0,
         )
 
+    mat_kwargs = dict(pbrMetallicRoughness=pbr, doubleSided=True)
+    if nmap_binary and len(textures) >= 2:
+        mat_kwargs['normalTexture'] = pygltflib.NormalMaterialTexture(
+            index=len(textures) - 1, scale=1.0
+        )
+
     attributes = pygltflib.Attributes(**attr_kwargs)
 
     gltf = pygltflib.GLTF2(
@@ -261,9 +321,7 @@ def export_glb(vertices, faces, output_path, normals=True,
         meshes=[pygltflib.Mesh(primitives=[
             pygltflib.Primitive(attributes=attributes, indices=0, material=0)
         ])],
-        materials=[pygltflib.Material(
-            pbrMetallicRoughness=pbr, doubleSided=True,
-        )],
+        materials=[pygltflib.Material(**mat_kwargs)],
         accessors=accessors,
         bufferViews=buf_views,
         buffers=[pygltflib.Buffer(byteLength=len(blob))],

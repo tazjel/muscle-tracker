@@ -119,6 +119,20 @@ function init() {
   // Click-to-select body region
   renderer.domElement.addEventListener('click', _onMeshClick);
 
+  // Prevent browser default touch behaviors (scroll, pinch-zoom) on the 3D canvas
+  renderer.domElement.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+  renderer.domElement.addEventListener('touchmove',  (e) => e.preventDefault(), { passive: false });
+
+  // Double-tap to reset camera (mobile convenience)
+  let _lastTap = 0;
+  renderer.domElement.addEventListener('touchend', (e) => {
+    const now = Date.now();
+    if (now - _lastTap < 300 && e.changedTouches.length === 1) {
+      window.resetCamera();
+    }
+    _lastTap = now;
+  });
+
   // Adjustment slider live preview
   ['adj-width', 'adj-depth', 'adj-length'].forEach(id => {
     const el = document.getElementById(id);

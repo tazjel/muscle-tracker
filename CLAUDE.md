@@ -1,4 +1,4 @@
-# Muscle Tracker — Agent Orientation
+# gtd3d — Agent Orientation
 
 ## What This Is
 A fitness / body-composition tracking system.
@@ -57,7 +57,7 @@ Viewer URL: `http://192.168.100.16:8000/web_app/static/viewer3d/index.html?model
 PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
 
 # Start server
-cd C:/Users/MiEXCITE/Projects/muscle_tracker
+cd C:/Users/MiEXCITE/Projects/gtd3d
 /c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/Scripts/py4web.exe run apps \
   --host 0.0.0.0 --port 8000 > server.log 2>&1 &
 
