@@ -61,7 +61,7 @@
     </div>
     <div class="actions">
       <button class="btn" onclick="window.print()">Print Report</button>
-      <button class="btn" onclick="location.href='index.html?customer='+cid">Open Viewer</button>
+      <button class="btn" id="btn-viewer" onclick="location.href='index.html?customer='+cid">Open Viewer</button>
     </div>
   </div>
 
@@ -91,6 +91,13 @@
         });
         const d = await r.json();
         if (d.status !== 'success') throw new Error(d.message);
+
+        // Wire viewer button to latest mesh
+        if (d.meshes.length) {
+          const latestId = d.meshes[0].id;
+          document.getElementById('btn-viewer').onclick = () =>
+            location.href = `index.html?model=/web_app/api/mesh/${latestId}.glb&customer=${cid}`;
+        }
 
         const name = d.profile.name || 'Customer ' + cid;
         const gender = d.profile.gender || '';

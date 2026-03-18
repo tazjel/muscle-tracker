@@ -92,11 +92,11 @@
              onclick="event.preventDefault();document.getElementById('skin-upload').click()">Upload skin photo</a>
         </div>
         <div id="skin-tiling" style="display:none;font-size:10px;margin-top:2px;">
-          Tile X:<input type="range" id="skin-tile-x" min="1" max="20" value="6" style="width:55px;"
+          Tile X:<input type="range" id="skin-tile-x" min="1" max="40" value="20" style="width:55px;"
             oninput="setSkinTiling(+this.value,+document.getElementById('skin-tile-y').value);document.getElementById('skin-tile-label').textContent=this.value+'×'+document.getElementById('skin-tile-y').value">
-          Y:<input type="range" id="skin-tile-y" min="1" max="25" value="8" style="width:55px;"
+          Y:<input type="range" id="skin-tile-y" min="1" max="50" value="28" style="width:55px;"
             oninput="setSkinTiling(+document.getElementById('skin-tile-x').value,+this.value);document.getElementById('skin-tile-label').textContent=document.getElementById('skin-tile-x').value+'×'+this.value">
-          <span id="skin-tile-label" style="color:#4a9eff;">6×8</span>
+          <span id="skin-tile-label" style="color:#4a9eff;">20×28</span>
         </div>
       </div>
 
@@ -118,9 +118,9 @@
         </div>
         <!-- Lighting presets -->
         <div class="view-modes" style="margin-top:4px;">
-          <button class="light-preset-btn view-mode-btn active" data-preset="studio"
+          <button class="light-preset-btn view-mode-btn" data-preset="studio"
                   onclick="setLightPreset('studio')">Studio</button>
-          <button class="light-preset-btn view-mode-btn" data-preset="clinical"
+          <button class="light-preset-btn view-mode-btn active" data-preset="clinical"
                   onclick="setLightPreset('clinical')">Clinical</button>
           <button class="light-preset-btn view-mode-btn" data-preset="outdoor"
                   onclick="setLightPreset('outdoor')">Outdoor</button>

@@ -67,7 +67,7 @@ let _propsOn    = false;
 // ── Light groups ─────────────────────────────────────────────────────────────
 let _studioLightObjs    = [];
 let _roomLightObjs      = [];
-let _currentLightPreset = 'studio';
+let _currentLightPreset = 'clinical';
 
 // ── V8 globals ───────────────────────────────────────────────────────────────
 let _meshList    = [];
@@ -352,7 +352,13 @@ async function _loadRealSkinTexture() {
     });
     albedo.wrapS = albedo.wrapT = THREE.RepeatWrapping;
     albedo.colorSpace = THREE.SRGBColorSpace;
-    albedo.repeat.set(6, 8);
+    // ~3cm micro patch: start at realistic scale (high tiling).
+    // User adjusts slider down to enlarge and see detail.
+    albedo.repeat.set(20, 28);
+    // Slight random offset to break grid alignment across UV seams
+    albedo.offset.set(0.13, 0.07);
+    // Anisotropic filtering for sharp detail at oblique angles
+    albedo.anisotropy = renderer.capabilities.getMaxAnisotropy();
 
     let normalTex = null;
     try {
@@ -360,7 +366,9 @@ async function _loadRealSkinTexture() {
         loader.load(baseUrl + '/normal', resolve, undefined, reject);
       });
       normalTex.wrapS = normalTex.wrapT = THREE.RepeatWrapping;
-      normalTex.repeat.set(6, 8);
+      normalTex.repeat.set(20, 28);
+      normalTex.offset.set(0.13, 0.07);
+      normalTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     } catch (e) { /* use procedural fallback */ }
 
     let roughTex = null;
@@ -369,20 +377,57 @@ async function _loadRealSkinTexture() {
         loader.load(baseUrl + '/roughness', resolve, undefined, reject);
       });
       roughTex.wrapS = roughTex.wrapT = THREE.RepeatWrapping;
-      roughTex.repeat.set(6, 8);
+      roughTex.repeat.set(20, 28);
+      roughTex.offset.set(0.13, 0.07);
+      roughTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     } catch (e) { /* use procedural fallback */ }
 
-    SKIN_MATERIAL.map = albedo;
-    if (normalTex) {
-      SKIN_MATERIAL.normalMap = normalTex;
-      SKIN_MATERIAL.normalScale.set(1.2, 1.2);
-    }
-    if (roughTex) SKIN_MATERIAL.roughnessMap = roughTex;
+    // Build a clean material from the real skin photo — no procedural tints
+    const realSkinMat = new THREE.MeshPhysicalMaterial({
+      map:              albedo,
+      normalMap:        normalTex || null,
+      normalScale:      new THREE.Vector2(0.8, 0.8),
+      roughnessMap:     roughTex || null,
+      roughness:        0.6,
+      metalness:        0.0,
+      side:             THREE.DoubleSide,
+      color:            0xffffff,   // pure white — let the texture speak
+      // Subtle skin PBR properties
+      sheen:            0.15,
+      sheenRoughness:   0.5,
+      sheenColor:       new THREE.Color(0xddaa88),
+      clearcoat:        0.03,
+      clearcoatRoughness: 0.5,
+      emissive:         new THREE.Color(0x000000),  // no emissive tint
+      emissiveIntensity: 0.0,
+    });
+    // Replace SKIN_MATERIAL properties so setSkinTiling still works
+    Object.assign(SKIN_MATERIAL, {
+      map: albedo, normalMap: normalTex, roughnessMap: roughTex,
+      color: new THREE.Color(0xffffff),
+      roughness: 0.6,
+      metalness: 0.0,
+      // SSS — light penetrates skin, scatters red
+      transmission: 0.08,
+      thickness: 0.5,
+      attenuationColor: new THREE.Color(0.8, 0.25, 0.15),
+      attenuationDistance: 0.5,
+      ior: 1.4,
+      specularIntensity: 0.5,
+      // Subtle sheen + clearcoat
+      sheen: 0.15, sheenRoughness: 0.7,
+      sheenColor: new THREE.Color(0xddaa88),
+      clearcoat: 0.03, clearcoatRoughness: 0.4,
+      // No tints
+      emissive: new THREE.Color(0x000000), emissiveIntensity: 0.0,
+    });
+    if (normalTex) SKIN_MATERIAL.normalScale.set(1.0, 1.0);
     SKIN_MATERIAL.needsUpdate = true;
 
     _realSkinLoaded = true;
     console.log('Real skin texture loaded for customer', cid);
 
+    // Apply the clean material directly
     if (bodyMesh) {
       bodyMesh.traverse(c => { if (c.isMesh) c.material = SKIN_MATERIAL; });
     }
@@ -407,26 +452,30 @@ window.setSkinTiling = setSkinTiling;
 const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
   map:              _createSkinColorMap(),
   roughnessMap:     _createSkinRoughnessMap(),
-  roughness:        0.55,
+  roughness:        0.6,
   metalness:        0.0,
   side:             THREE.DoubleSide,
-  // Subsurface scattering approximation (warm blood undertone)
-  sheen:            0.6,
-  sheenRoughness:   0.4,
-  sheenColor:       new THREE.Color(0xcc6644),   // warm reddish undertone
-  // Subtle skin oil sheen
-  clearcoat:        0.05,
-  clearcoatRoughness: 0.4,
-  // Transmission for thin areas (ears, fingers) — subtle translucency
-  transmission:     0.02,
-  thickness:        5.0,
+  color:            0xffffff,
+  // Subsurface scattering — light penetrates skin, scatters red (blood)
+  transmission:     0.08,
+  thickness:        0.5,
+  attenuationColor: new THREE.Color(0.8, 0.25, 0.15),  // blood red
+  attenuationDistance: 0.5,
   ior:              1.4,
+  // Subtle sheen (skin micro-fuzz)
+  sheen:            0.15,
+  sheenRoughness:   0.7,
+  sheenColor:       new THREE.Color(0xddaa88),
+  // Surface oil
+  clearcoat:        0.03,
+  clearcoatRoughness: 0.4,
+  specularIntensity: 0.5,
   // Normal map for anatomical surface detail
   normalMap:        _createSkinNormalMap(),
-  normalScale:      new THREE.Vector2(0.8, 0.8),
-  // Slightly warm emissive to prevent pure black in shadows (blood glow)
-  emissive:         new THREE.Color(0x1a0800),
-  emissiveIntensity: 0.08,
+  normalScale:      new THREE.Vector2(1.0, 1.0),
+  // No emissive tint
+  emissive:         new THREE.Color(0x000000),
+  emissiveIntensity: 0.0,
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -463,8 +512,8 @@ function init() {
   controls.target.set(0, 80, 0);  // roughly mid-torso height
   controls.update();
 
-  // Lights
-  _setupStudioLights();
+  // Lights — clinical default (even, shadow-free for accurate body viewing)
+  _setupClinicalLights();
 
   // Environment map (PMREMGenerator gradient — no external HDR file needed)
   _setupEnvironment();
@@ -769,55 +818,56 @@ function _setupEnvironment() {
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
 
-  // Professional photography studio environment for skin rendering
+  // Neutral clinical environment — no color tint, pure white/grey
+  // This ensures skin textures render with true-to-life color
   const envScene = new THREE.Scene();
-  envScene.background = new THREE.Color(0x252030);
+  envScene.background = new THREE.Color(0x404040);
 
-  // Sky dome — warm gradient (golden hour feel)
+  // Sky dome — neutral grey (no warm/cool tint)
   const domeGeo = new THREE.SphereGeometry(900, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
   const domeMat = new THREE.MeshBasicMaterial({
-    color: 0x776655, side: THREE.BackSide,
+    color: 0x808080, side: THREE.BackSide,
   });
   envScene.add(new THREE.Mesh(domeGeo, domeMat));
 
-  // Ground plane — warm bounce (fills shadows from below)
+  // Ground plane — neutral grey
   const floorGeo = new THREE.PlaneGeometry(2000, 2000);
-  const floorMat = new THREE.MeshBasicMaterial({ color: 0x554433 });
+  const floorMat = new THREE.MeshBasicMaterial({ color: 0x606060 });
   const floor = new THREE.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI / 2;
   floor.position.y = -10;
   envScene.add(floor);
 
-  // Large softboxes for smooth, wrap-around reflections
+  // White softboxes — neutral reflections, no color cast
   const panelGeo = new THREE.PlaneGeometry(500, 700);
-  // Key softbox — warm, front-left (main light source reflection)
-  const keyPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xfff0dd }));
+  // Key softbox — pure white, front-left
+  const keyPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }));
   keyPanel.position.set(-450, 350, 350);
   keyPanel.lookAt(0, 150, 0);
   envScene.add(keyPanel);
-  // Fill softbox — slightly cooler, front-right
-  const fillPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xe8eeff }));
+  // Fill softbox — pure white, front-right
+  const fillPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xfafafa }));
   fillPanel.position.set(450, 280, 300);
   fillPanel.lookAt(0, 150, 0);
   envScene.add(fillPanel);
-  // Back rim panel (cool edge light)
-  const rimPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xbbccee }));
+  // Back rim panel — white
+  const rimPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xeeeeee }));
   rimPanel.position.set(0, 250, -500);
   rimPanel.lookAt(0, 150, 0);
   envScene.add(rimPanel);
-  // Top panel (overhead fill — prevents dark crown)
+  // Top panel — white
   const topPanel = new THREE.Mesh(
     new THREE.PlaneGeometry(600, 600),
-    new THREE.MeshBasicMaterial({ color: 0xeee8dd })
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
   );
   topPanel.position.set(0, 800, 0);
   topPanel.rotation.x = Math.PI / 2;
   envScene.add(topPanel);
-  // Side accent panels (subtle warm fill for muscle definition)
+  // Side panels — neutral
   for (const sx of [-600, 600]) {
     const side = new THREE.Mesh(
       new THREE.PlaneGeometry(300, 500),
-      new THREE.MeshBasicMaterial({ color: 0xddd8cc })
+      new THREE.MeshBasicMaterial({ color: 0xe0e0e0 })
     );
     side.position.set(sx, 200, 0);
     side.lookAt(0, 150, 0);
