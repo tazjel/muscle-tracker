@@ -521,6 +521,20 @@ function init() {
       case 'w': case 'W': if (_walkMode) _moveState.forward  = true; break;
       case 'a': case 'A': if (_walkMode) _moveState.left     = true; break;
       case 'd': case 'D': if (_walkMode) _moveState.right    = true; break;
+      case '[': {
+        const tabs = ['view', 'scene', 'analyze', 'camera'];
+        const active = document.querySelector('.tab-btn.active');
+        const cur = active ? tabs.indexOf(active.dataset.tab) : 0;
+        switchTab(tabs[(cur - 1 + tabs.length) % tabs.length]);
+        break;
+      }
+      case ']': {
+        const tabs = ['view', 'scene', 'analyze', 'camera'];
+        const active = document.querySelector('.tab-btn.active');
+        const cur = active ? tabs.indexOf(active.dataset.tab) : 0;
+        switchTab(tabs[(cur + 1) % tabs.length]);
+        break;
+      }
       case 'Escape':
         if (_walkMode) { window.toggleWalkMode(); break; }
         _measureMode = false;
@@ -1419,6 +1433,12 @@ async function _loadMeshList() {
     const data = await resp.json();
     if (data.status !== 'success') return;
     _meshList = data.meshes;
+    if (_meshList.length > 1) {
+      const info = document.getElementById('mesh-info');
+      if (info && !info.textContent.includes('scan')) {
+        info.textContent += ` · ${_meshList.length} scans`;
+      }
+    }
     // Populate timeline slider
     const slider = document.getElementById('timeline-slider');
     const dateEl = document.getElementById('timeline-date');
@@ -1509,6 +1529,7 @@ window.loadGhost = function() {
     const ghostEntry = _meshList.find(m => String(m.id) === String(meshId));
     const ghostDate = ghostEntry ? ` (${ghostEntry.created_on.slice(0, 10)})` : '';
     _setStatus('Ghost: #' + meshId + ghostDate);
+    if (window.switchTab) switchTab('analyze');
     _computeAnalysis();
     if (_ringsVisible) _buildGhostRings();
     if (_growthMode) _applyGrowthColors();
@@ -1686,6 +1707,7 @@ window.runComparison = async function() {
   const oldId = document.getElementById('compare-old')?.value;
   const newId = document.getElementById('compare-new')?.value;
   if (!oldId || !newId) { _setStatus('Select both meshes to compare'); return; }
+  if (window.switchTab) switchTab('analyze');
   await _applyCompareHeatmap(parseInt(oldId), parseInt(newId));
 };
 
