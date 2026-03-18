@@ -2198,6 +2198,74 @@ def save_mesh_screenshot(mesh_id):
     return dict(status='success', path=fname)
 
 
+@action('api/customer/<customer_id:int>/skin_texture', method=['POST'])
+@action.uses(db, cors)
+def upload_skin_texture(customer_id):
+    """
+    Upload a skin photo and process into tileable PBR texture maps.
+
+    Accepts:
+      image    — photo file (JPEG/PNG)
+      distance — capture distance in cm (optional, for metadata)
+      size     — output texture size (default 1024, power of 2)
+    """
+    payload, err = _auth_check()
+    if err: return err
+
+    upload = request.files.get('image')
+    if not upload:
+        return dict(status='error', message='No image file provided')
+
+    distance = request.forms.get('distance', '30')
+    tex_size = int(request.forms.get('size', '1024'))
+    tex_size = min(max(tex_size, 256), 4096)
+
+    uploads_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'skin')
+    os.makedirs(uploads_dir, exist_ok=True)
+    ext = os.path.splitext(upload.filename or 'photo.jpg')[1] or '.jpg'
+    raw_fname = f'skin_raw_{customer_id}_{distance}cm{ext}'
+    raw_path = os.path.join(uploads_dir, raw_fname)
+    upload.save(raw_path, overwrite=True)
+
+    try:
+        from core.skin_texture import process_skin_photo
+        output_dir = os.path.join(uploads_dir, f'customer_{customer_id}')
+        paths = process_skin_photo(raw_path, output_dir, size=tex_size)
+    except Exception as e:
+        return dict(status='error', message=f'Processing failed: {e}')
+
+    return dict(
+        status='success',
+        distance_cm=distance,
+        size=tex_size,
+        textures={
+            'albedo':    f'/web_app/api/customer/{customer_id}/skin_texture/albedo',
+            'normal':    f'/web_app/api/customer/{customer_id}/skin_texture/normal',
+            'roughness': f'/web_app/api/customer/{customer_id}/skin_texture/roughness',
+        }
+    )
+
+
+@action('api/customer/<customer_id:int>/skin_texture/<tex_type>', method=['GET'])
+@action.uses(cors)
+def serve_skin_texture(customer_id, tex_type):
+    """Serve a processed skin texture PNG (albedo, normal, or roughness)."""
+    valid = {'albedo', 'normal', 'roughness'}
+    if tex_type not in valid:
+        return dict(status='error', message=f'Type must be one of: {sorted(valid)}')
+
+    uploads_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'skin',
+                               f'customer_{customer_id}')
+    fpath = os.path.join(uploads_dir, f'skin_{tex_type}.png')
+    if not os.path.exists(fpath):
+        abort(404, f'No {tex_type} texture for customer {customer_id}')
+
+    response.headers['Content-Type'] = 'image/png'
+    response.headers['Cache-Control'] = 'public, max-age=3600'
+    with open(fpath, 'rb') as f:
+        return f.read()
+
+
 @action('api/customer/<customer_id:int>/body_profile', method=['POST'])
 @action.uses(db, cors)
 def update_body_profile(customer_id):

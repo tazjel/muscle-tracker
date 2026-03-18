@@ -82,6 +82,21 @@
                   onclick="toggleLabels()">Labels</button>
           <button class="view-mode-btn" id="btn-rings"
                   onclick="toggleRings()">Rings</button>
+          <button class="view-mode-btn" id="btn-skin"
+                  onclick="setViewMode('skin')">Skin</button>
+        </div>
+        <input type="file" id="skin-upload" accept="image/*" style="display:none;"
+               onchange="uploadSkinPhoto(this.files[0])">
+        <div style="font-size:9px;color:#666;margin-top:2px;">
+          <a href="#" style="color:#4a9eff;text-decoration:none;"
+             onclick="event.preventDefault();document.getElementById('skin-upload').click()">Upload skin photo</a>
+        </div>
+        <div id="skin-tiling" style="display:none;font-size:10px;margin-top:2px;">
+          Tile X:<input type="range" id="skin-tile-x" min="1" max="20" value="6" style="width:55px;"
+            oninput="setSkinTiling(+this.value,+document.getElementById('skin-tile-y').value);document.getElementById('skin-tile-label').textContent=this.value+'×'+document.getElementById('skin-tile-y').value">
+          Y:<input type="range" id="skin-tile-y" min="1" max="25" value="8" style="width:55px;"
+            oninput="setSkinTiling(+document.getElementById('skin-tile-x').value,+this.value);document.getElementById('skin-tile-label').textContent=document.getElementById('skin-tile-x').value+'×'+this.value">
+          <span id="skin-tile-label" style="color:#4a9eff;">6×8</span>
         </div>
       </div>
 
@@ -223,7 +238,7 @@
         Keys: 1-4 views · 5 walk · 6 room · 7 mirror · 8 props<br>
         9 stats · 0 spin · F full · L labels · C rings · M measure<br>
         G growth · X slices · P profile · Q axis · [ ] tabs<br>
-        E export · R reset
+        S skin · E export · R reset
       </div>
 
       <div class="stats">

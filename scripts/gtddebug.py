@@ -392,6 +392,69 @@ def cmd_body3d(args):
         print(f"[body3d] FAILED: {result}")
 
 
+def cmd_skin(args):
+    """Capture a skin photo from device camera and upload to server."""
+    import requests
+
+    serial = TABLET_SERIAL if args.device == 'matepad' else PHONE_SERIAL
+
+    print(f'Capturing skin photo from {args.device} at ~{args.distance}cm...')
+    print('(Triggering camera shutter via ADB)')
+
+    local_path = os.path.join(os.path.dirname(__file__), 'skin_capture.jpg')
+
+    # Trigger camera shutter
+    subprocess.run(['adb', '-s', serial, 'shell', 'input', 'keyevent', 'KEYCODE_CAMERA'])
+    time.sleep(2)
+
+    # Pull latest photo from DCIM
+    result = subprocess.run(
+        ['adb', '-s', serial, 'shell', 'ls', '-t', '/sdcard/DCIM/Camera/'],
+        capture_output=True, text=True
+    )
+    files = [f.strip() for f in result.stdout.strip().split('\n') if f.strip()]
+    if not files:
+        print('ERROR: No photos found in /sdcard/DCIM/Camera/')
+        return
+
+    latest = files[0]
+    print(f'Pulling {latest}...')
+    subprocess.run(['adb', '-s', serial, 'exec-out',
+                    f'cat /sdcard/DCIM/Camera/{latest}'],
+                   stdout=open(local_path, 'wb'))
+
+    if not os.path.exists(local_path) or os.path.getsize(local_path) < 1000:
+        print('ERROR: Failed to pull photo (file too small or missing)')
+        return
+
+    # Upload to server
+    server = args.server
+    print(f'Uploading to server for customer {args.customer}...')
+
+    r = requests.post(f'{server}/api/login',
+                      json={'email': 'demo@muscle.com', 'password': 'demo123'})
+    token = r.json().get('token')
+    if not token:
+        print('Login failed'); return
+
+    with open(local_path, 'rb') as f:
+        r = requests.post(
+            f'{server}/api/customer/{args.customer}/skin_texture',
+            headers={'Authorization': f'Bearer {token}'},
+            files={'image': f},
+            data={'distance': str(args.distance), 'size': '1024'}
+        )
+
+    result = r.json()
+    if result.get('status') == 'success':
+        print('Skin texture processed! Textures:')
+        for name, url in result.get('textures', {}).items():
+            print(f'  {name}: {url}')
+        print('\nOpen viewer and press S (Skin) to see the texture applied.')
+    else:
+        print(f'Upload failed: {result.get("message")}')
+
+
 def cmd_logs(args):
     """Tail the server log."""
     log = os.path.join(os.path.dirname(__file__), "..", "server.log")
@@ -408,7 +471,7 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command",
                    choices=["setup", "capture", "pull", "upload", "full", "install", "logs",
-                            "body3d"])
+                            "body3d", "skin"])
     p.add_argument("--phone",    default=PHONE_SERIAL,   help="Phone ADB serial")
     p.add_argument("--tablet",   default=TABLET_SERIAL,  help="Tablet ADB serial/IP:port")
     p.add_argument("--muscle",   default=MUSCLE_GROUP,   help="Muscle group")
@@ -421,6 +484,8 @@ def main():
                    help="Disable TTS voice prompts")
     p.add_argument("--open", action="store_true",
                    help="Open viewer URL in browser after body3d")
+    p.add_argument("--device", default="matepad", choices=["a24", "matepad"],
+                   help="Device for skin capture (default: matepad)")
 
     args = p.parse_args()
 
@@ -442,6 +507,7 @@ def main():
     elif args.command == "full":    cmd_full(args)
     elif args.command == "install": cmd_install(args)
     elif args.command == "body3d":  cmd_body3d(args)
+    elif args.command == "skin":    cmd_skin(args)
     elif args.command == "logs":    cmd_logs(args)
 
 

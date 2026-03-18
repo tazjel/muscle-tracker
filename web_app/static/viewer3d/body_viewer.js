@@ -338,6 +338,72 @@ function _createSkinRoughnessMap(size = 256) {
   return tex;
 }
 
+let _realSkinLoaded = false;
+
+async function _loadRealSkinTexture() {
+  const params = new URLSearchParams(location.search);
+  const cid = params.get('customer') || '1';
+  const loader = new THREE.TextureLoader();
+  const baseUrl = `/web_app/api/customer/${cid}/skin_texture`;
+
+  try {
+    const albedo = await new Promise((resolve, reject) => {
+      loader.load(baseUrl + '/albedo', resolve, undefined, reject);
+    });
+    albedo.wrapS = albedo.wrapT = THREE.RepeatWrapping;
+    albedo.colorSpace = THREE.SRGBColorSpace;
+    albedo.repeat.set(6, 8);
+
+    let normalTex = null;
+    try {
+      normalTex = await new Promise((resolve, reject) => {
+        loader.load(baseUrl + '/normal', resolve, undefined, reject);
+      });
+      normalTex.wrapS = normalTex.wrapT = THREE.RepeatWrapping;
+      normalTex.repeat.set(6, 8);
+    } catch (e) { /* use procedural fallback */ }
+
+    let roughTex = null;
+    try {
+      roughTex = await new Promise((resolve, reject) => {
+        loader.load(baseUrl + '/roughness', resolve, undefined, reject);
+      });
+      roughTex.wrapS = roughTex.wrapT = THREE.RepeatWrapping;
+      roughTex.repeat.set(6, 8);
+    } catch (e) { /* use procedural fallback */ }
+
+    SKIN_MATERIAL.map = albedo;
+    if (normalTex) {
+      SKIN_MATERIAL.normalMap = normalTex;
+      SKIN_MATERIAL.normalScale.set(1.2, 1.2);
+    }
+    if (roughTex) SKIN_MATERIAL.roughnessMap = roughTex;
+    SKIN_MATERIAL.needsUpdate = true;
+
+    _realSkinLoaded = true;
+    console.log('Real skin texture loaded for customer', cid);
+
+    if (bodyMesh) {
+      bodyMesh.traverse(c => { if (c.isMesh) c.material = SKIN_MATERIAL; });
+    }
+
+    const btn = document.getElementById('btn-skin');
+    if (btn) btn.classList.add('available');
+
+  } catch (e) {
+    console.log('No real skin texture found, using procedural');
+  }
+}
+
+function setSkinTiling(tilesX, tilesY) {
+  if (!SKIN_MATERIAL.map) return;
+  SKIN_MATERIAL.map.repeat.set(tilesX, tilesY);
+  if (SKIN_MATERIAL.normalMap) SKIN_MATERIAL.normalMap.repeat.set(tilesX, tilesY);
+  if (SKIN_MATERIAL.roughnessMap) SKIN_MATERIAL.roughnessMap.repeat.set(tilesX, tilesY);
+  SKIN_MATERIAL.needsUpdate = true;
+}
+window.setSkinTiling = setSkinTiling;
+
 const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
   map:              _createSkinColorMap(),
   roughnessMap:     _createSkinRoughnessMap(),
@@ -521,7 +587,7 @@ function init() {
       case 'e': case 'E': exportDataCSV();         break;
       case 's': case 'S':
         if (_walkMode) _moveState.backward = true;
-        else if (!e.ctrlKey) window.takeScreenshot();
+        else window.setViewMode('skin');
         break;
       case 'w': case 'W': if (_walkMode) _moveState.forward  = true; break;
       case 'a': case 'A': if (_walkMode) _moveState.left     = true; break;
@@ -842,6 +908,8 @@ function _loadGLB(url, onLoaded) {
       _ghostRich = {};
       _hideProgress();
       if (onLoaded) onLoaded();
+      // Try to load real skin texture (non-blocking)
+      _loadRealSkinTexture();
     },
     (xhr) => {
       if (xhr.total > 0) _showProgress(Math.round(xhr.loaded / xhr.total * 100));
@@ -1402,9 +1470,15 @@ window.setViewMode = function(mode) {
       });
     }
     document.querySelector('.heatmap-legend')?.classList.remove('visible');
+  } else if (mode === 'skin') {
+    heatmapOn = false;
+    clearHeatmap();
+    if (bodyMesh) bodyMesh.traverse(c => { if (c.isMesh) c.material = SKIN_MATERIAL; });
+    document.querySelector('.heatmap-legend')?.classList.remove('visible');
+    const tilingCtrl = document.getElementById('skin-tiling');
+    if (tilingCtrl) tilingCtrl.style.display = 'block';
   } else if (mode === 'heatmap') {
     heatmapOn = true;
-    // Generate test gradient data
     const vCount = (() => {
       let n = 0;
       bodyMesh.traverse(c => { if (c.isMesh && c.geometry?.attributes.position) n += c.geometry.attributes.position.count; });
@@ -1414,6 +1488,11 @@ window.setViewMode = function(mode) {
     for (let i = 0; i < vCount; i++) testData[i] = i / vCount;
     applyHeatmap(bodyMesh, testData);
     document.querySelector('.heatmap-legend')?.classList.add('visible');
+  }
+  // Hide tiling control unless skin mode
+  if (mode !== 'skin') {
+    const tilingCtrl = document.getElementById('skin-tiling');
+    if (tilingCtrl) tilingCtrl.style.display = 'none';
   }
 };
 
@@ -3141,6 +3220,42 @@ async function exportDataCSV() {
   }
 }
 window.exportDataCSV = exportDataCSV;
+
+// ── Skin photo upload ─────────────────────────────────────────────────────────
+async function uploadSkinPhoto(file) {
+  if (!file) return;
+  if (!_viewerToken) await _autoLogin();
+  const params = new URLSearchParams(location.search);
+  const cid = params.get('customer') || '1';
+
+  const info = document.getElementById('mesh-info');
+  if (info) info.textContent = 'Processing skin texture...';
+
+  const formData = new FormData();
+  formData.append('image', file);
+  formData.append('distance', '30');
+  formData.append('size', '1024');
+
+  try {
+    const r = await fetch(`/web_app/api/customer/${cid}/skin_texture`, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + _viewerToken },
+      body: formData,
+    });
+    const d = await r.json();
+    if (d.status !== 'success') throw new Error(d.message);
+
+    await _loadRealSkinTexture();
+    window.setViewMode('skin');
+
+    if (info) info.textContent = 'Skin texture applied!';
+    setTimeout(() => { if (info) info.textContent = ''; }, 2000);
+  } catch (e) {
+    if (info) info.textContent = 'Skin upload failed: ' + e.message;
+    console.error('Skin upload failed:', e);
+  }
+}
+window.uploadSkinPhoto = uploadSkinPhoto;
 
 // ── Customer selector ─────────────────────────────────────────────────────────
 async function _loadCustomerList() {
