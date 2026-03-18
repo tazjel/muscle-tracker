@@ -26,6 +26,28 @@
                 onclick="toggleLabels()">Labels</button>
       </div>
 
+      <!-- V7: Room controls -->
+      <div class="view-modes" style="margin-top:4px;">
+        <button class="view-mode-btn" id="btn-walk"
+                onclick="toggleWalkMode()">Walk</button>
+        <button class="view-mode-btn" id="btn-room"
+                onclick="toggleRoom()">Room</button>
+        <button class="view-mode-btn" id="btn-mirror"
+                onclick="toggleMirror()">Mirror</button>
+        <button class="view-mode-btn" id="btn-props"
+                onclick="toggleProps()">Props</button>
+        <button class="view-mode-btn" id="btn-stats"
+                onclick="toggleBodyStats()">Stats</button>
+        <button class="view-mode-btn" id="btn-spin"
+                onclick="toggleAutoRotate()">Spin</button>
+      </div>
+
+      <!-- Body stats -->
+      <div id="body-stats-panel" style="display:none;margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+        <h3 style="margin:0 0 6px;font-size:13px;">Body Measurements</h3>
+        <div id="body-stats-content" style="font-size:11px;line-height:1.8;"></div>
+      </div>
+
       <!-- Body region adjustment panel (shown on click) -->
       <div id="adjust-panel" style="display:none;margin-top:10px;border-top:1px solid #444;padding-top:8px;">
         <h3 id="adjust-region" style="margin:0 0 6px;font-size:13px;">Region</h3>
@@ -47,7 +69,7 @@
       </div>
 
       <!-- Mesh comparison -->
-      <div id="compare-panel" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+      <div id="compare-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
         <h3 style="margin:0 0 6px;font-size:13px;">Compare Growth</h3>
         <label style="font-size:11px;display:block;margin-bottom:4px;">
           Before: <select id="compare-old" style="width:130px;font-size:11px;background:#1e2035;color:#e2e4f0;border:1px solid #444;border-radius:3px;"></select>
@@ -56,12 +78,23 @@
           After: <select id="compare-new" style="width:130px;font-size:11px;background:#1e2035;color:#e2e4f0;border:1px solid #444;border-radius:3px;"></select>
         </label>
         <button onclick="runComparison()" style="font-size:11px;margin-right:4px;">Compare</button>
-        <button onclick="clearComparison()" style="font-size:11px;">Clear</button>
+        <button onclick="loadGhost()" style="font-size:11px;margin-right:4px;">Ghost</button>
+        <button onclick="clearComparison(); clearGhost()" style="font-size:11px;">Clear</button>
         <div id="compare-stats" style="font-size:11px;margin-top:4px;color:#00b4cc;display:none;"></div>
       </div>
 
+      <!-- Scan timeline -->
+      <div id="timeline-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+        <h3 style="margin:0 0 6px;font-size:13px;">Scan Timeline</h3>
+        <label style="font-size:11px;display:block;">
+          <input type="range" id="timeline-slider" min="0" max="0" value="0" style="width:140px;"
+                 oninput="switchMesh(this.value)">
+        </label>
+        <div id="timeline-date" style="font-size:11px;color:#94a3b8;margin-top:2px;"></div>
+      </div>
+
       <!-- Cross-section tool -->
-      <div id="section-panel" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+      <div id="section-panel" class="collapsible collapsed" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
         <h3 style="margin:0 0 6px;font-size:13px;">Cross Section</h3>
         <label style="font-size:11px;display:block;">
           Height:&nbsp;<input type="range" id="section-height" min="0" max="100" value="50" style="width:100px;">
@@ -78,7 +111,8 @@
       </div>
 
       <div style="font-size:9px;color:#555;margin-top:6px;">
-        Keys: 1-4 views · L labels · M measure · R reset · S screenshot
+        Keys: 1-4 views · 5 walk · 6 room · 7 mirror · 8 props<br>
+        9 stats · 0 spin · F full · L labels · M measure · R reset
       </div>
 
       <div class="stats">
@@ -97,6 +131,9 @@
       <span>Low</span><span>Mid</span><span>High</span>
     </div>
   </div>
+
+  <!-- Hover tooltip -->
+  <div id="hover-tooltip" style="position:fixed;display:none;background:rgba(0,0,0,0.8);color:#e0e0e0;padding:4px 10px;border-radius:4px;font-size:12px;pointer-events:none;z-index:100;border:1px solid #4a9eff;white-space:nowrap;"></div>
 
   <!-- Canvas -->
   <div id="canvas-container"></div>

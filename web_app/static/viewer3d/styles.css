@@ -304,3 +304,30 @@ button:active { filter: brightness(0.9); }
     width: 100px !important;
   }
 }
+
+/* ── Collapsible panels (V9) ────────────────────────────── */
+.collapsible > h3 {
+  cursor: pointer;
+  user-select: none;
+}
+.collapsible > h3::after {
+  content: ' \25BE';
+  font-size: 9px;
+  color: #666;
+}
+.collapsible.collapsed > h3::after {
+  content: ' \25B8';
+}
+.collapsible.collapsed > *:not(h3) {
+  display: none !important;
+}
+
+/* ── Loading pulse (V9) ─────────────────────────────────── */
+#mesh-info.loading {
+  animation: info-pulse 1.5s ease-in-out infinite;
+  color: #4a9eff;
+}
+@keyframes info-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}

@@ -204,4 +204,13 @@ db.define_table('video_scan_session',
     Field('created_on', 'datetime', default=lambda: datetime.now()),
 )
 
+# 11. ROOM TEXTURES (photo surfaces for 3D viewer room)
+db.define_table('room_texture',
+    Field('customer_id', 'reference customer'),
+    Field('surface', 'string', length=16,
+          requires=IS_IN_SET(['floor', 'ceiling', 'wall_front', 'wall_back', 'wall_left', 'wall_right'])),
+    Field('image_path', 'string', length=512),
+    Field('created_on', 'datetime', default=lambda: datetime.now()),
+)
+
 db.commit()

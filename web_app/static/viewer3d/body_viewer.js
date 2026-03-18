@@ -9,7 +9,8 @@
  */
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+import { OrbitControls }      from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+import { PointerLockControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/PointerLockControls.js';
 import { GLTFLoader }    from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
 import { DRACOLoader }   from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/DRACOLoader.js';
@@ -32,6 +33,47 @@ let _measureLabels = [];   // DOM div elements
 // ── Cross-section globals ──────────────────────────────────────────────────────
 let _sectionPlane   = null;
 let _sectionOutline = null;
+
+// ── Room globals ─────────────────────────────────────────────────────────────
+let _roomGroup   = null;
+let _roomOn      = false;
+let _contactShadow = null;
+const _ROOM_W = 714;    // 4m in scene units
+const _ROOM_H = 536;    // 3m
+const _ROOM_D = 1071;   // 6m
+const _roomWalls = {};   // name → THREE.Mesh
+
+// ── Mirror globals ───────────────────────────────────────────────────────────
+let _cubeCamera       = null;
+let _cubeRenderTarget = null;
+let _mirrorWallIndex  = -1;  // -1=off, 0=back, 1=left, 2=right, 3=front
+const _MIRROR_WALLS   = ['back', 'left', 'right', 'front'];
+let _mirrorWallMesh   = null;
+let _preMirrorMat     = null;
+
+// ── Walk mode globals ────────────────────────────────────────────────────────
+let _walkMode        = false;
+let _pointerControls = null;
+const _moveState     = { forward: false, backward: false, left: false, right: false };
+const _moveDirection = new THREE.Vector3();
+const _WALK_SPEED    = 200;
+const _EYE_HEIGHT    = 300;
+let _walkClock       = new THREE.Clock(false);
+
+// ── Props globals ────────────────────────────────────────────────────────────
+let _propsGroup = null;
+let _propsOn    = false;
+
+// ── Light groups ─────────────────────────────────────────────────────────────
+let _studioLightObjs = [];
+let _roomLightObjs   = [];
+
+// ── V8 globals ───────────────────────────────────────────────────────────────
+let _meshList    = [];
+let _ghostMesh   = null;
+let _autoRotate  = false;
+let _gridHelper  = null;
+let _camTransition = null;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 let _viewerToken = null;
@@ -101,13 +143,28 @@ function init() {
   controls.update();
 
   // Lights
-  _setupLights();
+  _setupStudioLights();
 
   // Environment map (PMREMGenerator gradient — no external HDR file needed)
   _setupEnvironment();
 
+  // V7: Room, props, mirror, contact shadow
+  _buildRoom();
+  _buildProps();
+  _createContactShadow();
+  _setupMirror();
+  _setupWalkControls();
+
   // Resize
   window.addEventListener('resize', _onResize);
+
+  // Restore sidebar when exiting fullscreen via Escape
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) {
+      const overlay = document.getElementById('ui-overlay');
+      if (overlay) overlay.style.display = '';
+    }
+  });
 
   // Expose for MeasurementOverlay
   window.bodyViewer = {
@@ -118,6 +175,7 @@ function init() {
 
   // Click-to-select body region
   renderer.domElement.addEventListener('click', _onMeshClick);
+  renderer.domElement.addEventListener('mousemove', _onMeshHover);
 
   // Prevent browser default touch behaviors (scroll, pinch-zoom) on the 3D canvas
   renderer.domElement.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
@@ -142,8 +200,13 @@ function init() {
     });
   });
 
-  // Authenticate for save/regenerate calls then load mesh list
-  _autoLogin().then(() => _loadMeshList());
+  // Collapsible panels — click h3 to toggle
+  document.querySelectorAll('.collapsible > h3').forEach(h3 => {
+    h3.addEventListener('click', () => h3.parentElement.classList.toggle('collapsed'));
+  });
+
+  // Authenticate for save/regenerate calls then load mesh list + room textures
+  _autoLogin().then(() => { _loadMeshList(); _loadRoomTextures(); _loadBodyStats(); });
 
   // Load model from URL params
   _loadFromUrl();
@@ -165,14 +228,36 @@ function init() {
       case '2': window.setViewMode('wireframe'); break;
       case '3': window.setViewMode('heatmap');   break;
       case '4': window.setViewMode('textured');  break;
+      case '5': window.toggleWalkMode();         break;
+      case '6': window.toggleRoom();             break;
+      case '7': window.toggleMirror();           break;
+      case '8': window.toggleProps();            break;
+      case '9': window.toggleBodyStats();        break;
+      case '0': window.toggleAutoRotate();       break;
+      case 'f': case 'F': window.toggleFullscreen(); break;
       case 'l': case 'L': window.toggleLabels();  break;
       case 'm': case 'M': window.toggleMeasure(); break;
       case 'r': case 'R': window.resetCamera();   break;
-      case 's': case 'S': if (!e.ctrlKey) window.takeScreenshot(); break;
+      case 's': case 'S':
+        if (_walkMode) _moveState.backward = true;
+        else if (!e.ctrlKey) window.takeScreenshot();
+        break;
+      case 'w': case 'W': if (_walkMode) _moveState.forward  = true; break;
+      case 'a': case 'A': if (_walkMode) _moveState.left     = true; break;
+      case 'd': case 'D': if (_walkMode) _moveState.right    = true; break;
       case 'Escape':
+        if (_walkMode) { window.toggleWalkMode(); break; }
         _measureMode = false;
         document.getElementById('btn-measure')?.classList.remove('active');
         break;
+    }
+  });
+  document.addEventListener('keyup', (e) => {
+    switch (e.key) {
+      case 'w': case 'W': _moveState.forward  = false; break;
+      case 'a': case 'A': _moveState.left     = false; break;
+      case 's': case 'S': _moveState.backward = false; break;
+      case 'd': case 'D': _moveState.right    = false; break;
     }
   });
 
@@ -181,29 +266,51 @@ function init() {
 }
 
 // ── Lighting ──────────────────────────────────────────────────────────────────
-function _setupLights() {
-  // Soft ambient
-  scene.add(new THREE.AmbientLight(0xfff5e4, 0.4));
+function _setupStudioLights() {
+  const a = new THREE.AmbientLight(0xfff5e4, 0.4);
+  scene.add(a); _studioLightObjs.push(a);
 
-  // Hemisphere — warm sky, cool ground
-  scene.add(new THREE.HemisphereLight(0xffeedd, 0x334455, 0.5));
+  const h = new THREE.HemisphereLight(0xffeedd, 0x334455, 0.5);
+  scene.add(h); _studioLightObjs.push(h);
 
-  // Key light (front-top, overhead lamp to match scanning setup)
   const key = new THREE.DirectionalLight(0xffffff, 1.2);
   key.position.set(0, 400, 200);
   key.castShadow = true;
   key.shadow.mapSize.set(1024, 1024);
-  scene.add(key);
+  // Expand frustum so body shadow covers room floor
+  key.shadow.camera.left   = -400;
+  key.shadow.camera.right  =  400;
+  key.shadow.camera.top    =  400;
+  key.shadow.camera.bottom = -400;
+  scene.add(key); _studioLightObjs.push(key);
 
-  // Fill light (left-side, softer)
   const fill = new THREE.DirectionalLight(0xe8f0ff, 0.4);
   fill.position.set(-300, 100, 100);
-  scene.add(fill);
+  scene.add(fill); _studioLightObjs.push(fill);
 
-  // Rim light (back, highlights silhouette)
   const rim = new THREE.DirectionalLight(0xffffff, 0.25);
   rim.position.set(0, 50, -400);
-  scene.add(rim);
+  scene.add(rim); _studioLightObjs.push(rim);
+}
+
+function _setupRoomLights() {
+  // Overhead point light (warm, just below ceiling)
+  const overhead = new THREE.PointLight(0xffe8cc, 1.5, 0, 2);
+  overhead.position.set(0, _ROOM_H - 20, 0);
+  overhead.castShadow = true;
+  overhead.shadow.mapSize.set(1024, 1024);
+  scene.add(overhead); _roomLightObjs.push(overhead);
+
+  const ambient = new THREE.AmbientLight(0xfff5e4, 0.25);
+  scene.add(ambient); _roomLightObjs.push(ambient);
+
+  const hemi = new THREE.HemisphereLight(0xffeedd, 0x334455, 0.15);
+  scene.add(hemi); _roomLightObjs.push(hemi);
+}
+
+function _clearLights(arr) {
+  arr.forEach(l => scene.remove(l));
+  arr.length = 0;
 }
 
 // ── Environment map (procedural, no file) ─────────────────────────────────────
@@ -380,6 +487,22 @@ function _centerAndScale(object) {
   controls.update();
 }
 
+function _centerOnly(object) {
+  // Same as _centerAndScale but does NOT move the camera
+  object.rotation.x = -Math.PI / 2;
+  const box = new THREE.Box3().setFromObject(object);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const targetH = 300;
+  const scale = size.y > 0 ? targetH / size.y : 1;
+  object.scale.setScalar(scale);
+  const box2 = new THREE.Box3().setFromObject(object);
+  const ctr2 = new THREE.Vector3();
+  box2.getCenter(ctr2);
+  object.position.sub(ctr2);
+  object.position.y += targetH / 2;
+}
+
 // ── Stats panel ───────────────────────────────────────────────────────────────
 function _updateStats(object) {
   let verts = 0, faces = 0;
@@ -397,7 +520,9 @@ function _updateStats(object) {
 
 function _setStatus(msg) {
   const el = document.getElementById('mesh-info');
-  if (el) el.textContent = msg;
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.toggle('loading', msg.includes('Loading') || msg.includes('loading'));
 }
 
 // ── Placeholder (no URL) ──────────────────────────────────────────────────────
@@ -844,6 +969,7 @@ window.setViewMode = function(mode) {
 window.toggleWireframe = function() { window.setViewMode('wireframe'); };
 
 window.resetCamera = function() {
+  let endPos, endTarget;
   if (bodyMesh) {
     const box = new THREE.Box3().setFromObject(bodyMesh);
     const size = new THREE.Vector3();
@@ -852,13 +978,20 @@ window.resetCamera = function() {
     const fov = camera.fov * (Math.PI / 180);
     const camZ = maxDim / (2 * Math.tan(fov / 2)) * 1.6;
     const midY = size.y * 0.45;
-    camera.position.set(0, midY, camZ);
-    controls.target.set(0, midY, 0);
+    endPos    = new THREE.Vector3(0, midY, camZ);
+    endTarget = new THREE.Vector3(0, midY, 0);
   } else {
-    camera.position.set(0, 150, 400);
-    controls.target.set(0, 80, 0);
+    endPos    = new THREE.Vector3(0, 150, 400);
+    endTarget = new THREE.Vector3(0, 80, 0);
   }
-  controls.update();
+  _camTransition = {
+    startPos:    camera.position.clone(),
+    startTarget: controls.target.clone(),
+    endPos,
+    endTarget,
+    startTime: performance.now(),
+    duration:  600,
+  };
 };
 
 window.takeScreenshot = function() {
@@ -902,6 +1035,15 @@ async function _loadMeshList() {
     });
     const data = await resp.json();
     if (data.status !== 'success') return;
+    _meshList = data.meshes;
+    // Populate timeline slider
+    const slider = document.getElementById('timeline-slider');
+    const dateEl = document.getElementById('timeline-date');
+    if (slider && _meshList.length > 0) {
+      slider.max = _meshList.length - 1;
+      slider.value = 0;
+      if (dateEl) dateEl.textContent = _meshList[0].created_on;
+    }
     const oldSel = document.getElementById('compare-old');
     const newSel = document.getElementById('compare-new');
     if (!oldSel || !newSel) return;
@@ -914,6 +1056,158 @@ async function _loadMeshList() {
       newSel.innerHTML += opt1;
     }
   } catch (e) { console.warn('Failed to load mesh list:', e); }
+}
+
+window.switchMesh = function(idx) {
+  idx = parseInt(idx);
+  if (idx < 0 || idx >= _meshList.length) return;
+  const m = _meshList[idx];
+  if (bodyMesh) { scene.remove(bodyMesh); bodyMesh = null; }
+  if (_ghostMesh) { scene.remove(_ghostMesh); _ghostMesh = null; }
+  origMaterials = [];
+  _originalMaterials.clear();
+  _setStatus('Loading scan #' + m.id + '…');
+  const loader = new GLTFLoader();
+  const draco = new DRACOLoader();
+  draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
+  loader.setDRACOLoader(draco);
+  loader.load(`/web_app/api/mesh/${m.id}.glb`, (gltf) => {
+    bodyMesh = gltf.scene;
+    _applyDefaultMaterial(bodyMesh);
+    _centerOnly(bodyMesh);
+    scene.add(bodyMesh);
+    _updateStats(bodyMesh);
+    _setStatus('Scan #' + m.id + ' — ' + m.created_on);
+    _createRegionLabels();
+  });
+  const dateEl = document.getElementById('timeline-date');
+  if (dateEl) dateEl.textContent = m.created_on;
+};
+
+window.loadGhost = function() {
+  const sel = document.getElementById('compare-old');
+  const meshId = sel?.value;
+  if (!meshId) { _setStatus('Select a "Before" mesh first'); return; }
+  if (_ghostMesh) { scene.remove(_ghostMesh); _ghostMesh = null; }
+  _setStatus('Loading ghost…');
+  const loader = new GLTFLoader();
+  const draco = new DRACOLoader();
+  draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
+  loader.setDRACOLoader(draco);
+  loader.load(`/web_app/api/mesh/${meshId}.glb`, (gltf) => {
+    _ghostMesh = gltf.scene;
+    _ghostMesh.traverse(c => {
+      if (c.isMesh) {
+        c.material = new THREE.MeshStandardMaterial({
+          color: 0x44ff88, wireframe: true, transparent: true, opacity: 0.3,
+        });
+        c.castShadow = false;
+        c.receiveShadow = false;
+      }
+    });
+    _centerOnly(_ghostMesh);
+    scene.add(_ghostMesh);
+    _setStatus('Ghost: scan #' + meshId);
+  });
+};
+
+window.clearGhost = function() {
+  if (_ghostMesh) { scene.remove(_ghostMesh); _ghostMesh = null; }
+  _setStatus('');
+};
+
+let _statsVisible = false;
+let _bodyProfile  = null;
+async function _loadBodyStats() {
+  if (!_viewerToken) return;
+  try {
+    const cid = _customerId();
+    const resp = await fetch(`/web_app/api/customer/${cid}/body_profile`, {
+      headers: _authHeaders(),
+    });
+    const data = await resp.json();
+    if (data.status !== 'success' || !data.profile) return;
+    const p = data.profile;
+    _bodyProfile = p;
+    const el = document.getElementById('body-stats-content');
+    if (!el) return;
+    const stats = [
+      ['Height', p.height_cm, 'cm'],
+      ['Weight', p.weight_kg, 'kg'],
+      ['Chest', p.chest_circumference_cm, 'cm'],
+      ['Waist', p.waist_circumference_cm, 'cm'],
+      ['Hip', p.hip_circumference_cm, 'cm'],
+      ['Thigh', p.thigh_circumference_cm, 'cm'],
+      ['Bicep', p.bicep_circumference_cm, 'cm'],
+      ['Calf', p.calf_circumference_cm, 'cm'],
+      ['Neck', p.neck_circumference_cm, 'cm'],
+      ['Shoulder', p.shoulder_width_cm, 'cm'],
+    ];
+    el.innerHTML = stats
+      .filter(([, v]) => v != null)
+      .map(([name, val, unit]) =>
+        `<div style="display:flex;justify-content:space-between;"><span style="color:#94a3b8;">${name}</span><strong>${val}</strong><span style="color:#666;">${unit}</span></div>`
+      ).join('');
+  } catch (e) { console.warn('Stats load failed:', e); }
+}
+
+window.toggleBodyStats = function() {
+  _statsVisible = !_statsVisible;
+  const panel = document.getElementById('body-stats-panel');
+  if (panel) panel.style.display = _statsVisible ? 'block' : 'none';
+  document.getElementById('btn-stats')?.classList.toggle('active', _statsVisible);
+};
+
+window.toggleAutoRotate = function() {
+  _autoRotate = !_autoRotate;
+  controls.autoRotate = _autoRotate;
+  controls.autoRotateSpeed = 2.0;
+  document.getElementById('btn-spin')?.classList.toggle('active', _autoRotate);
+};
+
+window.toggleFullscreen = function() {
+  const overlay = document.getElementById('ui-overlay');
+  const legend = document.querySelector('.heatmap-legend');
+  if (!document.fullscreenElement) {
+    document.body.requestFullscreen().catch(() => {});
+    if (overlay) overlay.style.display = 'none';
+    if (legend) legend.style.display = 'none';
+  } else {
+    document.exitFullscreen();
+    if (overlay) overlay.style.display = '';
+    if (legend) legend.style.display = '';
+  }
+};
+
+// ── Hover info tooltip (V9) ─────────────────────────────────────────────────
+const _REGION_FIELDS = {
+  chest: ['chest_circumference_cm', 'cm'], waist: ['waist_circumference_cm', 'cm'],
+  hip: ['hip_circumference_cm', 'cm'], thigh: ['thigh_circumference_cm', 'cm'],
+  calf: ['calf_circumference_cm', 'cm'], arm: ['bicep_circumference_cm', 'cm'],
+  neck: ['neck_circumference_cm', 'cm'], shoulder: ['shoulder_width_cm', 'cm'],
+  head: ['head_circumference_cm', 'cm'], knee: ['thigh_circumference_cm', 'cm'],
+};
+
+function _onMeshHover(event) {
+  if (_measureMode || _walkMode) return;
+  const tooltip = document.getElementById('hover-tooltip');
+  if (!tooltip) return;
+  const hit = _getMeshIntersection(event);
+  if (!hit) { tooltip.style.display = 'none'; return; }
+  const region = getBodyRegion(hit.point);
+  const label = region.charAt(0).toUpperCase() + region.slice(1);
+  let text = label;
+  if (_bodyProfile) {
+    const entry = _REGION_FIELDS[region];
+    if (entry) {
+      const val = _bodyProfile[entry[0]];
+      if (val != null) text += ': ' + val + entry[1];
+    }
+  }
+  tooltip.textContent = text;
+  tooltip.style.display = 'block';
+  tooltip.style.left = (event.clientX + 15) + 'px';
+  tooltip.style.top = (event.clientY - 10) + 'px';
 }
 
 window.runComparison = async function() {
@@ -1031,6 +1325,275 @@ function _updateCrossSection(ratio) {
   }
 }
 
+// ── Room shell (P1) ──────────────────────────────────────────────────────────
+function _buildRoom() {
+  _roomGroup = new THREE.Group();
+  _roomGroup.visible = false;
+  const hw = _ROOM_W / 2, hd = _ROOM_D / 2;
+
+  const floorMat = new THREE.MeshStandardMaterial({ color: 0xd4cfc4, roughness: 0.8 });
+  const wallMat  = new THREE.MeshStandardMaterial({ color: 0xe8e4dc, roughness: 0.7 });
+  const ceilMat  = new THREE.MeshStandardMaterial({ color: 0xc8c4b8, roughness: 0.9 });
+
+  // Floor
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(_ROOM_W, _ROOM_D), floorMat);
+  floor.rotation.x = -Math.PI / 2; floor.position.y = 0;
+  floor.receiveShadow = true; floor.name = 'room_floor';
+  _roomGroup.add(floor); _roomWalls.floor = floor;
+
+  // Ceiling
+  const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(_ROOM_W, _ROOM_D), ceilMat);
+  ceiling.rotation.x = Math.PI / 2; ceiling.position.y = _ROOM_H;
+  ceiling.name = 'room_ceiling';
+  _roomGroup.add(ceiling); _roomWalls.ceiling = ceiling;
+
+  // Back wall (Z=-hd, facing +Z)
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(_ROOM_W, _ROOM_H), wallMat.clone());
+  back.position.set(0, _ROOM_H / 2, -hd); back.receiveShadow = true; back.name = 'room_back';
+  _roomGroup.add(back); _roomWalls.back = back;
+
+  // Front wall (Z=+hd, facing -Z)
+  const front = new THREE.Mesh(new THREE.PlaneGeometry(_ROOM_W, _ROOM_H), wallMat.clone());
+  front.rotation.y = Math.PI; front.position.set(0, _ROOM_H / 2, hd);
+  front.receiveShadow = true; front.name = 'room_front';
+  _roomGroup.add(front); _roomWalls.front = front;
+
+  // Left wall (X=-hw, facing +X)
+  const left = new THREE.Mesh(new THREE.PlaneGeometry(_ROOM_D, _ROOM_H), wallMat.clone());
+  left.rotation.y = Math.PI / 2; left.position.set(-hw, _ROOM_H / 2, 0);
+  left.receiveShadow = true; left.name = 'room_left';
+  _roomGroup.add(left); _roomWalls.left = left;
+
+  // Right wall (X=+hw, facing -X)
+  const right = new THREE.Mesh(new THREE.PlaneGeometry(_ROOM_D, _ROOM_H), wallMat.clone());
+  right.rotation.y = -Math.PI / 2; right.position.set(hw, _ROOM_H / 2, 0);
+  right.receiveShadow = true; right.name = 'room_right';
+  _roomGroup.add(right); _roomWalls.right = right;
+
+  // Floor measurement grid (20cm intervals, 20 divisions across 4m)
+  _gridHelper = new THREE.GridHelper(_ROOM_W, 20, 0x777777, 0x555555);
+  _gridHelper.position.y = 0.5;
+  _roomGroup.add(_gridHelper);
+
+  scene.add(_roomGroup);
+}
+
+window.toggleRoom = function() {
+  _roomOn = !_roomOn;
+  if (_roomGroup) _roomGroup.visible = _roomOn;
+  if (_contactShadow) _contactShadow.visible = _roomOn;
+  // Switch lights
+  if (_roomOn) {
+    _clearLights(_studioLightObjs);
+    _setupRoomLights();
+    scene.background = null;
+  } else {
+    _clearLights(_roomLightObjs);
+    _setupStudioLights();
+    scene.background = new THREE.Color(0x1a1a2e);
+  }
+  document.getElementById('btn-room')?.classList.toggle('active', _roomOn);
+};
+
+// ── Contact shadow (P3) ─────────────────────────────────────────────────────
+function _createContactShadow() {
+  const sz = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = sz; canvas.height = sz;
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createRadialGradient(sz/2, sz/2, 0, sz/2, sz/2, sz/2);
+  grad.addColorStop(0, 'rgba(0,0,0,0.35)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, sz, sz);
+  const tex = new THREE.CanvasTexture(canvas);
+  _contactShadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(80, 80),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
+  );
+  _contactShadow.rotation.x = -Math.PI / 2;
+  _contactShadow.position.y = 0.2;
+  _contactShadow.visible = false;
+  scene.add(_contactShadow);
+}
+
+// ── Mirror (P4) ─────────────────────────────────────────────────────────────
+function _setupMirror() {
+  _cubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+    generateMipmaps: true,
+    minFilter: THREE.LinearMipmapLinearFilter,
+  });
+  _cubeCamera = new THREE.CubeCamera(1, 2000, _cubeRenderTarget);
+  scene.add(_cubeCamera);
+}
+
+window.toggleMirror = function() {
+  // Restore previous mirror wall material
+  if (_mirrorWallMesh && _preMirrorMat) {
+    _mirrorWallMesh.material = _preMirrorMat;
+    _mirrorWallMesh = null;
+    _preMirrorMat = null;
+  }
+  _mirrorWallIndex++;
+  if (_mirrorWallIndex >= _MIRROR_WALLS.length) _mirrorWallIndex = -1;
+  if (_mirrorWallIndex < 0) {
+    document.getElementById('btn-mirror')?.classList.remove('active');
+    return;
+  }
+  // Auto-enable room if not on
+  if (!_roomOn) window.toggleRoom();
+  const wallName = _MIRROR_WALLS[_mirrorWallIndex];
+  _mirrorWallMesh = _roomWalls[wallName];
+  if (!_mirrorWallMesh) return;
+  _preMirrorMat = _mirrorWallMesh.material;
+  _mirrorWallMesh.material = new THREE.MeshStandardMaterial({
+    metalness: 0.95, roughness: 0.05, envMap: _cubeRenderTarget.texture,
+    color: 0xffffff,
+  });
+  // Position CubeCamera at wall surface
+  _cubeCamera.position.copy(_mirrorWallMesh.position);
+  document.getElementById('btn-mirror')?.classList.add('active');
+};
+
+function _updateMirror() {
+  if (_mirrorWallIndex < 0 || !_mirrorWallMesh || !_cubeCamera) return;
+  // Hide mirror wall before cube camera render to prevent self-reflection
+  _mirrorWallMesh.visible = false;
+  _cubeCamera.update(renderer, scene);
+  _mirrorWallMesh.visible = true;
+}
+
+// ── Walk mode (P5) ──────────────────────────────────────────────────────────
+function _setupWalkControls() {
+  _pointerControls = new PointerLockControls(camera, renderer.domElement);
+}
+
+window.toggleWalkMode = function() {
+  _walkMode = !_walkMode;
+  if (_walkMode) {
+    // Auto-enable room
+    if (!_roomOn) window.toggleRoom();
+    // Disable orbit, enable pointer lock
+    controls.enabled = false;
+    _pointerControls.lock();
+    // Position camera at room corner, eye height, looking at body
+    const hw = _ROOM_W / 2 - 20, hd = _ROOM_D / 2 - 20;
+    camera.position.set(hw, _EYE_HEIGHT, hd);
+    camera.lookAt(0, _EYE_HEIGHT * 0.5, 0);
+    _walkClock.start();
+    _moveState.forward = _moveState.backward = _moveState.left = _moveState.right = false;
+  } else {
+    _pointerControls.unlock();
+    controls.enabled = true;
+    _walkClock.stop();
+    _moveState.forward = _moveState.backward = _moveState.left = _moveState.right = false;
+    window.resetCamera();
+  }
+  document.getElementById('btn-walk')?.classList.toggle('active', _walkMode);
+};
+
+function _updateFirstPerson() {
+  if (!_walkMode) return;
+  const delta = _walkClock.getDelta();
+  _moveDirection.set(0, 0, 0);
+  if (_moveState.forward)  _moveDirection.z = -1;
+  if (_moveState.backward) _moveDirection.z =  1;
+  if (_moveState.left)     _moveDirection.x = -1;
+  if (_moveState.right)    _moveDirection.x =  1;
+  if (_moveDirection.lengthSq() > 0) {
+    _moveDirection.normalize();
+    _pointerControls.moveRight(_moveDirection.x * _WALK_SPEED * delta);
+    _pointerControls.moveForward(-_moveDirection.z * _WALK_SPEED * delta);
+  }
+  // Lock eye height
+  camera.position.y = _EYE_HEIGHT;
+  // Wall collision: clamp to room bounds with margin
+  const margin = 20;
+  const hw = _ROOM_W / 2 - margin, hd = _ROOM_D / 2 - margin;
+  camera.position.x = Math.max(-hw, Math.min(hw, camera.position.x));
+  camera.position.z = Math.max(-hd, Math.min(hd, camera.position.z));
+}
+
+// ── Props (P6) ──────────────────────────────────────────────────────────────
+function _buildProps() {
+  _propsGroup = new THREE.Group();
+  _propsGroup.visible = false;
+
+  // 1m calibration rod (red cylinder, 178.6 scene units = 1000mm)
+  const rodH = 178.6;
+  const rodGeo = new THREE.CylinderGeometry(2, 2, rodH, 8);
+  const rodMat = new THREE.MeshStandardMaterial({ color: 0xdd3333, roughness: 0.6 });
+  const rod = new THREE.Mesh(rodGeo, rodMat);
+  rod.position.set(80, rodH / 2, 0);
+  rod.castShadow = true;
+  _propsGroup.add(rod);
+
+  // Camera stand A (front, 65cm = 116 scene units)
+  const standH = 116;
+  const standGeo = new THREE.CylinderGeometry(3, 3, standH, 8);
+  const standMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.7 });
+  const standA = new THREE.Mesh(standGeo, standMat);
+  standA.position.set(0, standH / 2, 178);
+  standA.castShadow = true;
+  _propsGroup.add(standA);
+  // Phone box on top
+  const phoneGeo = new THREE.BoxGeometry(8, 16, 4);
+  const phoneMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+  const phoneA = new THREE.Mesh(phoneGeo, phoneMat);
+  phoneA.position.set(0, standH + 8, 178);
+  phoneA.castShadow = true;
+  _propsGroup.add(phoneA);
+
+  // Camera stand B (back)
+  const standB = standA.clone();
+  standB.position.set(0, standH / 2, -178);
+  standB.castShadow = true;
+  _propsGroup.add(standB);
+  const phoneB = phoneA.clone();
+  phoneB.position.set(0, standH + 8, -178);
+  phoneB.castShadow = true;
+  _propsGroup.add(phoneB);
+
+  // Door outline on left wall (2m×0.9m = 357×161 scene units)
+  const doorW = 161, doorH = 357;
+  const doorGeo = new THREE.BoxGeometry(doorW, doorH, 2);
+  const doorEdges = new THREE.EdgesGeometry(doorGeo);
+  const doorLine = new THREE.LineSegments(doorEdges, new THREE.LineBasicMaterial({ color: 0x888888 }));
+  doorLine.position.set(-_ROOM_W / 2 + 1, doorH / 2, -100);
+  doorLine.rotation.y = Math.PI / 2;
+  _propsGroup.add(doorLine);
+
+  scene.add(_propsGroup);
+}
+
+window.toggleProps = function() {
+  _propsOn = !_propsOn;
+  if (_propsGroup) _propsGroup.visible = _propsOn;
+  document.getElementById('btn-props')?.classList.toggle('active', _propsOn);
+};
+
+// ── Room texture loading (P2) ───────────────────────────────────────────────
+async function _loadRoomTextures() {
+  if (!_viewerToken) return;
+  try {
+    const cid = _customerId();
+    const resp = await fetch(`/web_app/api/customer/${cid}/room_textures`, {
+      headers: { 'Authorization': `Bearer ${_viewerToken}` },
+    });
+    const data = await resp.json();
+    if (data.status !== 'success' || !data.textures) return;
+    const loader = new THREE.TextureLoader();
+    for (const t of data.textures) {
+      const wall = _roomWalls[t.surface];
+      if (!wall) continue;
+      loader.load(t.url, (tex) => {
+        wall.material.map = tex;
+        wall.material.needsUpdate = true;
+      });
+    }
+  } catch (e) { console.warn('Room textures not loaded:', e); }
+}
+
 // ── Loading progress bar ───────────────────────────────────────────────────────
 function _showProgress(pct) {
   let bar = document.getElementById('load-progress');
@@ -1049,9 +1612,20 @@ function _hideProgress() {
 }
 
 // ── Render loop ───────────────────────────────────────────────────────────────
+let _mirrorFrame = 0;
 function _animate() {
   requestAnimationFrame(_animate);
-  controls.update();
+  if (_camTransition) {
+    const t = Math.min(1, (performance.now() - _camTransition.startTime) / _camTransition.duration);
+    const e = t * (2 - t);
+    camera.position.lerpVectors(_camTransition.startPos, _camTransition.endPos, e);
+    controls.target.lerpVectors(_camTransition.startTarget, _camTransition.endTarget, e);
+    if (t >= 1) _camTransition = null;
+  }
+  _updateFirstPerson();
+  if (!_walkMode) controls.update();
+  // Update mirror every 2nd frame for performance
+  if (++_mirrorFrame % 2 === 0) _updateMirror();
   renderer.render(scene, camera);
   _updateRegionLabels();
 }

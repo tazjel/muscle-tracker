@@ -1280,6 +1280,65 @@ def list_meshes(customer_id):
     )
 
 
+@action('api/customer/<customer_id:int>/room_texture', method=['POST'])
+@action.uses(db, cors)
+def upload_room_texture(customer_id):
+    """Upload a photo texture for a room surface (floor, ceiling, wall_*)."""
+    payload, err = _auth_check()
+    if err: return err
+    surface = request.forms.get('surface', '')
+    valid = ['floor', 'ceiling', 'wall_front', 'wall_back', 'wall_left', 'wall_right']
+    if surface not in valid:
+        return dict(status='error', message=f'surface must be one of: {valid}')
+    upload = request.files.get('image')
+    if not upload:
+        return dict(status='error', message='No image file provided')
+    uploads_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'room')
+    os.makedirs(uploads_dir, exist_ok=True)
+    fname = f'room_{customer_id}_{surface}{os.path.splitext(upload.filename)[1]}'
+    fpath = os.path.join(uploads_dir, fname)
+    upload.save(fpath, overwrite=True)
+    # Upsert: remove old entry for this customer+surface
+    db((db.room_texture.customer_id == customer_id) &
+       (db.room_texture.surface == surface)).delete()
+    db.room_texture.insert(customer_id=customer_id, surface=surface, image_path=fpath)
+    db.commit()
+    return dict(status='success', surface=surface, url=f'/web_app/api/customer/{customer_id}/room_texture/{surface}')
+
+
+@action('api/customer/<customer_id:int>/room_texture/<surface>', method=['GET'])
+@action.uses(db, cors)
+def serve_room_texture(customer_id, surface):
+    """Serve a room texture image."""
+    row = db((db.room_texture.customer_id == customer_id) &
+             (db.room_texture.surface == surface)).select().first()
+    if not row or not row.image_path or not os.path.exists(row.image_path):
+        abort(404, 'Texture not found')
+    ext = os.path.splitext(row.image_path)[1].lower()
+    ct = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png'}.get(ext.lstrip('.'), 'image/jpeg')
+    response.headers['Content-Type'] = ct
+    with open(row.image_path, 'rb') as f:
+        return f.read()
+
+
+@action('api/customer/<customer_id:int>/room_textures', method=['GET'])
+@action.uses(db, cors)
+def list_room_textures(customer_id):
+    """Return all room texture URLs for a customer."""
+    payload, err = _auth_check()
+    if err: return err
+    rows = db(db.room_texture.customer_id == customer_id).select()
+    # Map surface names: wall_front→front, wall_back→back, etc.
+    textures = []
+    for r in rows:
+        viewer_surface = r.surface.replace('wall_', '') if r.surface.startswith('wall_') else r.surface
+        textures.append(dict(
+            surface=viewer_surface,
+            url=f'/web_app/api/customer/{customer_id}/room_texture/{r.surface}',
+        ))
+    return dict(status='success', textures=textures)
+
+
 @action('api/customer/<customer_id:int>/compare_3d', method=['POST'])
 @action.uses(db, cors)
 def compare_3d(customer_id):
