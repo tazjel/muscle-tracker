@@ -355,6 +355,61 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* Hide summary on mobile (too little space) */
+/* Summary panel — interactive items */
+.measurement-summary li {
+    cursor: pointer;
+    position: relative;
+    padding-right: 20px;
+    transition: background 0.15s;
+}
+
+.measurement-summary li:hover {
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Delete button in summary */
+.msr-del {
+    position: absolute;
+    right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    color: #666;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: color 0.15s, background 0.15s;
+}
+
+.msr-del:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+/* Pin highlight pulse */
+@keyframes pinPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.6); }
+    50% { box-shadow: 0 0 0 8px rgba(74, 158, 255, 0); }     
+}
+
+.measurement-pin.pin-highlight {
+    animation: pinPulse 0.4s ease-out 2;
+}
+
+/* Label highlight flash */
+@keyframes labelFlash {
+    0%, 100% { background: rgba(22, 33, 62, 0.9); }
+    50% { background: rgba(74, 158, 255, 0.3); }
+}
+
+.measurement-label.label-highlight {
+    animation: labelFlash 0.4s ease-out 2;
+}
+
 @media (max-width: 480px) {
     .measurement-summary {
         display: none !important;
@@ -362,6 +417,61 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* Hide summary in print */
+/* Summary panel — interactive items */
+.measurement-summary li {
+    cursor: pointer;
+    position: relative;
+    padding-right: 20px;
+    transition: background 0.15s;
+}
+
+.measurement-summary li:hover {
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Delete button in summary */
+.msr-del {
+    position: absolute;
+    right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    color: #666;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: color 0.15s, background 0.15s;
+}
+
+.msr-del:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+/* Pin highlight pulse */
+@keyframes pinPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.6); }
+    50% { box-shadow: 0 0 0 8px rgba(74, 158, 255, 0); }     
+}
+
+.measurement-pin.pin-highlight {
+    animation: pinPulse 0.4s ease-out 2;
+}
+
+/* Label highlight flash */
+@keyframes labelFlash {
+    0%, 100% { background: rgba(22, 33, 62, 0.9); }
+    50% { background: rgba(74, 158, 255, 0.3); }
+}
+
+.measurement-label.label-highlight {
+    animation: labelFlash 0.4s ease-out 2;
+}
+
 @media print {
     .measurement-summary { display: none !important; }       
 }
@@ -400,6 +510,61 @@ input[type="range"]::-moz-range-thumb {
 /* Tooltip fade */
 .measurement-tooltip {
     transition: opacity 0.15s ease;
+}
+
+/* Summary panel — interactive items */
+.measurement-summary li {
+    cursor: pointer;
+    position: relative;
+    padding-right: 20px;
+    transition: background 0.15s;
+}
+
+.measurement-summary li:hover {
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Delete button in summary */
+.msr-del {
+    position: absolute;
+    right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    color: #666;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: color 0.15s, background 0.15s;
+}
+
+.msr-del:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+/* Pin highlight pulse */
+@keyframes pinPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.6); }
+    50% { box-shadow: 0 0 0 8px rgba(74, 158, 255, 0); }     
+}
+
+.measurement-pin.pin-highlight {
+    animation: pinPulse 0.4s ease-out 2;
+}
+
+/* Label highlight flash */
+@keyframes labelFlash {
+    0%, 100% { background: rgba(22, 33, 62, 0.9); }
+    50% { background: rgba(74, 158, 255, 0.3); }
+}
+
+.measurement-label.label-highlight {
+    animation: labelFlash 0.4s ease-out 2;
 }
 
 @media (pointer: coarse) {
@@ -481,6 +646,61 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* Hide summary on mobile (too little space) */
+/* Summary panel — interactive items */
+.measurement-summary li {
+    cursor: pointer;
+    position: relative;
+    padding-right: 20px;
+    transition: background 0.15s;
+}
+
+.measurement-summary li:hover {
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Delete button in summary */
+.msr-del {
+    position: absolute;
+    right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    color: #666;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: color 0.15s, background 0.15s;
+}
+
+.msr-del:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+/* Pin highlight pulse */
+@keyframes pinPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.6); }
+    50% { box-shadow: 0 0 0 8px rgba(74, 158, 255, 0); }     
+}
+
+.measurement-pin.pin-highlight {
+    animation: pinPulse 0.4s ease-out 2;
+}
+
+/* Label highlight flash */
+@keyframes labelFlash {
+    0%, 100% { background: rgba(22, 33, 62, 0.9); }
+    50% { background: rgba(74, 158, 255, 0.3); }
+}
+
+.measurement-label.label-highlight {
+    animation: labelFlash 0.4s ease-out 2;
+}
+
 @media (max-width: 480px) {
     .measurement-summary {
         display: none !important;
@@ -488,6 +708,61 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* Hide summary in print */
+/* Summary panel — interactive items */
+.measurement-summary li {
+    cursor: pointer;
+    position: relative;
+    padding-right: 20px;
+    transition: background 0.15s;
+}
+
+.measurement-summary li:hover {
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Delete button in summary */
+.msr-del {
+    position: absolute;
+    right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    color: #666;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: color 0.15s, background 0.15s;
+}
+
+.msr-del:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+/* Pin highlight pulse */
+@keyframes pinPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.6); }
+    50% { box-shadow: 0 0 0 8px rgba(74, 158, 255, 0); }     
+}
+
+.measurement-pin.pin-highlight {
+    animation: pinPulse 0.4s ease-out 2;
+}
+
+/* Label highlight flash */
+@keyframes labelFlash {
+    0%, 100% { background: rgba(22, 33, 62, 0.9); }
+    50% { background: rgba(74, 158, 255, 0.3); }
+}
+
+.measurement-label.label-highlight {
+    animation: labelFlash 0.4s ease-out 2;
+}
+
 @media print {
     .measurement-summary { display: none !important; }       
 }
@@ -526,6 +801,61 @@ input[type="range"]::-moz-range-thumb {
 /* Tooltip fade */
 .measurement-tooltip {
     transition: opacity 0.15s ease;
+}
+
+/* Summary panel — interactive items */
+.measurement-summary li {
+    cursor: pointer;
+    position: relative;
+    padding-right: 20px;
+    transition: background 0.15s;
+}
+
+.measurement-summary li:hover {
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Delete button in summary */
+.msr-del {
+    position: absolute;
+    right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    color: #666;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: color 0.15s, background 0.15s;
+}
+
+.msr-del:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+/* Pin highlight pulse */
+@keyframes pinPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.6); }
+    50% { box-shadow: 0 0 0 8px rgba(74, 158, 255, 0); }     
+}
+
+.measurement-pin.pin-highlight {
+    animation: pinPulse 0.4s ease-out 2;
+}
+
+/* Label highlight flash */
+@keyframes labelFlash {
+    0%, 100% { background: rgba(22, 33, 62, 0.9); }
+    50% { background: rgba(74, 158, 255, 0.3); }
+}
+
+.measurement-label.label-highlight {
+    animation: labelFlash 0.4s ease-out 2;
 }
 
 @media print {
@@ -607,6 +937,61 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* Hide summary on mobile (too little space) */
+/* Summary panel — interactive items */
+.measurement-summary li {
+    cursor: pointer;
+    position: relative;
+    padding-right: 20px;
+    transition: background 0.15s;
+}
+
+.measurement-summary li:hover {
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Delete button in summary */
+.msr-del {
+    position: absolute;
+    right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    color: #666;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: color 0.15s, background 0.15s;
+}
+
+.msr-del:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+/* Pin highlight pulse */
+@keyframes pinPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.6); }
+    50% { box-shadow: 0 0 0 8px rgba(74, 158, 255, 0); }     
+}
+
+.measurement-pin.pin-highlight {
+    animation: pinPulse 0.4s ease-out 2;
+}
+
+/* Label highlight flash */
+@keyframes labelFlash {
+    0%, 100% { background: rgba(22, 33, 62, 0.9); }
+    50% { background: rgba(74, 158, 255, 0.3); }
+}
+
+.measurement-label.label-highlight {
+    animation: labelFlash 0.4s ease-out 2;
+}
+
 @media (max-width: 480px) {
     .measurement-summary {
         display: none !important;
@@ -614,6 +999,61 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* Hide summary in print */
+/* Summary panel — interactive items */
+.measurement-summary li {
+    cursor: pointer;
+    position: relative;
+    padding-right: 20px;
+    transition: background 0.15s;
+}
+
+.measurement-summary li:hover {
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Delete button in summary */
+.msr-del {
+    position: absolute;
+    right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    color: #666;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: color 0.15s, background 0.15s;
+}
+
+.msr-del:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+/* Pin highlight pulse */
+@keyframes pinPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.6); }
+    50% { box-shadow: 0 0 0 8px rgba(74, 158, 255, 0); }     
+}
+
+.measurement-pin.pin-highlight {
+    animation: pinPulse 0.4s ease-out 2;
+}
+
+/* Label highlight flash */
+@keyframes labelFlash {
+    0%, 100% { background: rgba(22, 33, 62, 0.9); }
+    50% { background: rgba(74, 158, 255, 0.3); }
+}
+
+.measurement-label.label-highlight {
+    animation: labelFlash 0.4s ease-out 2;
+}
+
 @media print {
     .measurement-summary { display: none !important; }       
 }
@@ -652,6 +1092,61 @@ input[type="range"]::-moz-range-thumb {
 /* Tooltip fade */
 .measurement-tooltip {
     transition: opacity 0.15s ease;
+}
+
+/* Summary panel — interactive items */
+.measurement-summary li {
+    cursor: pointer;
+    position: relative;
+    padding-right: 20px;
+    transition: background 0.15s;
+}
+
+.measurement-summary li:hover {
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Delete button in summary */
+.msr-del {
+    position: absolute;
+    right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    color: #666;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: color 0.15s, background 0.15s;
+}
+
+.msr-del:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+/* Pin highlight pulse */
+@keyframes pinPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.6); }
+    50% { box-shadow: 0 0 0 8px rgba(74, 158, 255, 0); }     
+}
+
+.measurement-pin.pin-highlight {
+    animation: pinPulse 0.4s ease-out 2;
+}
+
+/* Label highlight flash */
+@keyframes labelFlash {
+    0%, 100% { background: rgba(22, 33, 62, 0.9); }
+    50% { background: rgba(74, 158, 255, 0.3); }
+}
+
+.measurement-label.label-highlight {
+    animation: labelFlash 0.4s ease-out 2;
 }
 
 @media (max-width: 480px) {
