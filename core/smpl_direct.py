@@ -270,13 +270,32 @@ def generate_direct_smpl(images_dict, profile=None,
         cam_h_mm = float(profile.get('camera_height_from_ground_cm', 65)) * 10.0
 
     # ── 1. HMR2.0 shape prediction ──────────────────────────────────────────
-    from core.hmr_shape import predict_shape
+    # Try cloud GPU first (RunPod), fall back to local GPU/CPU
+    cloud_result = None
+    try:
+        from core.cloud_gpu import is_configured, cloud_inference
+        if is_configured():
+            logger.info("Using RunPod cloud GPU for inference...")
+            cloud_result = cloud_inference(images_dict, tasks=['hmr', 'rembg', 'dsine'])
+            if cloud_result and 'hmr' in cloud_result:
+                logger.info("Cloud GPU inference succeeded")
+    except Exception as e:
+        logger.warning("Cloud GPU unavailable, using local: %s", e)
 
-    images = list(images_dict.values())
-    directions = list(images_dict.keys())
+    if cloud_result and 'hmr' in cloud_result:
+        result = cloud_result['hmr']
+        # Cloud also returned masks and normals — store for later steps
+        _cloud_masks = cloud_result.get('masks')
+        _cloud_normals = cloud_result.get('normals')
+    else:
+        _cloud_masks = None
+        _cloud_normals = None
+        from core.hmr_shape import predict_shape
+        images = list(images_dict.values())
+        directions = list(images_dict.keys())
+        logger.info("Running HMR2.0 locally on %d images...", len(images))
+        result = predict_shape(images, directions)
 
-    logger.info("Running HMR2.0 on %d images...", len(images))
-    result = predict_shape(images, directions)
     if result is None or result['vertices'] is None:
         logger.error("HMR2.0 shape prediction failed")
         return None
@@ -303,10 +322,15 @@ def generate_direct_smpl(images_dict, profile=None,
     # ── 4. Body segmentation ─────────────────────────────────────────────────
     logger.info("Segmenting bodies...")
     body_masks = {}
-    for direction, img in images_dict.items():
-        body_masks[direction] = segment_body(img)
-        coverage = (body_masks[direction] > 0).sum() / body_masks[direction].size * 100
-        logger.info("  %s: %.1f%% body pixels", direction, coverage)
+    if _cloud_masks:
+        # Use cloud GPU masks (already computed on RunPod)
+        body_masks = _cloud_masks
+        logger.info("Using cloud GPU body masks (%d views)", len(body_masks))
+    else:
+        for direction, img in images_dict.items():
+            body_masks[direction] = segment_body(img)
+            coverage = (body_masks[direction] > 0).sum() / body_masks[direction].size * 100
+            logger.info("  %s: %.1f%% body pixels", direction, coverage)
 
     # ── 5. UVs — canonical SMPL if available, else cylindrical fallback ─────
     canonical = _load_canonical_uvs()
@@ -338,13 +362,19 @@ def generate_direct_smpl(images_dict, profile=None,
     # ── 9. DSINE normal map from photos ──────────────────────────────────────
     normal_map = None
     try:
-        from core.dsine_normals import estimate_normals, project_normals_to_atlas
+        from core.dsine_normals import project_normals_to_atlas
         photo_normals = {}
-        for direction, img in images_dict.items():
-            n = estimate_normals(img)
-            if n is not None:
-                photo_normals[direction] = n
-                logger.info("DSINE normals estimated for %s", direction)
+        if _cloud_normals:
+            # Use cloud GPU normals (already computed on RunPod)
+            photo_normals = _cloud_normals
+            logger.info("Using cloud GPU normals (%d views)", len(photo_normals))
+        else:
+            from core.dsine_normals import estimate_normals
+            for direction, img in images_dict.items():
+                n = estimate_normals(img)
+                if n is not None:
+                    photo_normals[direction] = n
+                    logger.info("DSINE normals estimated for %s", direction)
         if photo_normals:
             normal_map = project_normals_to_atlas(
                 verts, faces, uvs, photo_normals, body_masks,
