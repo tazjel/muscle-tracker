@@ -49,3 +49,36 @@ gemini_watchdog.log
 GEMINI_STATUS.md
 database.db
 .claude/settings.local.json
+
+# Personal scan photos & test images — NEVER commit
+scripts/dual_captures/
+scripts/*.png
+scripts/*.jpg
+uploads/
+meshes/
+
+# Generated test GLBs (keep only committed ones)
+web_app/static/viewer3d/*.glb
+
+# Database table files
+web_app/*.table
+
+# Logs
+*.log
+server.log
+claude_server.log
+web_app/sql.log
+
+# AI model cache & libs (large, downloaded at runtime)
+lib/
+models/
+
+# Screenshots & viewer debug images
+viewer_*.png
+report_*.png
+
+# Task sheet leftovers & agent files
+.gemini/
+.playwright-mcp/
+.service/
+apps/

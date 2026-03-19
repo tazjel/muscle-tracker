@@ -1000,17 +1000,36 @@ function _applyDefaultMaterial(object) {
       // Store the original loaded material (may have embedded texture)
       const loadedMat = child.material;
       const hasEmbeddedTexture = loadedMat && loadedMat.map;
+      const hasNormalMap = loadedMat && loadedMat.normalMap;
 
       // Save original for "Textured" toggle
       origMaterials.push({ mesh: child, mat: loadedMat });
 
-      if (hasEmbeddedTexture) {
-        // Upgrade material properties but keep embedded texture
+      if (hasEmbeddedTexture && hasNormalMap) {
+        // GLB has full PBR material (albedo + normal) — keep it as-is
+        // Just add SSS properties if missing
+        if (loadedMat.isMeshStandardMaterial && !loadedMat.isMeshPhysicalMaterial) {
+          // Upgrade to Physical for SSS support
+          const mat = new THREE.MeshPhysicalMaterial();
+          THREE.MeshStandardMaterial.prototype.copy.call(mat, loadedMat);
+          mat.transmission = 0.08;
+          mat.thickness = 0.5;
+          mat.attenuationColor = new THREE.Color(0.8, 0.25, 0.15);
+          mat.attenuationDistance = 0.5;
+          mat.ior = 1.4;
+          mat.specularIntensity = 0.5;
+          mat.sheen = 0.15;
+          mat.sheenRoughness = 0.7;
+          mat.sheenColor = new THREE.Color(0xddaa88);
+          child.material = mat;
+        }
+        _originalMaterials.set(child, child.material);
+      } else if (hasEmbeddedTexture) {
+        // Has texture but no normal — upgrade with SKIN_MATERIAL properties
         const tex = loadedMat.map;
         const mat = SKIN_MATERIAL.clone();
         mat.map = tex;
         child.material = mat;
-        // Store textured version as original (for toggle back)
         _originalMaterials.set(child, mat);
       } else {
         // No texture — use procedural skin

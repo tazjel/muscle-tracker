@@ -14,45 +14,40 @@ logger = logging.getLogger(__name__)
 
 # Lazy-load heavy imports
 _hmr_model = None
-_hmr_backend = None  # 'hmr2' | 'tokenhmr' | 'keypoint'
+_hmr_backend = None  # 'hmr2' | 'keypoint'
+_hmr_cfg = None
 
 
 def _load_hmr():
-    """Try HMR2.0 → TokenHMR → keypoint fallback."""
-    global _hmr_model, _hmr_backend
+    """Try HMR2.0 (4D-Humans) → keypoint fallback."""
+    global _hmr_model, _hmr_backend, _hmr_cfg
     if _hmr_model is not None:
         return
 
-    # Try HMR2.0
+    # Try HMR2.0 via 4D-Humans
     try:
-        from hmr2.models import HMR2
+        from hmr2.configs import CACHE_DIR_4DHUMANS
+        from hmr2.models import download_models, load_hmr2, DEFAULT_CHECKPOINT
         import torch
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        model = HMR2.from_pretrained().to(device).eval()
+
+        # Download model weights if not cached (~2.5GB first time)
+        download_models(CACHE_DIR_4DHUMANS)
+        model, model_cfg = load_hmr2(DEFAULT_CHECKPOINT)
+
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = model.to(device).eval()
         _hmr_model = (model, device)
         _hmr_backend = 'hmr2'
-        logger.info(f"HMR2.0 loaded on {device}")
+        _hmr_cfg = model_cfg
+        logger.info(f"HMR2.0 (4D-Humans) loaded on {device}")
         return
     except Exception as e:
         logger.warning(f"HMR2.0 unavailable: {e}")
 
-    # Try TokenHMR
-    try:
-        from tokenhmr.models import TokenHMR
-        import torch
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        model = TokenHMR.from_pretrained().to(device).eval()
-        _hmr_model = (model, device)
-        _hmr_backend = 'tokenhmr'
-        logger.info(f"TokenHMR loaded on {device}")
-        return
-    except Exception as e:
-        logger.warning(f"TokenHMR unavailable: {e}")
-
     # Keypoint fallback
     _hmr_backend = 'keypoint'
     _hmr_model = True  # sentinel
-    logger.info("HMR2.0/TokenHMR not installed — using MediaPipe keypoint fallback for shape estimation")
+    logger.info("HMR2.0 not installed — using MediaPipe keypoint fallback for shape estimation")
 
 
 def predict_shape(images, directions=None):
@@ -83,38 +78,65 @@ def predict_shape(images, directions=None):
 
 
 def _predict_hmr(images, directions):
-    """Run HMR2.0 or TokenHMR on each image, average betas."""
+    """Run HMR2.0 (4D-Humans) on each image, average betas across views."""
     import torch
     model, device = _hmr_model
 
+    # 4D-Humans uses ViTDetDataset for preprocessing — we replicate it here
+    # since our scan photos have the person centered (no detectron2 needed)
+    img_size = _hmr_cfg.MODEL.IMAGE_SIZE if _hmr_cfg else 256
+    img_mean = 255.0 * np.array(_hmr_cfg.MODEL.IMAGE_MEAN if _hmr_cfg else [0.485, 0.456, 0.406])
+    img_std = 255.0 * np.array(_hmr_cfg.MODEL.IMAGE_STD if _hmr_cfg else [0.229, 0.224, 0.225])
+
     all_betas = []
-    best_pose = None
     best_verts = None
-    best_confidence = 0.0
+    best_joints = None
 
     for i, img in enumerate(images):
         try:
-            # Preprocess: BGR→RGB, resize to 256x256, normalize
-            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            rgb = cv2.resize(rgb, (256, 256))
-            tensor = torch.from_numpy(rgb).float().permute(2, 0, 1) / 255.0
-            # ImageNet normalize
-            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-            tensor = (tensor - mean) / std
-            tensor = tensor.unsqueeze(0).to(device)
+            h, w = img.shape[:2]
 
+            # Person is centered in scan photos — use full image as bbox
+            # Crop to square (centered), then resize to img_size
+            if h > w:
+                pad = (h - w) // 2
+                square = img[pad:pad+w, :, :]
+            elif w > h:
+                pad = (w - h) // 2
+                square = img[:, pad:pad+h, :]
+            else:
+                square = img
+
+            # Resize to model input size (typically 256x256)
+            resized = cv2.resize(square, (img_size, img_size), interpolation=cv2.INTER_LINEAR)
+
+            # BGR → RGB, then to (3, H, W) float tensor
+            rgb = resized[:, :, ::-1].copy().astype(np.float32)
+            tensor = np.transpose(rgb, (2, 0, 1))  # (3, H, W)
+
+            # Normalize with ImageNet stats (applied to 0-255 range)
+            for c in range(3):
+                tensor[c] = (tensor[c] - img_mean[c]) / img_std[c]
+
+            tensor = torch.from_numpy(tensor).unsqueeze(0).float().to(device)
+
+            # 4D-Humans forward expects batch dict with 'img' key
+            batch = {'img': tensor}
             with torch.no_grad():
-                output = model(tensor)
+                output = model(batch)
 
             betas = output['pred_smpl_params']['betas'][0].cpu().numpy()
-            all_betas.append(betas[:10])  # first 10 shape components
+            all_betas.append(betas[:10])
 
-            conf = float(output.get('confidence', [0.5])[0]) if 'confidence' in output else 0.5
-            if conf > best_confidence:
-                best_confidence = conf
-                best_pose = output['pred_smpl_params']['body_pose'][0].cpu().numpy()
+            # Keep vertices from front view (or first successful)
+            if best_verts is None:
                 best_verts = output['pred_vertices'][0].cpu().numpy()
+                if 'pred_keypoints_3d' in output:
+                    best_joints = output['pred_keypoints_3d'][0, :24].cpu().numpy()
+
+            logger.info(f"HMR2 prediction {i} ({directions[i] if directions else '?'}): "
+                        f"betas[:3]={betas[:3].round(2)}")
+
         except Exception as e:
             logger.warning(f"HMR prediction failed for image {i}: {e}")
             continue
@@ -125,45 +147,47 @@ def _predict_hmr(images, directions):
 
     # Average betas across views for robustness
     avg_betas = np.mean(all_betas, axis=0).astype(np.float32)
+    logger.info(f"HMR2 averaged betas from {len(all_betas)} views: {avg_betas[:3].round(2)}")
 
-    # Reconstruct mesh with averaged betas
+    # Use HMR2's own SMPL to reconstruct with averaged betas
     verts = None
     joints = None
     try:
-        import smplx
+        # The model has its own SMPL layer — recompute with averaged betas
         import torch as th
-        import os
-        model_paths = [
-            os.path.join(os.path.dirname(__file__), '..', 'models', 'smpl'),
-            os.path.expanduser('~/.smpl'),
-            os.path.join(os.path.dirname(__file__), '..', 'lib', 'smpl'),
-        ]
-        smpl_path = None
-        for p in model_paths:
-            if os.path.isdir(p):
-                smpl_path = p
-                break
-
-        if smpl_path:
-            smpl = smplx.create(smpl_path, model_type='smpl', gender='neutral')
-            with th.no_grad():
-                result = smpl(betas=th.tensor(avg_betas).unsqueeze(0).float())
-                verts = result.vertices[0].numpy() * 1000  # m → mm
-                joints = result.joints[0, :24].numpy() * 1000
-        else:
-            logger.warning("SMPL model not found — use HMR vertices directly")
-            verts = best_verts * 1000 if best_verts is not None else None
+        betas_tensor = th.tensor(avg_betas).unsqueeze(0).float().to(device)
+        # Use neutral pose (T-pose) for body shape
+        smpl_layer = model.smpl
+        body_pose = th.eye(3, device=device).unsqueeze(0).expand(1, 23, -1, -1)
+        global_orient = th.eye(3, device=device).unsqueeze(0).unsqueeze(0)
+        with th.no_grad():
+            smpl_out = smpl_layer(betas=betas_tensor, body_pose=body_pose,
+                                  global_orient=global_orient, pose2rot=False)
+            verts = smpl_out.vertices[0].cpu().numpy() * 1000  # m → mm
+            joints = smpl_out.joints[0, :24].cpu().numpy() * 1000
+        # SMPL is Y-up, our pipeline is Z-up — swap Y↔Z
+        verts = verts[:, [0, 2, 1]]  # (X, Y, Z) → (X, Z, Y)
+        if joints is not None:
+            joints = joints[:, [0, 2, 1]]
+        logger.info(f"SMPL mesh reconstructed: {verts.shape[0]} verts, "
+                    f"height={verts[:,2].max()-verts[:,2].min():.0f}mm")
     except Exception as e:
-        logger.warning(f"SMPL reconstruction failed: {e}")
-        verts = best_verts * 1000 if best_verts is not None else None
+        logger.warning(f"SMPL reconstruction with averaged betas failed: {e}")
+        # Fall back to raw HMR vertices
+        if best_verts is not None:
+            verts = best_verts * 1000
+            verts = verts[:, [0, 2, 1]]  # Y-up → Z-up
+            if best_joints is not None:
+                joints = best_joints * 1000
+                joints = joints[:, [0, 2, 1]]
 
     return {
         'betas': avg_betas,
         'vertices': verts,
-        'pose': best_pose.flatten()[:72] if best_pose is not None else np.zeros(72, dtype=np.float32),
+        'pose': np.zeros(72, dtype=np.float32),  # T-pose for shape comparison
         'joints_3d': joints,
-        'confidence': best_confidence,
-        'backend': _hmr_backend,
+        'confidence': 0.85,  # HMR2.0 is generally high confidence
+        'backend': 'hmr2',
     }
 
 
@@ -183,16 +207,62 @@ def _predict_keypoint(images, directions):
     img = images[0]
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    mp_pose = mp.solutions.pose
-    with mp_pose.Pose(static_image_mode=True, model_complexity=2) as pose:
-        results = pose.process(rgb)
+    # MediaPipe API changed: try new API first, then legacy
+    try:
+        # New API (mediapipe >= 0.10.14)
+        from mediapipe.tasks.python.vision import PoseLandmarker, PoseLandmarkerOptions
+        from mediapipe.tasks.python import BaseOptions
+        import mediapipe.tasks.python.vision as vision
+        import os
 
-    if not results.pose_landmarks:
-        logger.error("MediaPipe pose detection failed")
-        return None
+        model_path = os.path.join(os.path.dirname(mp.__file__),
+                                  'modules', 'pose_landmarker', 'pose_landmarker_heavy.task')
+        if not os.path.exists(model_path):
+            # Try to find any pose model
+            model_path = None
+            for root, dirs, files in os.walk(os.path.dirname(mp.__file__)):
+                for f in files:
+                    if 'pose_landmarker' in f and f.endswith('.task'):
+                        model_path = os.path.join(root, f)
+                        break
+                if model_path:
+                    break
 
-    h, w = img.shape[:2]
-    lm = results.pose_landmarks.landmark
+        if model_path:
+            options = PoseLandmarkerOptions(
+                base_options=BaseOptions(model_asset_path=model_path),
+                num_poses=1,
+            )
+            with PoseLandmarker.create_from_options(options) as landmarker:
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                detection = landmarker.detect(mp_image)
+                if not detection.pose_landmarks:
+                    logger.error("MediaPipe pose detection failed (new API)")
+                    return None
+                landmarks = detection.pose_landmarks[0]
+                h, w = img.shape[:2]
+
+                class LM:
+                    def __init__(self, l): self.x, self.y = l.x, l.y
+
+                lm = [LM(l) for l in landmarks]
+        else:
+            raise ImportError("No pose model found")
+
+    except (ImportError, Exception) as new_api_err:
+        # Legacy API (mediapipe < 0.10.14)
+        try:
+            mp_pose = mp.solutions.pose
+            with mp_pose.Pose(static_image_mode=True, model_complexity=2) as pose:
+                results = pose.process(rgb)
+            if not results.pose_landmarks:
+                logger.error("MediaPipe pose detection failed")
+                return None
+            h, w = img.shape[:2]
+            lm = results.pose_landmarks.landmark
+        except AttributeError:
+            logger.error(f"MediaPipe pose unavailable: new API error: {new_api_err}")
+            return None
 
     # Extract key ratios from 2D landmarks
     l_shoulder = np.array([lm[11].x * w, lm[11].y * h])
