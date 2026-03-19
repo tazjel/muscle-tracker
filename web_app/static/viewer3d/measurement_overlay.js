@@ -217,7 +217,7 @@ const MeasurementOverlay = {
         const commit = () => {
             m.name = input.value.trim();
             const formatted = m.distance_mm >= 100 ? (m.distance_mm / 10).toFixed(1) + ' cm' : m.distance_mm.toFixed(1) + ' mm';
-            labelEl.textContent = m.name ? ${m.name}:  : formatted;
+            labelEl.textContent = m.name ? `${m.name}: ${formatted}` : formatted;
             this._updateSummary(); this._saveToStorage();
         };
         input.addEventListener('blur', commit);
@@ -291,7 +291,7 @@ const MeasurementOverlay = {
 
         const el = this._createPinElement(); el.classList.add('circum-pin');
         const label = document.createElement('div'); label.className = 'measurement-label circum-label';
-        label.textContent = ⭕ : ; this.container.appendChild(label);
+        label.textContent = `${region}: ${formatted}`; this.container.appendChild(label);
 
         if (this.measurements.length >= this.maxMeasurements) this._removeMeasurement(0);
         this.measurements.push({
@@ -337,16 +337,16 @@ const MeasurementOverlay = {
             const dist = m.distance_mm;
             const formatted = dist >= 100 ? (dist / 10).toFixed(1) + ' cm' : dist.toFixed(1) + ' mm';
             const icon = m.isCircum ? '⭕' : (i + 1);
-            const label = m.name ? ${m.name}:  : formatted;
+            const label = m.name ? `${m.name}: ${formatted}` : formatted;
             const li = document.createElement('li');
-            li.innerHTML = <span class="msr-idx"></span>  <span class="msr-del">×</span>;
+            li.innerHTML = `<span class="msr-idx">${icon}</span> ${label} <span class="msr-del">×</span>`;
             li.addEventListener('click', () => this._highlightMeasurement(i));
             li.querySelector('.msr-del').addEventListener('click', (ev) => { ev.stopPropagation(); this._removeMeasurement(i); });
             ul.appendChild(li);
         });
         if (this._angleMeasurement) {
             const li = document.createElement('li');
-            li.innerHTML = <span class="msr-idx">∠</span> ° <span class="msr-del">×</span>;
+            li.innerHTML = `<span class="msr-idx">∠</span> ${this._angleMeasurement.angle.toFixed(1)}° <span class="msr-del">×</span>`;
             li.querySelector('.msr-del').addEventListener('click', (ev) => { ev.stopPropagation(); this._clearAnglePins(); });
             ul.appendChild(li);
         }
@@ -407,7 +407,7 @@ const MeasurementOverlay = {
         const labelEl = document.createElement('div');
         labelEl.className = 'measurement-label' + (isCircum ? ' circum-label' : '');
         const formatted = distance_mm >= 100 ? (distance_mm / 10).toFixed(1) + ' cm' : distance_mm.toFixed(1) + ' mm';
-        labelEl.textContent = isCircum ? ⭕ :  : (name ? ${name}:  : formatted);
+        labelEl.textContent = isCircum ? `⭕: ${formatted}` : (name ? `${name}: ${formatted}` : formatted);
         this.container.appendChild(labelEl);
 
         const m = {
@@ -487,16 +487,16 @@ const MeasurementOverlay = {
         this.measurements.forEach((m, i) => {
             const dist = m.distance_mm;
             const formatted = dist >= 100 ? (dist / 10).toFixed(1) + ' cm' : dist.toFixed(1) + ' mm';
-            if (m.isCircum) lines.push(${m.name || 'Circumference'}: );
-            else lines.push(${m.name || Distance }: );
+            if (m.isCircum) lines.push(`${m.name || 'Circumference'}: ${formatted}`);
+            else lines.push(`${m.name || 'Distance'}: ${formatted}`);
         });
-        if (this._angleMeasurement) lines.push(Angle: °);
+        if (this._angleMeasurement) lines.push(`Angle: ${this._angleMeasurement.angle.toFixed(1)}°`);
         const text = 'GTD3D Measurements\n' + (lines.length ? lines.join('\n') : 'No measurements');
         navigator.clipboard.writeText(text).then(() => { this.showTooltip(window.innerWidth / 2, 60, { label: 'Copied', value: lines.length + ' measurement(s)' }); setTimeout(() => this.hideTooltip(), 1500); }).catch(() => { const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;opacity:0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); });
     },
 
     showTooltip(screenX, screenY, data) {
-        if (!this.tooltip) return; this.tooltip.innerHTML = <span class="label">:</span> <span class="value"></span>;
+        if (!this.tooltip) return; this.tooltip.innerHTML = `<span class="label">${data.label}:</span> <span class="value">${data.value}</span>`;
         this.tooltip.style.display = 'block'; this.tooltip.style.left = (screenX + 15) + 'px'; this.tooltip.style.top = (screenY + 15) + 'px';
     },
 

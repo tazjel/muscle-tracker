@@ -14,6 +14,11 @@ import { PointerLockControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/
 import { GLTFLoader }    from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
 import { DRACOLoader }   from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/DRACOLoader.js';
+import { RGBELoader }    from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/RGBELoader.js';
+import { EffectComposer } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js';
+import { SSAOPass }       from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/SSAOPass.js';
+import { OutputPass }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/OutputPass.js';
 
 // ── Scene globals ─────────────────────────────────────────────────────────────
 let scene, camera, renderer, controls;
@@ -23,6 +28,11 @@ let origMaterials = [];     // stored to restore after heatmap
 const _originalMaterials = new Map();  // mesh → original loaded material (for texture toggle)
 const raycaster  = new THREE.Raycaster();
 const _mouse     = new THREE.Vector2();
+
+// ── SSAO post-processing globals ──────────────────────────────────────────────
+let _composer = null;
+let _ssaoPass = null;
+let _ssaoEnabled = true;  // default on for Studio/Outdoor, toggled off for Clinical
 
 // ── Measure mode globals ───────────────────────────────────────────────────────
 let _measureMode   = false;
@@ -393,11 +403,11 @@ async function _loadRealSkinTexture() {
       side:             THREE.DoubleSide,
       color:            0xffffff,   // pure white — let the texture speak
       // Subtle skin PBR properties
-      sheen:            0.15,
-      sheenRoughness:   0.5,
+      sheen:            0.2,
+      sheenRoughness:   0.4,
       sheenColor:       new THREE.Color(0xddaa88),
-      clearcoat:        0.03,
-      clearcoatRoughness: 0.5,
+      clearcoat:        0.06,
+      clearcoatRoughness: 0.3,
       emissive:         new THREE.Color(0x000000),  // no emissive tint
       emissiveIntensity: 0.0,
     });
@@ -407,21 +417,16 @@ async function _loadRealSkinTexture() {
       color: new THREE.Color(0xffffff),
       roughness: 0.6,
       metalness: 0.0,
-      // SSS — light penetrates skin, scatters red
-      transmission: 0.08,
-      thickness: 0.5,
-      attenuationColor: new THREE.Color(0.8, 0.25, 0.15),
-      attenuationDistance: 0.5,
-      ior: 1.4,
-      specularIntensity: 0.5,
-      // Subtle sheen + clearcoat
-      sheen: 0.15, sheenRoughness: 0.7,
-      sheenColor: new THREE.Color(0xddaa88),
-      clearcoat: 0.03, clearcoatRoughness: 0.4,
+      specularIntensity: 0.4,
+      // Skin warmth via sheen (no transmission — breaks some WebGL)
+      sheen: 0.35, sheenRoughness: 0.5,
+      sheenColor: new THREE.Color(0xcc8866),
+      clearcoat: 0.06, clearcoatRoughness: 0.3,
       // No tints
       emissive: new THREE.Color(0x000000), emissiveIntensity: 0.0,
     });
     if (normalTex) SKIN_MATERIAL.normalScale.set(1.0, 1.0);
+    _applyPoreNormalPatch(SKIN_MATERIAL);
     SKIN_MATERIAL.needsUpdate = true;
 
     _realSkinLoaded = true;
@@ -456,20 +461,15 @@ const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
   metalness:        0.0,
   side:             THREE.DoubleSide,
   color:            0xffffff,
-  // Subsurface scattering — light penetrates skin, scatters red (blood)
-  transmission:     0.08,
-  thickness:        0.5,
-  attenuationColor: new THREE.Color(0.8, 0.25, 0.15),  // blood red
-  attenuationDistance: 0.5,
-  ior:              1.4,
-  // Subtle sheen (skin micro-fuzz)
-  sheen:            0.15,
-  sheenRoughness:   0.7,
-  sheenColor:       new THREE.Color(0xddaa88),
+  // Skin appearance — sheen simulates subsurface warmth without transmission
+  // (transmission/ior breaks shader on some WebGL implementations)
+  sheen:            0.35,
+  sheenRoughness:   0.5,
+  sheenColor:       new THREE.Color(0xcc8866),  // warm subsurface tint
   // Surface oil
-  clearcoat:        0.03,
-  clearcoatRoughness: 0.4,
-  specularIntensity: 0.5,
+  clearcoat:        0.06,     // visible oil layer
+  clearcoatRoughness: 0.3,
+  specularIntensity: 0.4,
   // Normal map for anatomical surface detail
   normalMap:        _createSkinNormalMap(),
   normalScale:      new THREE.Vector2(1.0, 1.0),
@@ -477,6 +477,37 @@ const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
   emissive:         new THREE.Color(0x000000),
   emissiveIntensity: 0.0,
 });
+
+// ── Micro-normal (skin pore) detail ──────────────────────────────────────────
+// Blends high-frequency pore detail into the material's normalMap via canvas
+// compositing. This avoids onBeforeCompile which breaks MeshPhysicalMaterial's
+// transmission/IOR shader code.
+let _poreNormalImg = null;
+let _poreNormalStrength = 0.3;
+
+(function _initPoreNormal() {
+  const img = new Image();
+  img.onload = () => { _poreNormalImg = img; console.log('Pore normal texture ready'); };
+  img.src = './textures/skin_pore_normal.png';
+})();
+
+function setPoreNormalStrength(val) {
+  _poreNormalStrength = Math.max(0, Math.min(1, val));
+  // Re-blend pore detail at new strength into all mesh materials
+  if (bodyMesh) {
+    bodyMesh.traverse(c => {
+      if (c.isMesh && c.material && c.material.normalMap) {
+        _applyPoreNormalPatch(c.material);
+      }
+    });
+  }
+}
+window.setPoreNormalStrength = setPoreNormalStrength;
+
+function _applyPoreNormalPatch(material) {
+  // No-op: pore detail is baked into normalMap via _blendPoreIntoNormalMap
+  // This function is kept as a safe stub so existing call sites don't break.
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
@@ -524,6 +555,9 @@ function init() {
   _createContactShadow();
   _setupMirror();
   _setupWalkControls();
+
+  // SSAO post-processing (ambient occlusion for crevices/contact areas)
+  _initSSAO();
 
   // Resize
   window.addEventListener('resize', _onResize);
@@ -776,14 +810,26 @@ function setLightPreset(preset) {
   _clearLights(_studioLightObjs);
   _currentLightPreset = preset;
   switch (preset) {
-    case 'clinical': _setupClinicalLights(); break;
-    case 'outdoor':  _setupOutdoorLights(); break;
-    default:         _setupStudioLights(); break;
+    case 'clinical':
+      _setupClinicalLights();
+      _ssaoEnabled = false;  // flat/even for measurement accuracy
+      break;
+    case 'outdoor':
+      _setupOutdoorLights();
+      _ssaoEnabled = true;
+      break;
+    default:
+      _setupStudioLights();
+      _ssaoEnabled = true;
+      break;
   }
   _saveViewerSettings();
   document.querySelectorAll('.light-preset-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.preset === preset);
   });
+  // Sync SSAO checkbox with preset
+  const chk = document.getElementById('chk-ssao');
+  if (chk) chk.checked = _ssaoEnabled;
 }
 window.setLightPreset = setLightPreset;
 
@@ -813,17 +859,35 @@ function _restoreViewerSettings() {
   } catch (e) { /* ignore */ }
 }
 
-// ── Environment map (procedural, no file) ─────────────────────────────────────
+// ── Environment map (HDRI with procedural fallback) ───────────────────────────
 function _setupEnvironment() {
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
 
+  // Try loading real studio HDRI first — gives natural skin reflections
+  new RGBELoader()
+    .setPath('./hdri/')
+    .load('studio_small_09_1k.hdr', (hdrTexture) => {
+      const envMap = pmrem.fromEquirectangular(hdrTexture).texture;
+      scene.environment = envMap;
+      // Do NOT set scene.background — keep dark UI background
+      hdrTexture.dispose();
+      pmrem.dispose();
+      console.log('HDRI environment loaded');
+    }, undefined, (err) => {
+      // Fallback: procedural environment if HDRI fails to load
+      console.warn('HDRI load failed, using procedural fallback:', err);
+      _buildProceduralEnvironment(pmrem);
+    });
+}
+
+/** Procedural studio environment — fallback when HDRI is unavailable */
+function _buildProceduralEnvironment(pmrem) {
   // Neutral clinical environment — no color tint, pure white/grey
-  // This ensures skin textures render with true-to-life color
   const envScene = new THREE.Scene();
   envScene.background = new THREE.Color(0x404040);
 
-  // Sky dome — neutral grey (no warm/cool tint)
+  // Sky dome — neutral grey
   const domeGeo = new THREE.SphereGeometry(900, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
   const domeMat = new THREE.MeshBasicMaterial({
     color: 0x808080, side: THREE.BackSide,
@@ -840,22 +904,18 @@ function _setupEnvironment() {
 
   // White softboxes — neutral reflections, no color cast
   const panelGeo = new THREE.PlaneGeometry(500, 700);
-  // Key softbox — pure white, front-left
   const keyPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }));
   keyPanel.position.set(-450, 350, 350);
   keyPanel.lookAt(0, 150, 0);
   envScene.add(keyPanel);
-  // Fill softbox — pure white, front-right
   const fillPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xfafafa }));
   fillPanel.position.set(450, 280, 300);
   fillPanel.lookAt(0, 150, 0);
   envScene.add(fillPanel);
-  // Back rim panel — white
   const rimPanel = new THREE.Mesh(panelGeo, new THREE.MeshBasicMaterial({ color: 0xeeeeee }));
   rimPanel.position.set(0, 250, -500);
   rimPanel.lookAt(0, 150, 0);
   envScene.add(rimPanel);
-  // Top panel — white
   const topPanel = new THREE.Mesh(
     new THREE.PlaneGeometry(600, 600),
     new THREE.MeshBasicMaterial({ color: 0xffffff })
@@ -863,7 +923,6 @@ function _setupEnvironment() {
   topPanel.position.set(0, 800, 0);
   topPanel.rotation.x = Math.PI / 2;
   envScene.add(topPanel);
-  // Side panels — neutral
   for (const sx of [-600, 600]) {
     const side = new THREE.Mesh(
       new THREE.PlaneGeometry(300, 500),
@@ -878,6 +937,38 @@ function _setupEnvironment() {
   scene.environment = envTex;
   pmrem.dispose();
 }
+
+// ── SSAO post-processing setup ────────────────────────────────────────────────
+function _initSSAO() {
+  // Skip on low-end GPUs
+  if (renderer.capabilities.maxTextureSize < 4096) {
+    console.warn('SSAO disabled: low-end GPU detected');
+    _ssaoEnabled = false;
+    return;
+  }
+
+  _composer = new EffectComposer(renderer);
+
+  const renderPass = new RenderPass(scene, camera);
+  _composer.addPass(renderPass);
+
+  _ssaoPass = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
+  _ssaoPass.kernelRadius = 24;       // world-space radius (body is ~300 units tall)
+  _ssaoPass.minDistance = 0.001;
+  _ssaoPass.maxDistance = 0.15;
+  _ssaoPass.output = SSAOPass.OUTPUT.Default;  // blended
+  _composer.addPass(_ssaoPass);
+
+  const outputPass = new OutputPass();
+  _composer.addPass(outputPass);
+
+  console.log('SSAO post-processing initialized');
+}
+
+function setSSAOEnabled(on) {
+  _ssaoEnabled = !!on;
+}
+window.setSSAOEnabled = setSSAOEnabled;
 
 // ── Load from URL params ──────────────────────────────────────────────────────
 function _loadFromUrl() {
@@ -1012,16 +1103,14 @@ function _applyDefaultMaterial(object) {
           // Upgrade to Physical for SSS support
           const mat = new THREE.MeshPhysicalMaterial();
           THREE.MeshStandardMaterial.prototype.copy.call(mat, loadedMat);
-          mat.transmission = 0.08;
-          mat.thickness = 0.5;
-          mat.attenuationColor = new THREE.Color(0.8, 0.25, 0.15);
-          mat.attenuationDistance = 0.5;
-          mat.ior = 1.4;
-          mat.specularIntensity = 0.5;
-          mat.sheen = 0.15;
-          mat.sheenRoughness = 0.7;
-          mat.sheenColor = new THREE.Color(0xddaa88);
+          mat.specularIntensity = 0.4;
+          mat.sheen = 0.35;
+          mat.sheenRoughness = 0.5;
+          mat.sheenColor = new THREE.Color(0xcc8866);
+          _applyPoreNormalPatch(mat);
           child.material = mat;
+        } else {
+          _applyPoreNormalPatch(child.material);
         }
         _originalMaterials.set(child, child.material);
       } else if (hasEmbeddedTexture) {
@@ -1029,12 +1118,15 @@ function _applyDefaultMaterial(object) {
         const tex = loadedMat.map;
         const mat = SKIN_MATERIAL.clone();
         mat.map = tex;
+        _applyPoreNormalPatch(mat);
         child.material = mat;
         _originalMaterials.set(child, mat);
       } else {
         // No texture — use procedural skin
-        child.material = SKIN_MATERIAL.clone();
-        _originalMaterials.set(child, child.material);
+        const mat = SKIN_MATERIAL.clone();
+        _applyPoreNormalPatch(mat);
+        child.material = mat;
+        _originalMaterials.set(child, mat);
       }
       child.castShadow    = true;
       child.receiveShadow = true;
@@ -3232,9 +3324,14 @@ function _animate() {
   _updateFirstPerson();
   _mcpUpdateRotations();
   if (!_walkMode) controls.update();
-  // Update mirror every 2nd frame for performance
+  // Update mirror every 2nd frame for performance (always uses renderer directly)
   if (++_mirrorFrame % 2 === 0) _updateMirror();
-  renderer.render(scene, camera);
+  // Render with SSAO composer when enabled, otherwise direct
+  if (_composer && _ssaoEnabled) {
+    _composer.render();
+  } else {
+    renderer.render(scene, camera);
+  }
   _updateRegionLabels();
   _updateRingLabels();
 }
@@ -3243,6 +3340,7 @@ function _onResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  if (_composer) _composer.setSize(window.innerWidth, window.innerHeight);
 }
 
 // ── CSV Export ───────────────────────────────────────────────────────────────

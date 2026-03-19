@@ -2559,20 +2559,94 @@ def generate_body_model(customer_id):
             except Exception:
                 logger.warning('Failed to save uploaded image for %s', _dir)
 
-        # ── Build base mesh (with HMR2.0 shape if images available) ───────────
-        _hmr_images = [v['img'] for v in loaded_images.values()]
-        _hmr_dirs   = list(loaded_images.keys())
+        # ── Direct SMPL path (when photos uploaded) ──────────────────────────
+        # Uses HMR2.0 → rembg → cylindrical UV → UV rasterization → delight
+        # Falls back to Anny path if direct SMPL fails or no images
+        _use_direct_smpl = bool(loaded_images)
+        smpl_result = None
+
+        if _use_direct_smpl:
+            try:
+                from core.smpl_direct import generate_direct_smpl
+                _dist_mm = camera_distance_cm * 10.0
+                smpl_result = generate_direct_smpl(
+                    {d: v['img'] for d, v in loaded_images.items()},
+                    profile=profile,
+                    dist_mm=_dist_mm,
+                    cam_h_mm=cam_h_mm,
+                )
+                if smpl_result:
+                    logger.info('Direct SMPL pipeline: %d verts, %.0fmm, %s',
+                                smpl_result['num_vertices'],
+                                smpl_result['height_mm'],
+                                smpl_result['hmr_backend'])
+            except Exception:
+                logger.exception('Direct SMPL pipeline failed — falling back to Anny')
+                smpl_result = None
+
+        if smpl_result:
+            # ── Direct SMPL succeeded — export ─────────────────────────────────
+            verts = smpl_result['vertices']
+            faces = smpl_result['faces']
+            uvs_for_glb = smpl_result['uvs']
+            texture_image = smpl_result['texture_image']
+            _volume = smpl_result['volume_cm3']
+            _hmr_backend = smpl_result.get('hmr_backend')
+            _hmr_confidence = smpl_result.get('hmr_confidence')
+
+            _normal_map = smpl_result.get('normal_map')
+            export_obj(verts, faces, obj_path)
+            glb_path_out = None
+            try:
+                export_glb(verts, faces, glb_path,
+                           uvs=uvs_for_glb, texture_image=texture_image,
+                           normal_map=_normal_map)
+                glb_path_out = glb_path
+            except Exception:
+                logger.warning('GLB export failed for SMPL direct %s', base_name)
+
+            mesh_id = db.mesh_model.insert(
+                customer_id=customer_id,
+                muscle_group='full_body',
+                model_type='body',
+                obj_path=obj_path,
+                glb_path=glb_path_out,
+                volume_cm3=_volume,
+                num_vertices=int(len(verts)),
+                num_faces=int(len(faces)),
+                notes=f'hash:{profile_hash} pipeline:smpl_direct',
+            )
+            db.commit()
+
+            return dict(
+                status='success',
+                mesh_id=mesh_id,
+                glb_url=f'/web_app/api/mesh/{mesh_id}.glb' if glb_path_out else None,
+                obj_url=f'/web_app/api/mesh/{mesh_id}.obj',
+                volume_cm3=_volume,
+                num_vertices=int(len(verts)),
+                num_faces=int(len(faces)),
+                pipeline='smpl_direct',
+                hmr_backend=_hmr_backend,
+                hmr_confidence=_hmr_confidence,
+                texture_resolution=(
+                    f"{texture_image.shape[1]}x{texture_image.shape[0]}"
+                    if texture_image is not None else None
+                ),
+                viewer_url=f'/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/{mesh_id}.glb',
+            )
+
+        # ── Fallback: Anny path (no images, or SMPL failed) ─────────────────
         mesh = build_body_mesh(
             profile,
-            images=_hmr_images or None,
-            directions=_hmr_dirs or None,
+            images=[v['img'] for v in loaded_images.values()] or None,
+            directions=list(loaded_images.keys()) or None,
         )
         verts = mesh['vertices']
         faces = mesh['faces']
-        # Anny provides UVs; use as fallback when no texture projection runs
         _anny_uvs = mesh.get('uvs')
 
-        # ── Optional silhouette refinement ─────────────────────────────────────
+        # Silhouette refinement
         silhouette_views = []
         for _dir, _data in loaded_images.items():
             try:
@@ -2598,8 +2672,6 @@ def generate_body_model(customer_id):
         depth_maps = []
         if silhouette_views:
             from core.silhouette_matcher import fit_mesh_to_silhouettes
-
-            # ── Depth estimation (Depth Anything V2) ─────────────────────────
             try:
                 from core.depth_estimator import estimate_depth
                 for sv in silhouette_views:
@@ -2613,8 +2685,6 @@ def generate_body_model(customer_id):
                         if depth_result:
                             depth_result['direction'] = _dir
                             depth_maps.append(depth_result)
-                            logger.info('Depth estimated for %s: metric=%s',
-                                        _dir, depth_result['is_metric'])
             except Exception:
                 logger.warning('Depth estimation failed — fitting without depth maps')
 
@@ -2622,11 +2692,10 @@ def generate_body_model(customer_id):
                 verts, faces, silhouette_views,
                 depth_maps=depth_maps or None,
             )
-            logger.info('Body model refined with %d silhouette view(s)', len(silhouette_views))
 
-        # ── Texture projection (when silhouette images are available) ───────────
+        # Texture projection (Anny path)
         texture_image = None
-        uvs_for_glb   = _anny_uvs  # seed from Anny; overwritten if texture projection runs
+        uvs_for_glb   = _anny_uvs
         normal_map    = None
         if silhouette_views:
             try:
@@ -2648,34 +2717,24 @@ def generate_body_model(customer_id):
                     texture_image, coverage_map = project_texture(
                         verts, faces, uvs_for_glb, cam_views, atlas_size=1024
                     )
-                    # AI texture enhancement (Real-ESRGAN 4x + inpainting)
                     try:
                         from core.texture_enhance import enhance_texture_atlas
                         texture_image = enhance_texture_atlas(
-                            texture_image,
-                            coverage_mask=coverage_map,
-                            upscale=True,
-                            inpaint=True,
-                            target_size=4096,
+                            texture_image, coverage_mask=coverage_map,
+                            upscale=True, inpaint=True, target_size=4096,
                         )
-                        logger.info('Texture enhanced: %s', texture_image.shape)
                     except Exception:
-                        logger.warning('Texture enhancement failed — using original')
-                    logger.info('Texture projected from %d view(s)', len(cam_views))
-                    # Generate normal map for enhanced viewer lighting
+                        pass
                     try:
                         from core.mesh_reconstruction import _generate_normal_map
                         normal_map = _generate_normal_map(verts, faces, uvs_for_glb, atlas_size=1024)
-                        logger.info('Normal map generated (1024x1024)')
                     except Exception:
                         normal_map = None
-                        logger.warning('Normal map generation failed')
             except Exception:
-                logger.warning('Texture projection failed — exporting untextured GLB')
                 texture_image = None
                 uvs_for_glb   = None
 
-        # ── Export ─────────────────────────────────────────────────────────────
+        # Export (Anny path)
         export_obj(verts, faces, obj_path)
         glb_path_out = None
         try:
@@ -2700,7 +2759,7 @@ def generate_body_model(customer_id):
             volume_cm3=mesh['volume_cm3'],
             num_vertices=int(len(verts)),
             num_faces=int(len(faces)),
-            notes=f'hash:{profile_hash}',
+            notes=f'hash:{profile_hash} pipeline:anny',
         )
         db.commit()
 
@@ -2712,6 +2771,7 @@ def generate_body_model(customer_id):
             volume_cm3=mesh['volume_cm3'],
             num_vertices=int(len(verts)),
             num_faces=int(len(faces)),
+            pipeline='anny',
             silhouette_views_used=len(silhouette_views),
             depth_maps_used=len(depth_maps),
             hmr_backend=mesh.get('hmr_backend'),

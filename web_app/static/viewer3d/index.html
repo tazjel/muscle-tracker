@@ -125,6 +125,19 @@
           <button class="light-preset-btn view-mode-btn" data-preset="outdoor"
                   onclick="setLightPreset('outdoor')">Outdoor</button>
         </div>
+        <!-- Post-processing toggles -->
+        <div class="view-modes" style="margin-top:4px;">
+          <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input type="checkbox" id="chk-ssao" checked
+                   onchange="setSSAOEnabled(this.checked)">
+            Ambient Occlusion
+          </label>
+          <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;margin-left:8px;">
+            Skin Detail
+            <input type="range" id="rng-pore-detail" min="0" max="100" value="30"
+                   style="width:60px;" onchange="setPoreNormalStrength(this.value/100)">
+          </label>
+        </div>
         <!-- Body stats -->
         <div id="body-stats-panel" style="display:none;margin-top:10px;border-top:1px solid #444;padding-top:8px;">
           <h3 style="margin:0 0 6px;font-size:13px;">Body Measurements</h3>
