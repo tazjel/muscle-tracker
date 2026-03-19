@@ -2535,52 +2535,93 @@ def generate_body_model(customer_id):
         obj_path = os.path.join('meshes', base_name + '.obj')
         glb_path = os.path.join('meshes', base_name + '.glb')
 
-        # ── Build base mesh from profile measurements ──────────────────────────
-        mesh = build_body_mesh(profile)
+        # ── Pre-load all uploaded images once ─────────────────────────────────
+        # Reused for HMR shape prediction, silhouette extraction, depth
+        # estimation, and texture projection — avoids multiple file saves.
+        import cv2 as _cv2
+        camera_distance_cm = float(
+            request.forms.get('camera_distance_cm', '0') or '100'
+        )
+        cam_h_mm = float(profile.get('camera_height_from_ground_cm', 65)) * 10
+
+        loaded_images = {}
+        for _dir in ('front', 'back', 'left', 'right'):
+            _img_file = request.files.get(f'{_dir}_image')
+            if not _img_file:
+                continue
+            _tmp_fn   = f'sil_{customer_id}_{_dir}_{int(time.time())}.jpg'
+            _tmp_path = os.path.join('uploads', _tmp_fn)
+            try:
+                _img_file.save(_tmp_path)
+                _img = _cv2.imread(_tmp_path)
+                if _img is not None:
+                    loaded_images[_dir] = {'path': _tmp_path, 'img': _img}
+            except Exception:
+                logger.warning('Failed to save uploaded image for %s', _dir)
+
+        # ── Build base mesh (with HMR2.0 shape if images available) ───────────
+        _hmr_images = [v['img'] for v in loaded_images.values()]
+        _hmr_dirs   = list(loaded_images.keys())
+        mesh = build_body_mesh(
+            profile,
+            images=_hmr_images or None,
+            directions=_hmr_dirs or None,
+        )
         verts = mesh['vertices']
         faces = mesh['faces']
         # Anny provides UVs; use as fallback when no texture projection runs
         _anny_uvs = mesh.get('uvs')
 
         # ── Optional silhouette refinement ─────────────────────────────────────
-        # Accept front_image / back_image / left_image / right_image as
-        # multipart uploads. Each uploaded image is used to extract the body
-        # silhouette which then deforms the mesh to match.
-        camera_distance_cm = float(
-            request.forms.get('camera_distance_cm', '0') or '100'
-        )
-        cam_h_mm = float(profile.get('camera_height_from_ground_cm', 65)) * 10
-
         silhouette_views = []
-        for direction in ('front', 'back', 'left', 'right'):
-            img_file = request.files.get(f'{direction}_image')
-            if not img_file:
-                continue
-            tmp_fn   = f'sil_{customer_id}_{direction}_{int(time.time())}.jpg'
-            tmp_path = os.path.join('uploads', tmp_fn)
+        for _dir, _data in loaded_images.items():
             try:
-                img_file.save(tmp_path)
                 from core.silhouette_extractor import extract_silhouette
                 contour_mm, _mask, _ratio = extract_silhouette(
-                    tmp_path, camera_distance_cm
+                    _data['path'], camera_distance_cm
                 )
                 if contour_mm is not None and len(contour_mm) >= 4:
                     silhouette_views.append({
-                        'contour_mm':        contour_mm,
-                        'direction':         direction,
-                        'distance_mm':       camera_distance_cm * 10.0,
-                        'camera_height_mm':  cam_h_mm,
-                        '_tmp_path':         tmp_path,
+                        'contour_mm':       contour_mm,
+                        'direction':        _dir,
+                        'distance_mm':      camera_distance_cm * 10.0,
+                        'camera_height_mm': cam_h_mm,
+                        '_tmp_path':        _data['path'],
+                        'mask':             _mask,
                     })
-                    logger.info('Silhouette extracted: %s (%d pts)', direction, len(contour_mm))
+                    logger.info('Silhouette extracted: %s (%d pts)', _dir, len(contour_mm))
                 else:
-                    logger.warning('Silhouette extraction produced no contour for %s', direction)
+                    logger.warning('Silhouette extraction produced no contour for %s', _dir)
             except Exception:
-                logger.warning('Silhouette extraction failed for %s image', direction)
+                logger.warning('Silhouette extraction failed for %s image', _dir)
 
+        depth_maps = []
         if silhouette_views:
             from core.silhouette_matcher import fit_mesh_to_silhouettes
-            verts = fit_mesh_to_silhouettes(verts, faces, silhouette_views)
+
+            # ── Depth estimation (Depth Anything V2) ─────────────────────────
+            try:
+                from core.depth_estimator import estimate_depth
+                for sv in silhouette_views:
+                    _dir = sv['direction']
+                    if _dir in loaded_images:
+                        depth_result = estimate_depth(
+                            loaded_images[_dir]['img'],
+                            camera_distance_mm=sv['distance_mm'],
+                            body_mask=sv.get('mask'),
+                        )
+                        if depth_result:
+                            depth_result['direction'] = _dir
+                            depth_maps.append(depth_result)
+                            logger.info('Depth estimated for %s: metric=%s',
+                                        _dir, depth_result['is_metric'])
+            except Exception:
+                logger.warning('Depth estimation failed — fitting without depth maps')
+
+            verts = fit_mesh_to_silhouettes(
+                verts, faces, silhouette_views,
+                depth_maps=depth_maps or None,
+            )
             logger.info('Body model refined with %d silhouette view(s)', len(silhouette_views))
 
         # ── Texture projection (when silhouette images are available) ───────────
@@ -2589,7 +2630,6 @@ def generate_body_model(customer_id):
         normal_map    = None
         if silhouette_views:
             try:
-                import cv2 as _cv2
                 from core.uv_unwrap import compute_uvs, DEFAULT_ATLAS
                 from core.texture_projector import project_texture
                 uvs_for_glb = compute_uvs(verts, mesh['body_part_ids'], DEFAULT_ATLAS)
@@ -2605,9 +2645,22 @@ def generate_body_model(customer_id):
                             'sensor_width_mm': 6.4,
                         })
                 if cam_views:
-                    texture_image, _ = project_texture(
+                    texture_image, coverage_map = project_texture(
                         verts, faces, uvs_for_glb, cam_views, atlas_size=1024
                     )
+                    # AI texture enhancement (Real-ESRGAN 4x + inpainting)
+                    try:
+                        from core.texture_enhance import enhance_texture_atlas
+                        texture_image = enhance_texture_atlas(
+                            texture_image,
+                            coverage_mask=coverage_map,
+                            upscale=True,
+                            inpaint=True,
+                            target_size=4096,
+                        )
+                        logger.info('Texture enhanced: %s', texture_image.shape)
+                    except Exception:
+                        logger.warning('Texture enhancement failed — using original')
                     logger.info('Texture projected from %d view(s)', len(cam_views))
                     # Generate normal map for enhanced viewer lighting
                     try:
@@ -2660,6 +2713,13 @@ def generate_body_model(customer_id):
             num_vertices=int(len(verts)),
             num_faces=int(len(faces)),
             silhouette_views_used=len(silhouette_views),
+            depth_maps_used=len(depth_maps),
+            hmr_backend=mesh.get('hmr_backend'),
+            hmr_confidence=mesh.get('hmr_confidence'),
+            texture_resolution=(
+                f"{texture_image.shape[1]}x{texture_image.shape[0]}"
+                if texture_image is not None else None
+            ),
             viewer_url=f'/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/{mesh_id}.glb',
         )
     except Exception:

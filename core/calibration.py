@@ -152,34 +152,41 @@ def get_px_to_mm_ratio(image_path, marker_size_mm=20.0, method="auto",
 
 
 def _detect_aruco(img, marker_size_mm):
-    """Detect ArUco marker and compute mm/px ratio from its known side length."""
-    dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICT_TYPE)
-    parameters = cv2.aruco.DetectorParameters()
-    detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+    """
+    Detect ArUco marker and compute mm/px ratio with sub-pixel accuracy.
+    Tries multiple dictionaries and uses adaptive thresholding.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
 
-    corners, ids, _ = detector.detectMarkers(img)
+    for dict_type in [cv2.aruco.DICT_4X4_50, cv2.aruco.DICT_5X5_100, cv2.aruco.DICT_6X6_250]:
+        dictionary = cv2.aruco.getPredefinedDictionary(dict_type)
+        params = cv2.aruco.DetectorParameters()
+        # Adaptive thresholding for varied lighting conditions
+        params.adaptiveThreshWinSizeMin = 3
+        params.adaptiveThreshWinSizeMax = 23
+        params.adaptiveThreshWinSizeStep = 10
+        params.adaptiveThreshConstant = 7
+        # Sub-pixel corner refinement
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        params.cornerRefinementWinSize = 5
 
-    if ids is None or len(ids) == 0:
-        return None
+        detector = cv2.aruco.ArucoDetector(dictionary, params)
+        corners, ids, _ = detector.detectMarkers(gray)
 
-    # Use the first detected marker
-    marker_corners = corners[0][0]  # shape (4, 2)
+        if ids is not None and len(ids) > 0:
+            c = corners[0][0]  # (4, 2)
+            sides = [np.linalg.norm(c[(i + 1) % 4] - c[i]) for i in range(4)]
+            avg_side_px = np.mean(sides)
+            if avg_side_px <= 0:
+                continue
+            ratio = marker_size_mm / avg_side_px
+            logger.info(
+                "ArUco calibration: %.4f mm/px (dict=%d, marker %d, side=%.1f px)",
+                ratio, dict_type, ids[0][0], avg_side_px,
+            )
+            return ratio
 
-    # Average the four side lengths for robustness
-    side_lengths = []
-    for i in range(4):
-        p1 = marker_corners[i]
-        p2 = marker_corners[(i + 1) % 4]
-        side_lengths.append(np.linalg.norm(p2 - p1))
-
-    avg_side_px = np.mean(side_lengths)
-    if avg_side_px <= 0:
-        return None
-
-    ratio = marker_size_mm / avg_side_px
-    logger.info("ArUco calibration: %.4f mm/px (marker %d, side=%.1f px)",
-                ratio, ids[0][0], avg_side_px)
-    return ratio
+    return None
 
 
 def _detect_green_marker(img, marker_size_mm):

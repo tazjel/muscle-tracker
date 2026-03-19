@@ -20,12 +20,65 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# ── Depth displacement ────────────────────────────────────────────────────────
+
+def _displace_from_depth(vertices, boundary_mask, depth_map, direction,
+                         distance_mm, cam_height_mm, depth_weight=0.15):
+    """
+    Displace boundary vertices along the view depth axis to match depth map.
+
+    For front/back views: adjusts Y axis (depth into scene).
+    For left/right views: adjusts X axis (depth into scene).
+    Only applies when depth_map is metric.
+    """
+    if depth_map is None or not depth_map.get('is_metric'):
+        return vertices
+
+    depth = depth_map['depth']
+    h, w = depth.shape
+
+    # Project current vertices to 2D
+    proj_2d = _project_vertices(vertices, direction, distance_mm, cam_height_mm)
+
+    # Map projected coordinates to depth map pixel space
+    x_min, x_max = proj_2d[:, 0].min(), proj_2d[:, 0].max()
+    y_min, y_max = proj_2d[:, 1].min(), proj_2d[:, 1].max()
+
+    x_range = max(x_max - x_min, 1.0)
+    y_range = max(y_max - y_min, 1.0)
+
+    x_px = np.clip(((proj_2d[:, 0] - x_min) / x_range * (w - 1)).astype(int), 0, w - 1)
+    y_px = np.clip(((proj_2d[:, 1] - y_min) / y_range * (h - 1)).astype(int), 0, h - 1)
+
+    sampled_depth = depth[y_px, x_px]
+
+    # Depth axis: Y for front/back views, X for left/right views
+    if direction in ('front', 'back'):
+        depth_axis = 1  # Y
+    else:
+        depth_axis = 0  # X
+
+    boundary_idxs = np.where(boundary_mask)[0]
+    for i in boundary_idxs:
+        target_depth = sampled_depth[i]
+        current_depth = abs(vertices[i, depth_axis])
+        delta = (target_depth - current_depth) * depth_weight
+
+        if direction in ('front', 'left'):
+            vertices[i, depth_axis] -= delta
+        else:
+            vertices[i, depth_axis] += delta
+
+    return vertices
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def fit_mesh_to_silhouettes(vertices: np.ndarray, faces: np.ndarray,
                             silhouette_views: list,
                             iterations: int = 15,
-                            step: float = 0.30) -> np.ndarray:
+                            step: float = 0.30,
+                            depth_maps: list = None) -> np.ndarray:
     """
     Deform mesh vertices to match 2D silhouettes from one or more views.
 
@@ -40,6 +93,8 @@ def fit_mesh_to_silhouettes(vertices: np.ndarray, faces: np.ndarray,
             'camera_height_mm' float — camera height from floor in mm
         iterations:      number of deformation iterations (default 15).
         step:            fraction to move vertex per iteration (default 0.30).
+        depth_maps:      optional list of dicts with 'depth', 'is_metric', 'direction'
+                         from depth_estimator.estimate_depth().
 
     Returns:
         deformed: (N, 3) float32 — updated vertex positions in mm.
@@ -68,6 +123,20 @@ def fit_mesh_to_silhouettes(vertices: np.ndarray, faces: np.ndarray,
                 verts, proj2d, boundary_mask, contour_mm,
                 direction, dist_mm, cam_h_mm, step,
             )
+
+            # Depth-based displacement (if depth maps provided)
+            if depth_maps:
+                matching_depth = None
+                for dm in depth_maps:
+                    if dm.get('direction') == direction:
+                        matching_depth = dm
+                        break
+                if matching_depth:
+                    verts = _displace_from_depth(
+                        verts, boundary_mask, matching_depth,
+                        direction, dist_mm, cam_h_mm,
+                        depth_weight=step * 0.5,
+                    )
 
         # Laplacian smoothing (light — preserve large-scale shape)
         verts = _laplacian_smooth(verts, adj, alpha=0.05)

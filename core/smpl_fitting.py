@@ -200,7 +200,8 @@ def _boolean_union(parts):
     return result
 
 
-def build_body_mesh(profile: dict = None, segments: int = 48) -> dict:
+def build_body_mesh(profile: dict = None, segments: int = 48,
+                    images: list = None, directions: list = None) -> dict:
     """
     Build a full body mesh from body profile measurements using ellipsoid
     primitives merged via boolean union.
@@ -208,6 +209,8 @@ def build_body_mesh(profile: dict = None, segments: int = 48) -> dict:
     Args:
         profile: dict with measurement keys (see DEFAULT_PROFILE).
         segments: ignored (kept for API compatibility).
+        images: optional list of (H,W,3) BGR arrays for HMR2.0 shape prediction.
+        directions: optional list of direction strings matching images.
 
     Returns:
         dict with:
@@ -218,11 +221,34 @@ def build_body_mesh(profile: dict = None, segments: int = 48) -> dict:
           'num_vertices'  — int
           'num_faces'     — int
     """
+    import logging
+    _logger = logging.getLogger(__name__)
+
     p = {**DEFAULT_PROFILE, **(profile or {})}
 
     # ── Try Anny first (realistic anatomical mesh) ─────────────────────────
     anny_result = _build_anny_mesh(p)
     if anny_result is not None:
+        # ── HMR2.0 shape refinement (when images available) ─────────────
+        if images:
+            try:
+                from core.hmr_shape import predict_shape, transfer_shape_to_anny
+                hmr_result = predict_shape(images, directions)
+                if hmr_result and hmr_result['vertices'] is not None:
+                    _logger.info(
+                        f"HMR shape prediction: backend={hmr_result['backend']}, "
+                        f"confidence={hmr_result['confidence']:.2f}"
+                    )
+                    verts = anny_result['vertices']
+                    verts = transfer_shape_to_anny(hmr_result['vertices'], verts)
+                    anny_result['vertices'] = verts
+                    anny_result['hmr_betas'] = hmr_result['betas']
+                    anny_result['hmr_confidence'] = hmr_result['confidence']
+                    anny_result['hmr_backend'] = hmr_result['backend']
+                else:
+                    _logger.info("HMR prediction returned no vertices, using phenotype shape")
+            except Exception as e:
+                _logger.warning(f"HMR shape transfer failed, using phenotype: {e}")
         return anny_result
 
     # ── Fallback: Ellipsoid boolean union ──────────────────────────────────

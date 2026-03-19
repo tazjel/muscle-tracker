@@ -163,6 +163,7 @@ def project_texture(vertices: np.ndarray, faces: np.ndarray, uvs: np.ndarray,
         inpaint_r = max(5, atlas_size // 256)  # scale radius with atlas resolution
         texture = cv2.inpaint(texture, mask_unfilled, inpaintRadius=inpaint_r, flags=cv2.INPAINT_TELEA)
 
+    # Return (texture, coverage_map) — weight is (H,W) float32, >0 where texture exists
     return texture, weight
 
 

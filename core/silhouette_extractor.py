@@ -56,8 +56,10 @@ def extract_silhouette(image_path: str, camera_distance_cm: float):
         logger.warning("silhouette_extractor: calibration failed, using fallback ratio %.4f", ratio)
 
     # ── Segmentation ──────────────────────────────────────────────────────────
-    mask = segment_body(img)
-
+    # Try SAM 2 first (best quality), fall back to MediaPipe, then GrabCut
+    mask = _segment_sam2(img)
+    if mask is None:
+        mask = segment_body(img)
     if mask is None:
         logger.info("silhouette_extractor: MediaPipe unavailable, trying GrabCut fallback")
         mask = _grabcut_body_mask(img)
@@ -112,6 +114,51 @@ def extract_silhouette(image_path: str, camera_distance_cm: float):
         image_path, len(contour_mm), ratio,
     )
     return contour_mm, mask, ratio
+
+
+# ── SAM 2 segmentation ────────────────────────────────────────────────────────
+
+def _segment_sam2(image):
+    """
+    Segment body using SAM 2. Returns (H, W) uint8 mask (255=body, 0=bg).
+    Falls back gracefully if SAM 2 not installed.
+    """
+    try:
+        from sam2.build_sam import build_sam2
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+        import torch
+
+        predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-tiny")
+
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        predictor.set_image(rgb)
+
+        h, w = image.shape[:2]
+        # Use center point as body prompt (person typically centred in scan photo)
+        input_point = np.array([[w // 2, h // 2]])
+        input_label = np.array([1])  # foreground
+
+        masks, scores, _ = predictor.predict(
+            point_coords=input_point,
+            point_labels=input_label,
+            multimask_output=True,
+        )
+
+        best_idx = scores.argmax()
+        mask = (masks[best_idx] * 255).astype(np.uint8)
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+        logger.info("silhouette_extractor: SAM 2 segmentation succeeded")
+        return mask
+
+    except ImportError:
+        return None  # SAM 2 not installed — use MediaPipe
+    except Exception as e:
+        logger.warning(f"SAM 2 failed: {e}")
+        return None
 
 
 # ── GrabCut fallback ──────────────────────────────────────────────────────────
