@@ -344,8 +344,10 @@ def generate_pbr_textures(albedo, uvs, vertices, faces,
         from core.cloud_gpu import is_configured, cloud_pbr_textures
         if is_configured() and upscale:
             logger.info("Trying cloud GPU for PBR textures...")
+            # Talent: pass the normal_map (from DSINE) to the cloud so it's upscaled with the albedo
             cloud_result = cloud_pbr_textures(
                 albedo, uvs, vertices, faces,
+                normal_map_bgr=normal_map,
                 atlas_size=atlas_size, upscale=upscale, target_size=target_size)
             if cloud_result is not None:
                 logger.info("PBR textures generated via cloud GPU")

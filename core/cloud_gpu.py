@@ -262,15 +262,22 @@ def _parse_output(output):
         verts = None
         if hmr.get('vertices_b64') and hmr.get('vertices_shape'):
             verts = _decode_vertices(hmr['vertices_b64'], hmr['vertices_shape'])
+        
+        posed_verts = None
+        if hmr.get('vertices_posed_b64') and hmr.get('vertices_shape'):
+            posed_verts = _decode_vertices(hmr['vertices_posed_b64'], hmr['vertices_shape'])
 
         result['hmr'] = {
             'betas': np.array(hmr['betas'], dtype=np.float32),
             'vertices': verts,
+            'vertices_posed': posed_verts,
             'pose': np.zeros(72, dtype=np.float32),
             'joints_3d': None,
             'confidence': hmr.get('confidence', 0.85),
             'backend': hmr.get('backend', 'hmr2_cloud'),
         }
+
+    # ... (rest of parsing) ...
 
     # Parse body masks
     if 'masks' in output:
@@ -386,7 +393,7 @@ def cloud_texture_upscale(texture_bgr, target_size=4096):
 
 
 def cloud_pbr_textures(albedo_bgr, uvs, vertices, faces,
-                        atlas_size=2048, upscale=True, target_size=4096):
+                        normal_map_bgr=None, atlas_size=2048, upscale=True, target_size=4096):
     """
     Generate full PBR texture set on RunPod GPU.
 
@@ -395,6 +402,7 @@ def cloud_pbr_textures(albedo_bgr, uvs, vertices, faces,
         uvs: float32 (N, 2) UV coordinates
         vertices: float32 (N, 3) mesh vertices
         faces: int32 (F, 3) face indices
+        normal_map_bgr: optional pre-computed normal map (e.g. from DSINE)
         atlas_size: base atlas resolution
         upscale: whether to Real-ESRGAN upscale (default True)
         target_size: max dimension after upscale
@@ -413,6 +421,11 @@ def cloud_pbr_textures(albedo_bgr, uvs, vertices, faces,
     _, albedo_buf = cv2.imencode('.png', albedo_bgr)
     albedo_b64 = base64.b64encode(albedo_buf.tobytes()).decode('ascii')
 
+    normal_b64 = None
+    if normal_map_bgr is not None:
+        _, normal_buf = cv2.imencode('.png', normal_map_bgr)
+        normal_b64 = base64.b64encode(normal_buf.tobytes()).decode('ascii')
+
     uvs_b64 = base64.b64encode(uvs.astype(np.float32).tobytes()).decode('ascii')
     verts_b64 = base64.b64encode(vertices.astype(np.float32).tobytes()).decode('ascii')
     faces_b64 = base64.b64encode(faces.astype(np.int32).tobytes()).decode('ascii')
@@ -422,6 +435,7 @@ def cloud_pbr_textures(albedo_bgr, uvs, vertices, faces,
             'images': {},
             'tasks': ['pbr_textures'],
             'albedo_b64': albedo_b64,
+            'normal_map_b64': normal_b64,
             'uvs_b64': uvs_b64,
             'uvs_shape': list(uvs.shape),
             'vertices_b64': verts_b64,

@@ -301,6 +301,10 @@ def generate_direct_smpl(images_dict, profile=None,
         return None
 
     verts = result['vertices']  # (6890, 3) mm, Z-up
+    verts_posed = result.get('vertices_posed') # Talent: Use posed mesh for projection alignment
+    if verts_posed is None:
+        verts_posed = verts.copy()
+    
     logger.info("SMPL: %s, height=%.0fmm, backend=%s",
                 verts.shape, verts[:, 2].max() - verts[:, 2].min(), result['backend'])
 
@@ -342,9 +346,9 @@ def generate_direct_smpl(images_dict, profile=None,
         logger.info("Using cylindrical UVs (canonical not available)")
 
     # ── 6. UV-space rasterization ────────────────────────────────────────────
-    logger.info("Rasterizing texture...")
+    logger.info("Rasterizing texture (using posed mesh for alignment)...")
     texture, weight = rasterize_texture(
-        verts, faces, uvs, images_dict, body_masks,
+        verts_posed, faces, uvs, images_dict, body_masks,
         dist_mm=dist_mm, cam_h_mm=cam_h_mm,
         focal_mm=focal_mm, sensor_w_mm=sensor_w_mm,
     )
@@ -386,8 +390,9 @@ def generate_direct_smpl(images_dict, profile=None,
                     photo_normals[direction] = n
                     logger.info("DSINE normals estimated for %s", direction)
         if photo_normals:
+            # Use posed vertices for normal projection too!
             normal_map = project_normals_to_atlas(
-                verts, faces, uvs, photo_normals, body_masks,
+                verts_posed, faces, uvs, photo_normals, body_masks,
                 dist_mm=dist_mm, cam_h_mm=cam_h_mm,
                 focal_mm=focal_mm, sensor_w_mm=sensor_w_mm,
                 atlas_size=ATLAS_SIZE,

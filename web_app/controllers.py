@@ -2376,7 +2376,7 @@ def get_pbr_textures(customer_id):
                 return dict(status='error', message='No albedo texture in GLB')
 
             pbr_set = generate_pbr_textures(albedo, uvs, verts, faces,
-                                            atlas_size=2048, upscale=False)
+                                            atlas_size=2048, upscale=True)
             save_pbr_textures(pbr_set, pbr_dir)
         except Exception as e:
             logger.error('PBR texture generation failed: %s', e)
@@ -2961,6 +2961,7 @@ def generate_body_model(customer_id):
                 pbr_dir=os.path.join(os.path.dirname(__file__), '..', 'uploads',
                                      f'pbr_{customer_id}_{mesh_id}'),
                 albedo=texture_image.copy() if texture_image is not None else None,
+                normal_map=_normal_map.copy() if _normal_map is not None else None,
                 uvs=uvs_for_glb.copy() if uvs_for_glb is not None else None,
                 verts=verts.copy(),
                 faces=faces.copy(),
@@ -2973,7 +2974,8 @@ def generate_body_model(customer_id):
                 try:
                     from core.texture_factory import generate_pbr_textures, save_pbr_textures
                     pbr_set = generate_pbr_textures(kw['albedo'], kw['uvs'], kw['verts'],
-                                                    kw['faces'], atlas_size=2048, upscale=False)
+                                                    kw['faces'], normal_map=kw.get('normal_map'), 
+                                                    atlas_size=2048, upscale=True)
                     save_pbr_textures(pbr_set, kw['pbr_dir'])
                     logger.info('PBR textures saved to %s', kw['pbr_dir'])
                 except Exception as e:
