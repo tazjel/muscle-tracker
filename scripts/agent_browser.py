@@ -949,6 +949,68 @@ def cmd_describe(args):
         pw.stop()
 
 
+def cmd_verify(args):
+    """
+    One-command GLB quality check: texture analysis + optional browser render.
+    Combines glb_inspector (offline) with viewer3d render (if server is available).
+
+    Usage:
+        $PY scripts/agent_browser.py verify skin_densepose.glb
+        $PY scripts/agent_browser.py verify meshes/skin_densepose.glb --render
+    """
+    glb_path = args.glb_path
+    if not os.path.isabs(glb_path):
+        glb_path = str(PROJECT_ROOT / glb_path)
+
+    if not os.path.exists(glb_path):
+        print(json.dumps({"error": f"GLB not found: {glb_path}"}))
+        return
+
+    # Tier 1: Offline texture analysis
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from core.glb_inspector import score_glb
+    result = score_glb(glb_path)
+
+    # Tier 2: Browser render (optional)
+    if args.render:
+        model_name = os.path.basename(glb_path)
+        try:
+            pw, browser, context = _launch_browser()
+            base_url = args.base_url.rstrip("/")
+            url = f"{base_url}/web_app/static/viewer3d/index.html?model={model_name}"
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            _wait_for_page_ready(page, "canvas", 20)
+
+            shot_path = str(CAPTURES_DIR / f"verify_{_timestamp()}.png")
+            page.screenshot(path=shot_path)
+
+            scene_info = page.evaluate("""() => {
+                const scene = window.scene || window.viewer?.scene;
+                if (!scene) return {loaded: false};
+                let meshes = 0, verts = 0;
+                scene.traverse(obj => {
+                    if (obj.isMesh) {
+                        meshes++;
+                        if (obj.geometry?.attributes?.position)
+                            verts += obj.geometry.attributes.position.count;
+                    }
+                });
+                return {loaded: true, meshes, vertices: verts};
+            }""")
+
+            result["render"] = {
+                "screenshot": shot_path,
+                "scene": scene_info,
+            }
+            browser.close()
+            pw.stop()
+        except Exception as e:
+            result["render"] = {"error": str(e)[:200]}
+
+    print(json.dumps(result, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Agent browser tool — gives AI agents eyes via Playwright",
@@ -1060,6 +1122,13 @@ def main():
     p.add_argument("--wait", help="CSS selector to wait for")
     p.add_argument("--timeout", type=int, default=15)
     p.set_defaults(func=cmd_describe)
+
+    # -- verify --
+    p = sub.add_parser("verify", help="GLB quality check: texture analysis + optional render")
+    p.add_argument("glb_path", help="Path to GLB file")
+    p.add_argument("--render", action="store_true", help="Also render in browser")
+    p.add_argument("--base-url", default="http://192.168.100.16:8000", help="Server base URL")
+    p.set_defaults(func=cmd_verify)
 
     args = parser.parse_args()
     args.func(args)

@@ -650,8 +650,49 @@ function setPoreNormalStrength(val) {
 window.setPoreNormalStrength = setPoreNormalStrength;
 
 function _applyPoreNormalPatch(material) {
-  // No-op: pore detail is baked into normalMap via _blendPoreIntoNormalMap
-  // This function is kept as a safe stub so existing call sites don't break.
+  if (!material.normalMap || !_poreNormalImg || _poreNormalStrength === 0) return;
+
+  const baseTex = material.normalMap;
+  if (baseTex.userData.isPorePatched && baseTex.userData.strength === _poreNormalStrength) return;
+
+  // Use an offscreen canvas to blend high-frequency pore detail into the normal map
+  const size = baseTex.image.width || 2048;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  // 1. Draw base normal map
+  ctx.drawImage(baseTex.image, 0, 0, size, size);
+
+  // 2. Blend tiled pore normal
+  // Normal map blending in 2D is tricky. A good approximation for micro-detail:
+  // "Overlay" or "Soft Light" blending at low opacity, or custom math.
+  // We'll use 'overlay' which preserves the 128,128,255 neutral vector.
+  ctx.globalAlpha = _poreNormalStrength;
+  ctx.globalCompositeOperation = 'overlay';
+
+  const poreSize = 256; // typical micro-normal size
+  const tilesX = Math.ceil(size / poreSize) * 2; // high density
+  const tilesY = Math.ceil(size / poreSize) * 2;
+
+  for (let y = 0; y < tilesY; y++) {
+    const dy = y * poreSize;
+    for (let x = 0; x < tilesX; x++) {
+      const dx = x * poreSize;
+      ctx.drawImage(_poreNormalImg, dx, dy, poreSize, poreSize);
+    }
+  }
+
+  // 3. Update texture
+  const newTex = new THREE.CanvasTexture(canvas);
+  newTex.colorSpace = THREE.LinearSRGBColorSpace;
+  newTex.wrapS = newTex.wrapT = THREE.RepeatWrapping;
+  newTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  newTex.userData.isPorePatched = true;
+  newTex.userData.strength = _poreNormalStrength;
+
+  material.normalMap = newTex;
+  material.needsUpdate = true;
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -716,9 +757,12 @@ function init() {
     }
   });
 
-  // Expose for MeasurementOverlay
+  // Expose for MeasurementOverlay, agent_browser, and debugging
+  window.scene = scene;
+  window.camera = camera;
+  window.controls = controls;
   window.bodyViewer = {
-    scene, camera, renderer,
+    scene, camera, renderer, controls,
     get mesh() { return bodyMesh; },
     getMeshIntersection: _getMeshIntersection,
   };

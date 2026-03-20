@@ -121,6 +121,261 @@ def export_stl(vertices, faces, output_path, normals=None):
             f.write(struct.pack('<fff', v3[0], v3[1], v3[2]))
             f.write(struct.pack('<H', 0))
 
+def _compute_smooth_normals(vertices, faces):
+    """Average face normals at each vertex for smooth shading."""
+    normals = np.zeros_like(vertices, dtype=np.float32)
+    for f in faces:
+        v0, v1, v2 = vertices[f[0]], vertices[f[1]], vertices[f[2]]
+        n = np.cross(v1 - v0, v2 - v0)
+        length = np.linalg.norm(n)
+        if length > 0:
+            n /= length
+        normals[f[0]] += n
+        normals[f[1]] += n
+        normals[f[2]] += n
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    lengths[lengths == 0] = 1.0
+    normals /= lengths
+    return normals.astype(np.float32)
+
+
+def export_glb(vertices, faces, output_path, normals=True,
+               uvs=None, texture_image=None, normal_map=None,
+               roughness_map=None, ao_map=None):
+    """
+    Export mesh as a binary glTF (.glb) file using pygltflib.
+    """
+    try:
+        import pygltflib
+    except ImportError:
+        raise ImportError("pygltflib is required: pip install pygltflib")
+
+    verts = np.array(vertices, dtype=np.float32)
+    tris  = np.array(faces,    dtype=np.uint32)
+
+    tris_binary  = tris.tobytes()
+    verts_binary = verts.tobytes()
+
+    norms_binary = b''
+    if normals:
+        norms = _compute_smooth_normals(verts, tris)
+        norms_binary = norms.tobytes()
+
+    uvs_binary = b''
+    if uvs is not None:
+        uvs_arr = np.array(uvs, dtype=np.float32)
+        uvs_binary = uvs_arr.tobytes()
+
+    png_binary = b''
+    if texture_image is not None:
+        success, enc = cv2.imencode('.png', texture_image)
+        if success:
+            png_binary = enc.tobytes()
+            pad = (4 - len(png_binary) % 4) % 4
+            png_binary += b'\x00' * pad
+
+    nmap_binary = b''
+    if normal_map is not None and uvs is not None:
+        success_n, enc_n = cv2.imencode('.png', normal_map)
+        if success_n:
+            nmap_binary = enc_n.tobytes()
+            pad_n = (4 - len(nmap_binary) % 4) % 4
+            nmap_binary += b'\x00' * pad_n
+
+    rmap_binary = b''
+    if roughness_map is not None and uvs is not None:
+        success_r, enc_r = cv2.imencode('.png', roughness_map)
+        if success_r:
+            rmap_binary = enc_r.tobytes()
+            pad_r = (4 - len(rmap_binary) % 4) % 4
+            rmap_binary += b'\x00' * pad_r
+
+    aomap_binary = b''
+    if ao_map is not None and uvs is not None:
+        success_ao, enc_ao = cv2.imencode('.png', ao_map)
+        if success_ao:
+            aomap_binary = enc_ao.tobytes()
+            pad_ao = (4 - len(aomap_binary) % 4) % 4
+            aomap_binary += b'\x00' * pad_ao
+
+    blob  = tris_binary + verts_binary + norms_binary + uvs_binary + png_binary + nmap_binary + rmap_binary + aomap_binary
+    offset = 0
+
+    buf_views = []
+    accessors  = []
+
+    buf_views.append(pygltflib.BufferView(
+        buffer=0, byteOffset=offset, byteLength=len(tris_binary),
+        target=pygltflib.ELEMENT_ARRAY_BUFFER,
+    ))
+    accessors.append(pygltflib.Accessor(
+        bufferView=0, componentType=pygltflib.UNSIGNED_INT,
+        count=int(tris.size), type=pygltflib.SCALAR,
+        max=[int(tris.max())], min=[0],
+    ))
+    offset += len(tris_binary)
+
+    buf_views.append(pygltflib.BufferView(
+        buffer=0, byteOffset=offset, byteLength=len(verts_binary),
+        target=pygltflib.ARRAY_BUFFER,
+    ))
+    accessors.append(pygltflib.Accessor(
+        bufferView=1, componentType=pygltflib.FLOAT,
+        count=int(len(verts)), type=pygltflib.VEC3,
+        max=verts.max(axis=0).tolist(), min=verts.min(axis=0).tolist(),
+    ))
+    offset += len(verts_binary)
+
+    attr_kwargs = {'POSITION': 1}
+
+    if norms_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(norms_binary),
+            target=pygltflib.ARRAY_BUFFER,
+        ))
+        accessors.append(pygltflib.Accessor(
+            bufferView=len(buf_views) - 1, componentType=pygltflib.FLOAT,
+            count=int(len(verts)), type=pygltflib.VEC3,
+        ))
+        attr_kwargs['NORMAL'] = len(accessors) - 1
+        offset += len(norms_binary)
+
+    if uvs_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(uvs_binary),
+            target=pygltflib.ARRAY_BUFFER,
+        ))
+        accessors.append(pygltflib.Accessor(
+            bufferView=len(buf_views) - 1, componentType=pygltflib.FLOAT,
+            count=int(len(verts)), type=pygltflib.VEC2,
+        ))
+        attr_kwargs['TEXCOORD_0'] = len(accessors) - 1
+        offset += len(uvs_binary)
+
+    images, textures, samplers = [], [], []
+    if png_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(png_binary),
+        ))
+        images.append(pygltflib.Image(
+            mimeType='image/png', bufferView=len(buf_views) - 1,
+        ))
+        samplers.append(pygltflib.Sampler(
+            magFilter=pygltflib.LINEAR, minFilter=pygltflib.LINEAR_MIPMAP_LINEAR,
+            wrapS=pygltflib.CLAMP_TO_EDGE, wrapT=pygltflib.CLAMP_TO_EDGE,
+        ))
+        textures.append(pygltflib.Texture(source=0, sampler=0))
+        offset += len(png_binary)
+
+    if nmap_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(nmap_binary),
+        ))
+        images.append(pygltflib.Image(
+            mimeType='image/png', bufferView=len(buf_views) - 1,
+        ))
+        if not samplers:
+            samplers.append(pygltflib.Sampler(
+                magFilter=pygltflib.LINEAR, minFilter=pygltflib.LINEAR_MIPMAP_LINEAR,
+                wrapS=pygltflib.CLAMP_TO_EDGE, wrapT=pygltflib.CLAMP_TO_EDGE,
+            ))
+        textures.append(pygltflib.Texture(source=len(images) - 1, sampler=0))
+        offset += len(nmap_binary)
+
+    rmap_tex_index = None
+    if rmap_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(rmap_binary),
+        ))
+        images.append(pygltflib.Image(
+            mimeType='image/png', bufferView=len(buf_views) - 1,
+        ))
+        if not samplers:
+            samplers.append(pygltflib.Sampler(
+                magFilter=pygltflib.LINEAR, minFilter=pygltflib.LINEAR_MIPMAP_LINEAR,
+                wrapS=pygltflib.CLAMP_TO_EDGE, wrapT=pygltflib.CLAMP_TO_EDGE,
+            ))
+        rmap_tex_index = len(textures)
+        textures.append(pygltflib.Texture(source=len(images) - 1, sampler=0))
+        offset += len(rmap_binary)
+
+    aomap_tex_index = None
+    if aomap_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(aomap_binary),
+        ))
+        images.append(pygltflib.Image(
+            mimeType='image/png', bufferView=len(buf_views) - 1,
+        ))
+        if not samplers:
+            samplers.append(pygltflib.Sampler(
+                magFilter=pygltflib.LINEAR, minFilter=pygltflib.LINEAR_MIPMAP_LINEAR,
+                wrapS=pygltflib.CLAMP_TO_EDGE, wrapT=pygltflib.CLAMP_TO_EDGE,
+            ))
+        aomap_tex_index = len(textures)
+        textures.append(pygltflib.Texture(source=len(images) - 1, sampler=0))
+        offset += len(aomap_binary)
+
+    pbr_kwargs = dict(roughnessFactor=0.65, metallicFactor=0.0)
+    if png_binary and uvs_binary:
+        pbr_kwargs['baseColorTexture'] = pygltflib.TextureInfo(index=0)
+    else:
+        pbr_kwargs['baseColorFactor'] = [0.769, 0.584, 0.416, 1.0]
+    if rmap_tex_index is not None:
+        pbr_kwargs['metallicRoughnessTexture'] = pygltflib.TextureInfo(index=rmap_tex_index)
+        pbr_kwargs['roughnessFactor'] = 1.0
+    pbr = pygltflib.PbrMetallicRoughness(**pbr_kwargs)
+
+    mat_kwargs = dict(pbrMetallicRoughness=pbr, doubleSided=True)
+    if nmap_binary and len(textures) >= 2:
+        nmap_idx = 1 if png_binary else 0
+        mat_kwargs['normalTexture'] = pygltflib.NormalMaterialTexture(
+            index=nmap_idx, scale=1.0
+        )
+    if aomap_tex_index is not None:
+        mat_kwargs['occlusionTexture'] = pygltflib.OcclusionTextureInfo(
+            index=aomap_tex_index, strength=0.8
+        )
+
+    attributes = pygltflib.Attributes(**attr_kwargs)
+
+    gltf = pygltflib.GLTF2(
+        scene=0,
+        scenes=[pygltflib.Scene(nodes=[0])],
+        nodes=[pygltflib.Node(mesh=0)],
+        meshes=[pygltflib.Mesh(primitives=[
+            pygltflib.Primitive(attributes=attributes, indices=0, material=0)
+        ])],
+        materials=[pygltflib.Material(**mat_kwargs)],
+        accessors=accessors,
+        bufferViews=buf_views,
+        buffers=[pygltflib.Buffer(byteLength=len(blob))],
+        images=images or None,
+        textures=textures or None,
+        samplers=samplers or None,
+    )
+    gltf.set_binary_blob(blob)
+    gltf.save(output_path)
+    return output_path
+
+
+def load_glb_vertices(glb_path):
+    """Load vertex positions from a GLB file. Returns (N, 3) float32 or None."""
+    try:
+        import pygltflib
+        glb_path = glb_path.replace('\\', '/')
+        gltf = pygltflib.GLTF2().load(glb_path)
+        accessor = gltf.accessors[gltf.meshes[0].primitives[0].attributes.POSITION]
+        bv = gltf.bufferViews[accessor.bufferView]
+        blob = gltf.binary_blob()
+        data = blob[bv.byteOffset: bv.byteOffset + bv.byteLength]
+        count = accessor.count
+        verts = np.array(struct.unpack(f'<{count * 3}f', data)).reshape(count, 3)
+        return verts.astype(np.float32)
+    except Exception:
+        return None
+
+
 def generate_mesh_preview_image(vertices, faces, output_path,
                                 rotation=(30, 45, 0), size=(800, 600)):
     if vertices is None or len(vertices) == 0: return None

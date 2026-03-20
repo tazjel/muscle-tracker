@@ -113,3 +113,16 @@ Demo user: `demo@muscle.com` / `demo123`  Customer ID: 1
 → `export_glb(verts, faces, path, uvs=..., texture_image=...)` → `mesh_reconstruction.py`
 
 All wired together in `generate_body_model` in `controllers.py`.
+
+---
+
+## Slash Commands
+
+### /boot
+1. Read `.agent/next-session-brief.md` if it exists
+2. `git log --oneline -5`
+3. Report state in 3 lines, ask what to work on
+
+### /end
+1. `git status --short` — stage specific files, commit, push if dirty
+2. Update `.agent/next-session-brief.md` — what was done, next steps
