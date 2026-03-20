@@ -1,0 +1,41 @@
+{
+  "devices": [
+    {
+      "device_name": "Samsung A24",
+      "device_serial": "R58W41RF6ZK",
+      "role": "front",
+      "orientation": "portrait",
+      "chair_height_cm": 50,
+      "device_height_on_chair_cm": 15,
+      "camera_height_from_ground_cm": 65,
+      "distance_to_subject_cm": 100,
+      "screen_width_px": 1080,
+      "screen_height_px": 2340,
+      "tap_x": 540,
+      "tap_y": 1170
+    },
+    {
+      "device_name": "MatePad Pro",
+      "device_serial": "192.168.100.33:5555",
+      "role": "back",
+      "orientation": "landscape",
+      "chair_height_cm": 50,
+      "device_height_on_chair_cm": 15,
+      "camera_height_from_ground_cm": 65,
+      "distance_to_subject_cm": 100,
+      "screen_width_px": 2560,
+      "screen_height_px": 1600,
+      "tap_x": 800,
+      "tap_y": 1280
+    }
+  ],
+  "scan_distances_cm": [100, 50],
+  "scan_distance_notes": "100cm first scan (full body framing), 50cm second scan (close-up detail). Compare both for accuracy tradeoffs.",
+  "environment": {
+    "lighting": "overhead_lamp",
+    "lighting_notes": "powerful lamp directly above subject",
+    "clothing": "small white shorts only",
+    "skin_tone": "light brown",
+    "skin_tone_hex_approx": "#C4956A"
+  }
+}

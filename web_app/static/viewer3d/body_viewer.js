@@ -1252,9 +1252,14 @@ function _applyDefaultMaterial(object) {
           mat.sheen = 0.35;
           mat.sheenRoughness = 0.5;
           mat.sheenColor = new THREE.Color(0xcc8866);
+          // Preserve embedded PBR maps — don't override with uniform values
+          if (mat.roughnessMap) mat.roughnessFactor = 1.0;
+          if (mat.aoMap) mat.aoMapIntensity = 0.8;
           _applyPoreNormalPatch(mat);
           child.material = mat;
         } else {
+          if (child.material.roughnessMap) child.material.roughnessFactor = 1.0;
+          if (child.material.aoMap) child.material.aoMapIntensity = 0.8;
           _applyPoreNormalPatch(child.material);
         }
         _originalMaterials.set(child, child.material);

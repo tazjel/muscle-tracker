@@ -145,7 +145,8 @@ def _generate_normal_map(vertices, faces, uvs, atlas_size=1024):
 
 
 def export_glb(vertices, faces, output_path, normals=True,
-               uvs=None, texture_image=None, normal_map=None):
+               uvs=None, texture_image=None, normal_map=None,
+               roughness_map=None, ao_map=None):
     """
     Export mesh as a binary glTF (.glb) file using pygltflib.
 
@@ -202,8 +203,26 @@ def export_glb(vertices, faces, output_path, normals=True,
             pad_n = (4 - len(nmap_binary) % 4) % 4
             nmap_binary += b'\x00' * pad_n
 
-    # ── Assemble buffer: tris → verts → norms → uvs → png → nmap ─────────────
-    blob  = tris_binary + verts_binary + norms_binary + uvs_binary + png_binary + nmap_binary
+    # ── Roughness map PNG ────────────────────────────────────────────────────
+    rmap_binary = b''
+    if roughness_map is not None and uvs is not None:
+        success_r, enc_r = cv2.imencode('.png', roughness_map)
+        if success_r:
+            rmap_binary = enc_r.tobytes()
+            pad_r = (4 - len(rmap_binary) % 4) % 4
+            rmap_binary += b'\x00' * pad_r
+
+    # ── AO map PNG ───────────────────────────────────────────────────────────
+    aomap_binary = b''
+    if ao_map is not None and uvs is not None:
+        success_ao, enc_ao = cv2.imencode('.png', ao_map)
+        if success_ao:
+            aomap_binary = enc_ao.tobytes()
+            pad_ao = (4 - len(aomap_binary) % 4) % 4
+            aomap_binary += b'\x00' * pad_ao
+
+    # ── Assemble buffer: tris → verts → norms → uvs → png → nmap → rmap → aomap ──
+    blob  = tris_binary + verts_binary + norms_binary + uvs_binary + png_binary + nmap_binary + rmap_binary + aomap_binary
     offset = 0
 
     buf_views = []
@@ -294,22 +313,62 @@ def export_glb(vertices, faces, output_path, normals=True,
         textures.append(pygltflib.Texture(source=len(images) - 1, sampler=0))
         offset += len(nmap_binary)
 
+    # BV for roughness map PNG (optional)
+    rmap_tex_index = None
+    if rmap_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(rmap_binary),
+        ))
+        images.append(pygltflib.Image(
+            mimeType='image/png', bufferView=len(buf_views) - 1,
+        ))
+        if not samplers:
+            samplers.append(pygltflib.Sampler(
+                magFilter=pygltflib.LINEAR, minFilter=pygltflib.LINEAR_MIPMAP_LINEAR,
+                wrapS=pygltflib.CLAMP_TO_EDGE, wrapT=pygltflib.CLAMP_TO_EDGE,
+            ))
+        rmap_tex_index = len(textures)
+        textures.append(pygltflib.Texture(source=len(images) - 1, sampler=0))
+        offset += len(rmap_binary)
+
+    # BV for AO map PNG (optional)
+    aomap_tex_index = None
+    if aomap_binary:
+        buf_views.append(pygltflib.BufferView(
+            buffer=0, byteOffset=offset, byteLength=len(aomap_binary),
+        ))
+        images.append(pygltflib.Image(
+            mimeType='image/png', bufferView=len(buf_views) - 1,
+        ))
+        if not samplers:
+            samplers.append(pygltflib.Sampler(
+                magFilter=pygltflib.LINEAR, minFilter=pygltflib.LINEAR_MIPMAP_LINEAR,
+                wrapS=pygltflib.CLAMP_TO_EDGE, wrapT=pygltflib.CLAMP_TO_EDGE,
+            ))
+        aomap_tex_index = len(textures)
+        textures.append(pygltflib.Texture(source=len(images) - 1, sampler=0))
+        offset += len(aomap_binary)
+
     # ── Material ───────────────────────────────────────────────────────────────
+    pbr_kwargs = dict(roughnessFactor=0.65, metallicFactor=0.0)
     if png_binary and uvs_binary:
-        pbr = pygltflib.PbrMetallicRoughness(
-            baseColorTexture=pygltflib.TextureInfo(index=0),
-            roughnessFactor=0.65, metallicFactor=0.0,
-        )
+        pbr_kwargs['baseColorTexture'] = pygltflib.TextureInfo(index=0)
     else:
-        pbr = pygltflib.PbrMetallicRoughness(
-            baseColorFactor=[0.769, 0.584, 0.416, 1.0],  # #C4956A skin tone
-            roughnessFactor=0.65, metallicFactor=0.0,
-        )
+        pbr_kwargs['baseColorFactor'] = [0.769, 0.584, 0.416, 1.0]  # #C4956A skin tone
+    if rmap_tex_index is not None:
+        pbr_kwargs['metallicRoughnessTexture'] = pygltflib.TextureInfo(index=rmap_tex_index)
+        pbr_kwargs['roughnessFactor'] = 1.0  # let map control fully
+    pbr = pygltflib.PbrMetallicRoughness(**pbr_kwargs)
 
     mat_kwargs = dict(pbrMetallicRoughness=pbr, doubleSided=True)
     if nmap_binary and len(textures) >= 2:
+        nmap_idx = 1 if png_binary else 0
         mat_kwargs['normalTexture'] = pygltflib.NormalMaterialTexture(
-            index=len(textures) - 1, scale=1.0
+            index=nmap_idx, scale=1.0
+        )
+    if aomap_tex_index is not None:
+        mat_kwargs['occlusionTexture'] = pygltflib.OcclusionTextureInfo(
+            index=aomap_tex_index, strength=0.8
         )
 
     attributes = pygltflib.Attributes(**attr_kwargs)

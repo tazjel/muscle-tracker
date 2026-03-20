@@ -2916,11 +2916,28 @@ def generate_body_model(customer_id):
 
             _normal_map = smpl_result.get('normal_map')
             export_obj(verts, faces, obj_path)
+
+            # Generate PBR maps inline (before GLB export so they embed in the file)
+            _roughness_map = None
+            _ao_map = None
+            if texture_image is not None and uvs_for_glb is not None:
+                try:
+                    from core.texture_factory import generate_roughness_map, generate_ao_map
+                    _roughness_map = generate_roughness_map(uvs_for_glb, atlas_size=2048, vertices=verts)
+                    if _roughness_map is not None and _roughness_map.dtype != np.uint8:
+                        _roughness_map = (_roughness_map * 255).astype(np.uint8)
+                    _ao_map = generate_ao_map(verts, faces, uvs_for_glb, atlas_size=2048)
+                    if _ao_map is not None and _ao_map.dtype != np.uint8:
+                        _ao_map = (_ao_map * 255).astype(np.uint8)
+                except Exception as e:
+                    logger.warning('PBR map generation failed: %s', e)
+
             glb_path_out = None
             try:
                 export_glb(verts, faces, glb_path,
                            uvs=uvs_for_glb, texture_image=texture_image,
-                           normal_map=_normal_map)
+                           normal_map=_normal_map,
+                           roughness_map=_roughness_map, ao_map=_ao_map)
                 glb_path_out = glb_path
             except Exception:
                 logger.warning('GLB export failed for SMPL direct %s', base_name)
@@ -3062,6 +3079,11 @@ def generate_body_model(customer_id):
                     texture_image, coverage_map = project_texture(
                         verts, faces, uvs_for_glb, cam_views, atlas_size=1024
                     )
+                    try:
+                        from core.smpl_direct import delight_texture
+                        texture_image = delight_texture(texture_image, coverage_map)
+                    except Exception:
+                        pass
                     try:
                         from core.texture_enhance import enhance_texture_atlas
                         texture_image = enhance_texture_atlas(

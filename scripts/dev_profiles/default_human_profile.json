@@ -1,0 +1,28 @@
+{
+  "height_cm": 168,
+  "weight_kg": 63,
+
+  "shoulder_width_cm": 37,
+  "neck_to_shoulder_cm": 15,
+  "shoulder_to_head_cm": 25,
+  "arm_length_cm": 80,
+  "upper_arm_length_cm": 35,
+  "forearm_length_cm": 45,
+  "torso_length_cm": 50,
+  "inseam_cm": 92,
+  "floor_to_knee_cm": 52,
+  "knee_to_belly_cm": 40,
+  "back_buttock_to_knee_cm": 61.6,
+
+  "head_circumference_cm": 56,
+  "neck_circumference_cm": 35,
+  "chest_circumference_cm": 97,
+  "bicep_circumference_cm": 32,
+  "forearm_circumference_cm": 29,
+  "hand_circumference_cm": 21,
+  "waist_circumference_cm": 90,
+  "hip_circumference_cm": 92,
+  "thigh_circumference_cm": 53,
+  "quadricep_circumference_cm": 52,
+  "calf_circumference_cm": 34
+}

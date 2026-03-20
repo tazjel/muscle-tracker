@@ -133,6 +133,29 @@ def inpaint_gaps(texture, coverage_mask, method='opencv'):
         return _inpaint_opencv(texture, gap_mask)
 
 
+def depth_to_normal_map(depth_map, atlas_size=1024):
+    """Convert depth map to tangent-space normal map using Sobel gradients."""
+    h, w = depth_map.shape[:2]
+    if len(depth_map.shape) == 3:
+        depth_map = cv2.cvtColor(depth_map, cv2.COLOR_BGR2GRAY)
+    depth_f = depth_map.astype(np.float32) / 255.0
+
+    dx = cv2.Sobel(depth_f, cv2.CV_32F, 1, 0, ksize=3)
+    dy = cv2.Sobel(depth_f, cv2.CV_32F, 0, 1, ksize=3)
+
+    normals = np.dstack([-dx, -dy, np.ones_like(dx)])
+    norm = np.linalg.norm(normals, axis=2, keepdims=True)
+    normals = normals / (norm + 1e-8)
+
+    # Encode tangent-space: [-1,1] -> [0,255]
+    normal_img = ((normals * 0.5 + 0.5) * 255).astype(np.uint8)
+
+    if normal_img.shape[:2] != (atlas_size, atlas_size):
+        normal_img = cv2.resize(normal_img, (atlas_size, atlas_size),
+                                interpolation=cv2.INTER_LINEAR)
+    return normal_img
+
+
 def _inpaint_opencv(texture, gap_mask):
     """Fast OpenCV inpainting (Telea algorithm)."""
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
