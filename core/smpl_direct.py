@@ -353,11 +353,21 @@ def generate_direct_smpl(images_dict, profile=None,
     logger.info("Delighting texture...")
     texture = delight_texture(texture, weight)
 
-    # ── 8. Gap inpainting ────────────────────────────────────────────────────
+    # ── 8. Gap inpainting + upscale ──────────────────────────────────────────
     mask_unfilled = (weight == 0).astype(np.uint8) * 255
     if mask_unfilled.any():
         texture = cv2.inpaint(texture, mask_unfilled, inpaintRadius=8,
                               flags=cv2.INPAINT_TELEA)
+
+    # Upscale texture via Real-ESRGAN (2048→4096)
+    try:
+        from core.texture_enhance import enhance_texture_atlas
+        texture = enhance_texture_atlas(
+            texture, coverage_mask=weight, upscale=True, inpaint=False,
+            target_size=4096)
+        logger.info("Texture upscaled to %s", texture.shape[:2])
+    except Exception as e:
+        logger.warning("Texture upscale skipped: %s", e)
 
     # ── 9. DSINE normal map from photos ──────────────────────────────────────
     normal_map = None

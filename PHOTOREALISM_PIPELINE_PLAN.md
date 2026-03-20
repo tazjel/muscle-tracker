@@ -480,18 +480,18 @@ def depth_to_normal_map(depth_map, uvs, vertices, faces, atlas_size=1024):
 
 ## Implementation Order
 
-| Priority | Task | Phase | Impact | Effort | Dependencies |
-|----------|------|-------|--------|--------|-------------|
-| 1 | 1.1 HDRI Environment | Frontend | High | 30 min | Download 1 HDRI file |
-| 2 | 1.3 Tune SSS Params | Frontend | Medium | 15 min | None |
-| 3 | 1.2 Micro-Normal Map | Frontend | High | 2 hours | Source/generate pore texture |
-| 4 | 2.1 Delighting Pass | Backend | High | 3 hours | None |
-| 5 | 1.4 SSAO Pass | Frontend | Medium | 3 hours | EffectComposer refactor |
-| 6 | 2.2 Regional Roughness | Backend | Medium | 2 hours | UV + body_part_ids |
-| 7 | 2.3 Depth Normal Map | Backend | Medium | 3 hours | Depth Anything output |
-| 8 | 3.1 SMPL UV Layout | Backend | High | 8 hours | Texture projector rework |
-| 9 | 3.2 Anatomical Masks | Both | Medium | 6 hours | Task 3.1 |
-| 10 | 3.3 Neural Delight | Backend | Low | 8+ hours | Task 2.1 evaluation |
+| Priority | Task | Phase | Impact | Effort | Dependencies | Status |
+|----------|------|-------|--------|--------|-------------|--------|
+| 1 | 1.1 HDRI Environment | Frontend | High | 30 min | Download 1 HDRI file | DONE |
+| 2 | 1.3 Tune SSS Params | Frontend | Medium | 15 min | None | DONE |
+| 3 | 1.2 Micro-Normal Map | Frontend | High | 2 hours | Source/generate pore texture | DONE |
+| 4 | 2.1 Delighting Pass | Backend | High | 3 hours | None | DONE (in smpl_direct) |
+| 5 | 1.4 SSAO Pass | Frontend | Medium | 3 hours | EffectComposer refactor | DONE |
+| 6 | 2.2 Regional Roughness | Backend | Medium | 2 hours | UV + body_part_ids | — |
+| 7 | 2.3 Depth Normal Map | Backend | Medium | 3 hours | Depth Anything output | — |
+| 8 | 3.1 SMPL UV Layout | Backend | High | 8 hours | Texture projector rework | — |
+| 9 | 3.2 Anatomical Masks | Both | Medium | 6 hours | Task 3.1 | — |
+| 10 | 3.3 Neural Delight | Backend | Low | 8+ hours | Task 2.1 evaluation | — |
 
 ---
 
