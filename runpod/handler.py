@@ -307,8 +307,323 @@ def handler(job):
     if 'dsine' in tasks:
         result['normals'] = _run_dsine(images_b64, directions)
 
+    # ── GPU texture tasks ────────────────────────────────────────────────
+    if 'texture_upscale' in tasks:
+        result['texture_upscale'] = _run_texture_upscale(inp)
+
+    if 'normal_from_depth' in tasks:
+        result['normal_from_depth'] = _run_normal_from_depth(images_b64, directions)
+
+    if 'pbr_textures' in tasks:
+        result['pbr_textures'] = _run_pbr_textures(inp)
+
     logger.info("Done — returning results")
     return result
+
+
+# ── GPU texture processing ───────────────────────────────────────────────
+
+_realesrgan_model = None
+
+
+def _load_realesrgan():
+    """Lazy-load Real-ESRGAN model (stays in GPU memory)."""
+    global _realesrgan_model
+    if _realesrgan_model is not None:
+        return _realesrgan_model
+
+    import os
+    from realesrgan import RealESRGANer
+    from basicsr.archs.rrdbnet_arch import RRDBNet
+
+    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
+                    num_block=23, num_grow_ch=32, scale=4)
+
+    model_path = os.path.join('/root/.cache', 'realesrgan', 'RealESRGAN_x4plus.pth')
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+
+    if not os.path.exists(model_path):
+        from basicsr.utils.download_util import load_file_from_url
+        load_file_from_url(
+            'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth',
+            model_dir=os.path.dirname(model_path))
+
+    _realesrgan_model = RealESRGANer(
+        scale=4, model_path=model_path, model=model,
+        tile=512, tile_pad=10, pre_pad=0,
+        half=True, device='cuda',
+    )
+    logger.info("Real-ESRGAN loaded on GPU")
+    return _realesrgan_model
+
+
+def _run_texture_upscale(inp):
+    """4x upscale a texture atlas using Real-ESRGAN on GPU."""
+    try:
+        texture_b64 = inp.get('texture_b64')
+        if not texture_b64:
+            return {'status': 'error', 'message': 'No texture_b64 provided'}
+
+        img = _decode_image(texture_b64)
+        target_size = inp.get('target_size', 4096)
+
+        upsampler = _load_realesrgan()
+        output, _ = upsampler.enhance(img, outscale=4)
+
+        h, w = output.shape[:2]
+        if max(h, w) > target_size:
+            scale = target_size / max(h, w)
+            output = cv2.resize(output, (int(w * scale), int(h * scale)),
+                                interpolation=cv2.INTER_LANCZOS4)
+
+        logger.info(f"Texture upscaled: {img.shape[:2]} -> {output.shape[:2]}")
+        return {
+            'status': 'success',
+            'texture_b64': _encode_image(output, quality=95),
+            'shape': list(output.shape),
+        }
+    except Exception as e:
+        logger.error(f"Texture upscale failed: {e}")
+        return {'status': 'error', 'message': str(e)}
+
+
+def _run_normal_from_depth(images_b64, directions):
+    """Generate detailed normal maps from photos using DSINE (reuses _run_dsine)."""
+    return _run_dsine(images_b64, directions)
+
+
+# ── SMPL data for PBR generation ─────────────────────────────────────────
+
+_smpl_data = None
+
+
+def _load_smpl_data():
+    """Load SMPL model data (weights, faces) for texture generation."""
+    import os
+    import pickle
+    global _smpl_data
+    if _smpl_data is not None:
+        return _smpl_data
+
+    smpl_path = '/root/.cache/4DHumans/data/smpl/SMPL_NEUTRAL.pkl'
+    with open(smpl_path, 'rb') as f:
+        data = pickle.load(f, encoding='latin1')
+
+    _smpl_data = {
+        'weights': np.array(data['weights']),  # (6890, 24)
+        'faces': np.array(data['f'], dtype=np.int32),  # (13776, 3)
+    }
+    logger.info("SMPL data loaded: weights %s, faces %s",
+                _smpl_data['weights'].shape, _smpl_data['faces'].shape)
+    return _smpl_data
+
+
+def _get_smpl_part_ids(vertices):
+    """Assign SMPL body-part IDs (0-23) from blend weights."""
+    smpl = _load_smpl_data()
+    weights = smpl['weights']
+    if len(weights) != len(vertices):
+        logger.warning("Vertex count mismatch: %d vs %d", len(vertices), len(weights))
+        return None
+    return np.argmax(weights, axis=1)
+
+
+# SMPL part-to-region mapping (same as texture_factory.py)
+_SMPL_PART_MAP = {
+    0: 'torso', 1: 'torso', 2: 'torso', 3: 'torso',
+    4: 'legs', 5: 'legs', 6: 'torso',
+    7: 'legs', 8: 'legs', 9: 'torso',
+    10: 'legs', 11: 'legs',
+    12: 'torso', 13: 'arms', 14: 'arms', 15: 'torso',
+    16: 'arms', 17: 'arms',
+    18: 'arms', 19: 'arms',
+    20: 'hands', 21: 'hands',
+    22: 'hands', 23: 'hands',
+}
+
+_REGION_ROUGHNESS = {
+    'torso': 0.55, 'arms': 0.50, 'legs': 0.60,
+    'hands': 0.45, 'head': 0.30,
+}
+
+
+def _generate_roughness_map(vertices, faces, uvs, atlas_size):
+    """Generate anatomical roughness map from SMPL body-part assignments."""
+    roughness_map = np.full((atlas_size, atlas_size), 0.55, dtype=np.float32)
+
+    part_ids = _get_smpl_part_ids(vertices)
+    if part_ids is None:
+        return (roughness_map * 255).astype(np.uint8)
+
+    vert_roughness = np.full(len(uvs), 0.55, dtype=np.float32)
+    for part_id, region_name in _SMPL_PART_MAP.items():
+        mask = part_ids == part_id
+        vert_roughness[mask] = _REGION_ROUGHNESS.get(region_name, 0.55)
+
+    u_px = np.clip((uvs[:, 0] * (atlas_size - 1)).astype(int), 0, atlas_size - 1)
+    v_px = np.clip(((1 - uvs[:, 1]) * (atlas_size - 1)).astype(int), 0, atlas_size - 1)
+
+    for i in range(len(uvs)):
+        roughness_map[v_px[i], u_px[i]] = vert_roughness[i]
+
+    kernel_size = atlas_size // 128 | 1
+    if kernel_size >= 3:
+        roughness_map = cv2.GaussianBlur(roughness_map, (kernel_size, kernel_size), 0)
+
+    return (roughness_map * 255).astype(np.uint8)
+
+
+def _generate_ao_map(vertices, faces, uvs, atlas_size):
+    """Generate ambient occlusion map by computing per-vertex concavity."""
+    normals = np.zeros_like(vertices, dtype=np.float32)
+    v0 = vertices[faces[:, 0]]
+    v1 = vertices[faces[:, 1]]
+    v2 = vertices[faces[:, 2]]
+    face_normals = np.cross(v1 - v0, v2 - v0)
+    fn_lens = np.linalg.norm(face_normals, axis=1, keepdims=True)
+    fn_lens[fn_lens < 1e-10] = 1.0
+    face_normals /= fn_lens
+
+    for i in range(3):
+        np.add.at(normals, faces[:, i], face_normals)
+    n_lens = np.linalg.norm(normals, axis=1, keepdims=True)
+    n_lens[n_lens < 1e-10] = 1.0
+    normals /= n_lens
+
+    n_verts = len(vertices)
+    ao_values = np.ones(n_verts, dtype=np.float32)
+
+    adj = [[] for _ in range(n_verts)]
+    for f in faces:
+        for i in range(3):
+            for j in range(3):
+                if i != j:
+                    adj[f[i]].append(f[j])
+
+    for vi in range(n_verts):
+        if not adj[vi]:
+            continue
+        neighbors = np.array(list(set(adj[vi])))
+        deltas = vertices[neighbors] - vertices[vi]
+        dots = (deltas * normals[vi]).sum(axis=1)
+        concavity = np.clip(dots.mean() / (np.linalg.norm(deltas, axis=1).mean() + 1e-6), -1, 1)
+        ao_values[vi] = np.clip(0.5 + concavity * 0.5, 0.2, 1.0)
+
+    ao_map = np.full((atlas_size, atlas_size), 255, dtype=np.uint8)
+    u_px = np.clip((uvs[:, 0] * (atlas_size - 1)).astype(int), 0, atlas_size - 1)
+    v_px = np.clip(((1 - uvs[:, 1]) * (atlas_size - 1)).astype(int), 0, atlas_size - 1)
+
+    for i in range(n_verts):
+        ao_map[v_px[i], u_px[i]] = int(ao_values[i] * 255)
+
+    kernel_size = atlas_size // 64 | 1
+    ao_map = cv2.GaussianBlur(ao_map, (kernel_size, kernel_size), 0)
+    return ao_map
+
+
+def _generate_normal_map(vertices, faces, uvs, atlas_size):
+    """Generate tangent-space normal map from mesh geometry."""
+    normal_map = np.full((atlas_size, atlas_size, 3), 128, dtype=np.uint8)
+    normal_map[:, :, 2] = 255
+
+    # Compute smooth normals
+    norms = np.zeros_like(vertices, dtype=np.float32)
+    v0 = vertices[faces[:, 0]]
+    v1 = vertices[faces[:, 1]]
+    v2 = vertices[faces[:, 2]]
+    fn = np.cross(v1 - v0, v2 - v0)
+    fn_lens = np.linalg.norm(fn, axis=1, keepdims=True)
+    fn_lens[fn_lens < 1e-10] = 1.0
+    fn /= fn_lens
+    for i in range(3):
+        np.add.at(norms, faces[:, i], fn)
+    n_lens = np.linalg.norm(norms, axis=1, keepdims=True)
+    n_lens[n_lens < 1e-10] = 1.0
+    norms /= n_lens
+
+    for fi in range(len(faces)):
+        f = faces[fi]
+        for vi in f:
+            uv = uvs[vi]
+            tx = int(np.clip(uv[0] * (atlas_size - 1), 0, atlas_size - 1))
+            ty = int(np.clip((1 - uv[1]) * (atlas_size - 1), 0, atlas_size - 1))
+            n = norms[vi]
+            normal_map[ty, tx, 0] = int(np.clip((n[0] * 0.5 + 0.5) * 255, 0, 255))
+            normal_map[ty, tx, 1] = int(np.clip((n[1] * 0.5 + 0.5) * 255, 0, 255))
+            normal_map[ty, tx, 2] = int(np.clip((n[2] * 0.5 + 0.5) * 255, 0, 255))
+
+    return normal_map
+
+
+def _run_pbr_textures(inp):
+    """Generate complete PBR texture set (albedo, normal, roughness, AO) on GPU."""
+    try:
+        albedo_b64 = inp.get('albedo_b64')
+        uvs_b64 = inp.get('uvs_b64')
+        uvs_shape = inp.get('uvs_shape')
+        verts_b64 = inp.get('vertices_b64')
+        verts_shape = inp.get('vertices_shape')
+        faces_b64 = inp.get('faces_b64')
+        faces_shape = inp.get('faces_shape')
+
+        if not all([albedo_b64, uvs_b64, verts_b64, faces_b64]):
+            return {'status': 'error', 'message': 'Missing required inputs (albedo, uvs, vertices, faces)'}
+
+        albedo = _decode_image(albedo_b64)
+        uvs = np.frombuffer(base64.b64decode(uvs_b64), dtype=np.float32).reshape(uvs_shape)
+        vertices = np.frombuffer(base64.b64decode(verts_b64), dtype=np.float32).reshape(verts_shape)
+        faces = np.frombuffer(base64.b64decode(faces_b64), dtype=np.int32).reshape(faces_shape)
+
+        atlas_size = inp.get('atlas_size', 2048)
+        upscale = inp.get('upscale', True)
+        target_size = inp.get('target_size', 4096)
+
+        roughness_map = _generate_roughness_map(vertices, faces, uvs, atlas_size)
+        ao_map = _generate_ao_map(vertices, faces, uvs, atlas_size)
+        normal_map = _generate_normal_map(vertices, faces, uvs, atlas_size)
+
+        result_maps = {
+            'albedo': albedo,
+            'normal': normal_map,
+            'roughness': roughness_map,
+            'ao': ao_map,
+        }
+
+        if upscale:
+            upsampler = _load_realesrgan()
+            for name, img in result_maps.items():
+                if img is None:
+                    continue
+                if len(img.shape) == 2:
+                    img_3ch = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                else:
+                    img_3ch = img
+                upscaled, _ = upsampler.enhance(img_3ch, outscale=4)
+                h, w = upscaled.shape[:2]
+                if max(h, w) > target_size:
+                    scale = target_size / max(h, w)
+                    upscaled = cv2.resize(upscaled, (int(w * scale), int(h * scale)),
+                                          interpolation=cv2.INTER_LANCZOS4)
+                if name in ('roughness', 'ao') and len(upscaled.shape) == 3:
+                    upscaled = cv2.cvtColor(upscaled, cv2.COLOR_BGR2GRAY)
+                result_maps[name] = upscaled
+                logger.info(f"Upscaled {name}: {img.shape[:2]} -> {upscaled.shape[:2]}")
+
+        encoded = {}
+        for name, img in result_maps.items():
+            if img is not None:
+                encoded[name] = {
+                    'texture_b64': _encode_image(img, quality=95),
+                    'shape': list(img.shape),
+                }
+
+        return {'status': 'success', 'textures': encoded}
+
+    except Exception as e:
+        logger.error(f"PBR texture generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'status': 'error', 'message': str(e)}
 
 
 runpod.serverless.start({"handler": handler})

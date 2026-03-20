@@ -27,7 +27,7 @@ RUNPOD_ENDPOINT = os.environ.get('RUNPOD_ENDPOINT', '')
 RUNPOD_BASE_URL = 'https://api.runpod.ai/v2'
 
 # Timeout for polling results (seconds)
-POLL_TIMEOUT = 120
+POLL_TIMEOUT = 180  # 3 minutes — PBR + upscale can take 2 minutes
 POLL_INTERVAL = 2
 
 
@@ -190,6 +190,40 @@ def _poll_result(job_id, headers):
     return None
 
 
+def _run_async_raw(payload, headers):
+    """Submit async job and poll, returning raw RunPod response."""
+    import urllib.request
+    url = f"{RUNPOD_BASE_URL}/{RUNPOD_ENDPOINT}/run"
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read().decode())
+    job_id = result.get('id')
+    if not job_id:
+        return None
+    return _poll_result_raw(job_id, headers)
+
+
+def _poll_result_raw(job_id, headers):
+    """Poll RunPod for job completion, returning raw output dict."""
+    import urllib.request
+    url = f"{RUNPOD_BASE_URL}/{RUNPOD_ENDPOINT}/status/{job_id}"
+    start = time.time()
+    while time.time() - start < POLL_TIMEOUT:
+        req = urllib.request.Request(url, headers=headers, method='GET')
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+        status = result.get('status')
+        if status == 'COMPLETED':
+            return result.get('output', {})
+        elif status in ('FAILED', 'CANCELLED'):
+            logger.error("RunPod job %s: %s", job_id, status)
+            return None
+        time.sleep(POLL_INTERVAL)
+    logger.error("RunPod job %s timed out", job_id)
+    return None
+
+
 def _parse_output(output):
     """Convert RunPod response back to numpy arrays."""
     if output.get('status') != 'success':
@@ -226,7 +260,197 @@ def _parse_output(output):
         for direction, normal_b64 in output['normals'].items():
             result['normals'][direction] = _decode_normal_image(normal_b64)
 
+    # Parse texture upscale result
+    if 'texture_upscale' in output:
+        result['texture_upscale'] = output['texture_upscale']
+
+    # Parse normal_from_depth result (same format as normals)
+    if 'normal_from_depth' in output:
+        result['normals'] = {}
+        for direction, normal_b64 in output['normal_from_depth'].items():
+            result['normals'][direction] = _decode_normal_image(normal_b64)
+
+    # Parse PBR texture generation result
+    if 'pbr_textures' in output:
+        result['pbr_textures'] = output['pbr_textures']
+
     return result
+
+
+def cloud_texture_upscale(texture_bgr, target_size=4096):
+    """
+    Upscale a texture atlas using Real-ESRGAN on RunPod GPU.
+
+    Args:
+        texture_bgr: BGR numpy array (the texture to upscale)
+        target_size: max dimension after upscaling (default 4096)
+
+    Returns:
+        Upscaled BGR numpy array, or None on failure.
+    """
+    if not is_configured():
+        logger.warning("RunPod not configured, cannot cloud upscale")
+        return None
+
+    import urllib.request
+    import urllib.error
+
+    # Encode texture at full resolution (no downscale — we want max quality)
+    _, buf = cv2.imencode('.png', texture_bgr)
+    texture_b64 = base64.b64encode(buf.tobytes()).decode('ascii')
+
+    payload = {
+        'input': {
+            'images': {},
+            'tasks': ['texture_upscale'],
+            'texture_b64': texture_b64,
+            'target_size': target_size,
+        }
+    }
+
+    headers = {
+        'Authorization': f'Bearer {RUNPOD_API_KEY}',
+        'Content-Type': 'application/json',
+    }
+    data = json.dumps(payload).encode('utf-8')
+    logger.info("Sending %.0fKB texture to RunPod for upscaling", len(data) / 1024)
+
+    try:
+        url = f"{RUNPOD_BASE_URL}/{RUNPOD_ENDPOINT}/runsync"
+        req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                result = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 408 or 'timeout' in str(e).lower():
+                logger.info("Sync timed out, switching to async for upscale...")
+                result = _run_async_raw(payload, headers)
+            else:
+                raise
+
+        if result is None:
+            return None
+
+        status = result.get('status')
+        if status == 'COMPLETED':
+            output = result.get('output', {})
+        elif status in ('IN_QUEUE', 'IN_PROGRESS'):
+            job_id = result.get('id')
+            output = _poll_result_raw(job_id, headers)
+        else:
+            logger.error("RunPod upscale returned status=%s", status)
+            return None
+
+        if output is None:
+            return None
+
+        upscale_data = output.get('texture_upscale', {})
+        if upscale_data.get('status') != 'success':
+            logger.error("Upscale failed: %s", upscale_data.get('message'))
+            return None
+
+        # Decode the upscaled texture
+        img_bytes = base64.b64decode(upscale_data['texture_b64'])
+        arr = np.frombuffer(img_bytes, dtype=np.uint8)
+        upscaled = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        logger.info("Cloud upscale: %s → %s", texture_bgr.shape[:2], upscaled.shape[:2])
+        return upscaled
+
+    except Exception as e:
+        logger.error("Cloud texture upscale failed: %s", e)
+        return None
+
+
+def cloud_pbr_textures(albedo_bgr, uvs, vertices, faces,
+                        atlas_size=2048, upscale=True, target_size=4096):
+    """
+    Generate full PBR texture set on RunPod GPU.
+
+    Args:
+        albedo_bgr: BGR numpy array (photo-projected albedo texture)
+        uvs: float32 (N, 2) UV coordinates
+        vertices: float32 (N, 3) mesh vertices
+        faces: int32 (F, 3) face indices
+        atlas_size: base atlas resolution
+        upscale: whether to Real-ESRGAN upscale (default True)
+        target_size: max dimension after upscale
+
+    Returns:
+        Dict with keys 'albedo', 'normal', 'roughness', 'ao' -> BGR numpy arrays.
+        Or None on failure.
+    """
+    if not is_configured():
+        logger.warning("RunPod not configured, cannot generate cloud PBR")
+        return None
+
+    import urllib.request
+
+    # Encode all arrays as base64
+    _, albedo_buf = cv2.imencode('.png', albedo_bgr)
+    albedo_b64 = base64.b64encode(albedo_buf.tobytes()).decode('ascii')
+
+    uvs_b64 = base64.b64encode(uvs.astype(np.float32).tobytes()).decode('ascii')
+    verts_b64 = base64.b64encode(vertices.astype(np.float32).tobytes()).decode('ascii')
+    faces_b64 = base64.b64encode(faces.astype(np.int32).tobytes()).decode('ascii')
+
+    payload = {
+        'input': {
+            'images': {},
+            'tasks': ['pbr_textures'],
+            'albedo_b64': albedo_b64,
+            'uvs_b64': uvs_b64,
+            'uvs_shape': list(uvs.shape),
+            'vertices_b64': verts_b64,
+            'vertices_shape': list(vertices.shape),
+            'faces_b64': faces_b64,
+            'faces_shape': list(faces.shape),
+            'atlas_size': atlas_size,
+            'upscale': upscale,
+            'target_size': target_size,
+        }
+    }
+
+    headers = {
+        'Authorization': f'Bearer {RUNPOD_API_KEY}',
+        'Content-Type': 'application/json',
+    }
+    data = json.dumps(payload).encode('utf-8')
+    logger.info("Sending %.0fKB to RunPod for PBR generation", len(data) / 1024)
+
+    try:
+        url = f"{RUNPOD_BASE_URL}/{RUNPOD_ENDPOINT}/run"  # Use async — PBR takes 30-120s
+        req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+
+        job_id = result.get('id')
+        if not job_id:
+            logger.error("No job ID in response: %s", result)
+            return None
+
+        # Poll with extended timeout (PBR + upscale takes time)
+        output = _poll_result_raw(job_id, headers)
+        if output is None:
+            return None
+
+        pbr_data = output.get('pbr_textures', {})
+        if pbr_data.get('status') != 'success':
+            logger.error("Cloud PBR failed: %s", pbr_data.get('message'))
+            return None
+
+        # Decode texture maps
+        textures = {}
+        for name, tex_info in pbr_data.get('textures', {}).items():
+            img_bytes = base64.b64decode(tex_info['texture_b64'])
+            arr = np.frombuffer(img_bytes, dtype=np.uint8)
+            textures[name] = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+        logger.info("Cloud PBR complete: %s", {k: v.shape for k, v in textures.items()})
+        return textures
+
+    except Exception as e:
+        logger.error("Cloud PBR generation failed: %s", e)
+        return None
 
 
 def is_configured():

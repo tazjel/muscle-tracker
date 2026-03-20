@@ -52,7 +52,7 @@ def _load_esrgan():
 
 def upscale_texture(texture, target_size=4096):
     """
-    4x upscale texture atlas using Real-ESRGAN.
+    4x upscale texture atlas: try cloud GPU -> local GPU -> Lanczos fallback.
 
     Args:
         texture: (H, W, 3) uint8 BGR texture atlas
@@ -61,6 +61,20 @@ def upscale_texture(texture, target_size=4096):
     Returns:
         (H', W', 3) uint8 BGR upscaled texture, or original on failure
     """
+    # Option 1: Cloud GPU (RunPod Real-ESRGAN)
+    try:
+        from core.cloud_gpu import is_configured, cloud_texture_upscale
+        if is_configured():
+            result = cloud_texture_upscale(texture, target_size=target_size)
+            if result is not None:
+                logger.info("Texture upscaled via cloud GPU: %s -> %s",
+                           texture.shape[:2], result.shape[:2])
+                return result
+            logger.warning("Cloud upscale returned None, trying local...")
+    except Exception as e:
+        logger.warning("Cloud upscale unavailable: %s", e)
+
+    # Option 2: Local Real-ESRGAN (existing code)
     model = _load_esrgan()
 
     if model is None:

@@ -445,6 +445,151 @@ async function _loadRealSkinTexture() {
   }
 }
 
+// ── PBR texture loading from texture_factory output ──────────────────────────
+async function _loadPBRTextures() {
+  const params = new URLSearchParams(location.search);
+  const cid = params.get('customer') || '1';
+  const loader = new THREE.TextureLoader();
+  const baseUrl = `/web_app/api/customer/${cid}/pbr_textures`;
+
+  try {
+    const resp = await fetch(baseUrl, {
+      headers: _viewerToken ? { 'Authorization': `Bearer ${_viewerToken}` } : {},
+    });
+    const data = await resp.json();
+    if (data.status !== 'success' || !data.textures) return;
+
+    const texPaths = data.textures;  // {albedo, normal, roughness, ao}
+    const textures = {};
+
+    for (const [name, url] of Object.entries(texPaths)) {
+      try {
+        textures[name] = await new Promise((resolve, reject) => {
+          loader.load(url, resolve, undefined, reject);
+        });
+        textures[name].colorSpace = name === 'albedo'
+          ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+        textures[name].wrapS = textures[name].wrapT = THREE.ClampToEdgeWrapping;
+        textures[name].anisotropy = renderer.capabilities.getMaxAnisotropy();
+      } catch (e) { /* skip missing map */ }
+    }
+
+    if (!textures.albedo) return;
+
+    // Build PBR material with regional roughness
+    const pbrMat = new THREE.MeshPhysicalMaterial({
+      map:              textures.albedo,
+      normalMap:        textures.normal || null,
+      normalScale:      new THREE.Vector2(1.0, 1.0),
+      roughnessMap:     textures.roughness || null,
+      roughness:        textures.roughness ? 1.0 : 0.55,  // roughnessMap modulates this
+      aoMap:            textures.ao || null,
+      aoMapIntensity:   0.5,
+      metalness:        0.0,
+      side:             THREE.DoubleSide,
+      color:            0xffffff,
+      sheen:            0.35,
+      sheenRoughness:   0.5,
+      sheenColor:       new THREE.Color(0xcc8866),
+      clearcoat:        0.06,
+      clearcoatRoughness: 0.3,
+      specularIntensity: 0.4,
+    });
+
+    if (bodyMesh) {
+      bodyMesh.traverse(c => {
+        if (c.isMesh) {
+          c.material = pbrMat;
+          _originalMaterials.set(c, pbrMat);
+        }
+      });
+    }
+
+    console.log('PBR textures loaded:', Object.keys(textures).join(', '));
+  } catch (e) {
+    console.log('PBR textures not available, using defaults');
+  }
+}
+window.loadPBRTextures = _loadPBRTextures;
+
+// ── HDRI environment loading ─────────────────────────────────────────────────
+async function _loadHDRI(url) {
+  if (!url) return;
+  try {
+    const rgbeLoader = new RGBELoader();
+    const hdrTexture = await new Promise((resolve, reject) => {
+      rgbeLoader.load(url, resolve, undefined, reject);
+    });
+    hdrTexture.mapping = THREE.EquirectangularReflectionMapping;
+    scene.environment = hdrTexture;
+    // Optional: set as background too
+    // scene.background = hdrTexture;
+    console.log('HDRI loaded:', url);
+  } catch (e) {
+    console.warn('HDRI load failed:', e);
+  }
+}
+window.loadHDRI = _loadHDRI;
+
+// ── Room wall texturing from API ─────────────────────────────────────────────
+async function _loadRoomWallTextures() {
+  if (!_viewerToken) return;
+  const params = new URLSearchParams(location.search);
+  const cid = params.get('customer') || '1';
+  const roomType = params.get('room') || 'home';
+
+  try {
+    const resp = await fetch(`/web_app/api/room_assets/${roomType}`, {
+      headers: { 'Authorization': `Bearer ${_viewerToken}` },
+    });
+    const data = await resp.json();
+    if (data.status !== 'success') return;
+
+    const loader = new THREE.TextureLoader();
+
+    // Apply floor texture
+    if (data.floor_diff && _roomWalls.floor) {
+      const floorTex = await new Promise((r, e) => loader.load(data.floor_diff, r, undefined, e));
+      floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+      floorTex.repeat.set(4, 6);
+      _roomWalls.floor.material.map = floorTex;
+      _roomWalls.floor.material.needsUpdate = true;
+    }
+
+    // Apply wall texture
+    if (data.wall_diff) {
+      const wallTex = await new Promise((r, e) => loader.load(data.wall_diff, r, undefined, e));
+      wallTex.wrapS = wallTex.wrapT = THREE.RepeatWrapping;
+      wallTex.repeat.set(3, 2);
+      for (const name of ['back', 'front', 'left', 'right']) {
+        if (_roomWalls[name]) {
+          _roomWalls[name].material.map = wallTex.clone();
+          _roomWalls[name].material.needsUpdate = true;
+        }
+      }
+    }
+
+    // Apply ceiling texture
+    if (data.ceiling_diff && _roomWalls.ceiling) {
+      const ceilTex = await new Promise((r, e) => loader.load(data.ceiling_diff, r, undefined, e));
+      ceilTex.wrapS = ceilTex.wrapT = THREE.RepeatWrapping;
+      ceilTex.repeat.set(3, 4);
+      _roomWalls.ceiling.material.map = ceilTex;
+      _roomWalls.ceiling.material.needsUpdate = true;
+    }
+
+    // Load HDRI for environment reflections
+    if (data.hdri_url) {
+      await _loadHDRI(data.hdri_url);
+    }
+
+    console.log('Room textures loaded for', roomType);
+  } catch (e) {
+    console.warn('Room wall textures not loaded:', e);
+  }
+}
+window.loadRoomWallTextures = _loadRoomWallTextures;
+
 function setSkinTiling(tilesX, tilesY) {
   if (!SKIN_MATERIAL.map) return;
   SKIN_MATERIAL.map.repeat.set(tilesX, tilesY);
@@ -1049,8 +1194,8 @@ function _loadGLB(url, onLoaded) {
       _ghostRich = {};
       _hideProgress();
       if (onLoaded) onLoaded();
-      // Try to load real skin texture (non-blocking)
-      _loadRealSkinTexture();
+      // Try to load PBR textures first, fall back to real skin texture
+      _loadPBRTextures().catch(() => _loadRealSkinTexture());
     },
     (xhr) => {
       if (xhr.total > 0) _showProgress(Math.round(xhr.loaded / xhr.total * 100));
@@ -3557,6 +3702,29 @@ function _mcpUpdateRotations() {
   }
 }
 
+// ── GPU Status ────────────────────────────────────────────────────────────────
+async function _checkGPUStatus() {
+    try {
+        const resp = await fetch('/web_app/api/gpu_status');
+        const data = await resp.json();
+        const indicator = document.getElementById('gpu-status');
+        if (!indicator) return;
+
+        if (data.gpu === 'available') {
+            indicator.textContent = 'GPU';
+            indicator.style.color = '#4CAF50';
+            indicator.title = `RunPod GPU ready (${data.tasks_supported?.length || 0} tasks)`;
+        } else {
+            indicator.textContent = 'GPU';
+            indicator.style.color = '#666';
+            indicator.title = 'GPU offline \u2014 using local CPU';
+        }
+    } catch (e) {
+        // Silent fail — GPU status is informational only
+    }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 init();
+_checkGPUStatus();
 _mcpConnect();

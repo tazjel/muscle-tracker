@@ -33,10 +33,12 @@ RUNPOD_ENDPOINT=1lbdnj99ui3fe4
 4. v4: Added omegaconf, pytorch-lightning, chumpy
 5. v5: Pinned numpy<2.0 (but wrong approach)
 6. v6: Force-reinstall numpy==1.26.4 AFTER all deps (torch ABI compat)
+7. v7: Added Real-ESRGAN + basicsr for GPU texture upscaling, PBR texture generation task, model weight pre-download
 
 ## Files
-- `runpod/handler.py` — Serverless worker (HMR2.0 + rembg + DSINE)
+- `runpod/handler.py` — Serverless worker (HMR2.0 + rembg + DSINE + texture_upscale + pbr_textures)
 - `runpod/Dockerfile` — Docker image definition
+- `runpod/deploy.sh` — One-command build+push+test script
 - `runpod/SMPL_NEUTRAL.pkl` — SMPL body model weights (19MB)
 - `core/cloud_gpu.py` — Client to call RunPod from pipeline
 - `core/smpl_direct.py` — Auto-uses cloud GPU when configured

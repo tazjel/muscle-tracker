@@ -101,6 +101,43 @@ def health_check():
     )
 
 
+@action('api/gpu_status', method=['GET'])
+@action.uses(cors)
+def gpu_status():
+    """Check RunPod GPU worker availability."""
+    try:
+        from core.cloud_gpu import is_configured, RUNPOD_ENDPOINT
+        if not is_configured():
+            return dict(status='success', gpu='unavailable',
+                       message='RunPod not configured (RUNPOD_API_KEY or RUNPOD_ENDPOINT missing)')
+
+        import urllib.request, json, os
+        api_key = os.environ.get('RUNPOD_API_KEY', '')
+        url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT}/health"
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+        }
+        req = urllib.request.Request(url, headers=headers, method='GET')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            health = json.loads(resp.read().decode())
+
+        workers = health.get('workers', {})
+        return dict(
+            status='success',
+            gpu='available',
+            endpoint=RUNPOD_ENDPOINT,
+            workers_ready=workers.get('ready', 0),
+            workers_running=workers.get('running', 0),
+            workers_throttled=workers.get('throttled', 0),
+            jobs_in_queue=health.get('jobs', {}).get('inQueue', 0),
+            tasks_supported=['hmr', 'rembg', 'dsine', 'texture_upscale', 'pbr_textures'],
+        )
+
+    except Exception as e:
+        return dict(status='success', gpu='error', message=str(e))
+
+
 @action('index')
 @action.uses('index.html', db)
 def index():
@@ -2266,6 +2303,289 @@ def serve_skin_texture(customer_id, tex_type):
         return f.read()
 
 
+@action('api/customer/<customer_id:int>/pbr_textures', method=['GET'])
+@action.uses(db, cors)
+def get_pbr_textures(customer_id):
+    """Return URLs to PBR texture maps for customer's latest body mesh."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+
+    latest_mesh = db(
+        (db.mesh_model.customer_id == customer_id) &
+        (db.mesh_model.model_type == 'body')
+    ).select(orderby=~db.mesh_model.id, limitby=(0, 1)).first()
+    if not latest_mesh:
+        return dict(status='error', message='No body mesh found for customer')
+
+    mesh_id = latest_mesh.id
+    pbr_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads',
+                           f'pbr_{customer_id}_{mesh_id}')
+
+    # Generate on-demand if not already cached
+    if not os.path.exists(os.path.join(pbr_dir, 'body_albedo.png')):
+        try:
+            import pygltflib, struct
+            import numpy as np
+            import cv2
+            from core.texture_factory import generate_pbr_textures, save_pbr_textures
+
+            glb_path = latest_mesh.glb_path
+            if not glb_path or not os.path.exists(glb_path):
+                return dict(status='error', message='GLB mesh not found on disk')
+
+            gltf = pygltflib.GLTF2().load(glb_path)
+            blob = gltf.binary_blob()
+
+            acc = gltf.accessors[gltf.meshes[0].primitives[0].attributes.POSITION]
+            bv = gltf.bufferViews[acc.bufferView]
+            n_v = acc.count
+            verts = np.array(struct.unpack(f'<{n_v*3}f',
+                blob[bv.byteOffset:bv.byteOffset+bv.byteLength])).reshape(n_v, 3).astype(np.float32)
+
+            ia = gltf.accessors[gltf.meshes[0].primitives[0].indices]
+            ibv = gltf.bufferViews[ia.bufferView]
+            fmt = 'I' if ia.componentType == 5125 else 'H'
+            faces = np.array(struct.unpack(f'<{ia.count}{fmt}',
+                blob[ibv.byteOffset:ibv.byteOffset+ibv.byteLength])).reshape(-1, 3).astype(np.int32)
+
+            prim = gltf.meshes[0].primitives[0]
+            uvs = None
+            if hasattr(prim.attributes, 'TEXCOORD_0') and prim.attributes.TEXCOORD_0 is not None:
+                ua = gltf.accessors[prim.attributes.TEXCOORD_0]
+                ubv = gltf.bufferViews[ua.bufferView]
+                uvs = np.array(struct.unpack(f'<{ua.count*2}f',
+                    blob[ubv.byteOffset:ubv.byteOffset+ubv.byteLength])).reshape(-1, 2).astype(np.float32)
+
+            albedo = None
+            if gltf.images:
+                img0 = gltf.images[0]
+                if img0.bufferView is not None:
+                    i0bv = gltf.bufferViews[img0.bufferView]
+                    img_bytes = blob[i0bv.byteOffset:i0bv.byteOffset+i0bv.byteLength]
+                    arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                    albedo = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+            if uvs is None:
+                from core.uv_canonical import get_canonical_uvs
+                uvs = get_canonical_uvs()
+            if albedo is None:
+                return dict(status='error', message='No albedo texture in GLB')
+
+            pbr_set = generate_pbr_textures(albedo, uvs, verts, faces,
+                                            atlas_size=2048, upscale=False)
+            save_pbr_textures(pbr_set, pbr_dir)
+        except Exception as e:
+            logger.error('PBR texture generation failed: %s', e)
+            return dict(status='error', message=f'PBR generation failed: {e}')
+
+    base = f'/web_app/api/customer/{customer_id}/pbr_textures'
+    textures = {}
+    for tex_type in ('albedo', 'normal', 'roughness', 'ao'):
+        if os.path.exists(os.path.join(pbr_dir, f'body_{tex_type}.png')):
+            textures[tex_type] = f'{base}/{tex_type}'
+    if not textures:
+        return dict(status='error', message='No PBR textures on disk')
+    return dict(status='success', textures=textures, mesh_id=int(mesh_id))
+
+
+@action('api/customer/<customer_id:int>/pbr_textures/<tex_type>', method=['GET'])
+@action.uses(db, cors)
+def serve_pbr_texture(customer_id, tex_type):
+    """Serve a PBR texture PNG (albedo, normal, roughness, ao)."""
+    valid = {'albedo', 'normal', 'roughness', 'ao'}
+    if tex_type not in valid:
+        abort(400, f'Type must be one of: {sorted(valid)}')
+
+    latest_mesh = db(
+        (db.mesh_model.customer_id == customer_id) &
+        (db.mesh_model.model_type == 'body')
+    ).select(orderby=~db.mesh_model.id, limitby=(0, 1)).first()
+    if not latest_mesh:
+        abort(404, 'No body mesh found')
+
+    fpath = os.path.join(os.path.dirname(__file__), '..', 'uploads',
+                         f'pbr_{customer_id}_{latest_mesh.id}', f'body_{tex_type}.png')
+    if not os.path.exists(fpath):
+        abort(404, f'No {tex_type} PBR texture for customer {customer_id}')
+
+    response.headers['Content-Type'] = 'image/png'
+    response.headers['Cache-Control'] = 'public, max-age=3600'
+    with open(fpath, 'rb') as f:
+        return f.read()
+
+
+@action('api/room_assets/<room_type>', method=['GET'])
+@action.uses(cors)
+def get_room_assets(room_type):
+    """Return PolyHaven texture serve-URLs for a room type (home/gym/studio/outdoor)."""
+    valid = {'home', 'gym', 'studio', 'outdoor'}
+    if room_type not in valid:
+        return dict(status='error', message=f'room_type must be one of {sorted(valid)}')
+
+    set_name = f'room_{room_type}' if room_type in ('home', 'gym') else room_type
+    try:
+        from core.asset_cache import get_asset_set
+        assets = get_asset_set(set_name, download=False)
+    except Exception as e:
+        logger.warning('Asset cache error: %s', e)
+        assets = None
+
+    if not assets or (not assets.get('hdris') and not assets.get('textures')):
+        # Kick off background download, return empty now
+        import threading as _bt
+        def _dl():
+            try:
+                from core.asset_cache import get_asset_set
+                get_asset_set(set_name, download=True)
+            except Exception:
+                pass
+        _bt.Thread(target=_dl, daemon=True).start()
+        return dict(status='success', room_type=room_type, hdri_url=None,
+                    floor_diff=None, wall_diff=None, ceiling_diff=None,
+                    message='Assets downloading in background, retry in 60s')
+
+    _polyhaven_base = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), '..', 'assets', 'polyhaven'))
+
+    def _asset_url(path):
+        if not path or not os.path.exists(path):
+            return None
+        rel = os.path.relpath(path, _polyhaven_base).replace(os.sep, '/')
+        return f'/web_app/api/asset/{rel}'
+
+    result = dict(status='success', room_type=room_type)
+    result['hdri_url'] = _asset_url(assets['hdris'][0]) if assets.get('hdris') else None
+    textures = assets.get('textures', {})
+    result['floor_diff'] = _asset_url((textures.get('floor') or {}).get('diff'))
+    result['wall_diff'] = _asset_url((textures.get('wall') or {}).get('diff'))
+    result['ceiling_diff'] = _asset_url((textures.get('ceiling') or {}).get('diff'))
+    return result
+
+
+@action('api/asset/<asset_path:path>', method=['GET'])
+@action.uses(cors)
+def serve_asset(asset_path):
+    """Serve cached PolyHaven assets (HDRIs, textures)."""
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'assets', 'polyhaven'))
+    full_path = os.path.abspath(os.path.join(base, asset_path))
+    if not full_path.startswith(base):
+        abort(403)
+    if not os.path.exists(full_path):
+        abort(404)
+    ext = os.path.splitext(full_path)[1].lower()
+    ctype = {'.hdr': 'application/octet-stream', '.jpg': 'image/jpeg',
+             '.png': 'image/png', '.exr': 'application/octet-stream'}.get(ext, 'application/octet-stream')
+    response.headers['Content-Type'] = ctype
+    response.headers['Cache-Control'] = 'public, max-age=86400'
+    with open(full_path, 'rb') as f:
+        return f.read()
+
+
+_render_jobs = {}  # job_id → {status, renders, error, started, customer_id}
+
+
+def _do_render(job_id, mesh_path, room, quality, angles):
+    """Background thread: run Blender render and store result in _render_jobs."""
+    try:
+        from core.blender_renderer import render_body
+        result = render_body(mesh_path, room=room, quality=quality, angles=angles)
+        _render_jobs[job_id].update({
+            'status': result['status'],
+            'renders': result.get('renders', []),
+            'output_dir': result.get('output_dir', ''),
+            'error': result.get('message') if result['status'] != 'success' else None,
+        })
+    except Exception as e:
+        _render_jobs[job_id].update({'status': 'error', 'error': str(e)})
+
+
+@action('api/customer/<customer_id:int>/render', method=['POST'])
+@action.uses(db, cors)
+def render_body_model(customer_id):
+    """Trigger async Blender Cycles render. Returns job_id immediately."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return dict(status='error', message='Authentication required')
+    payload = verify_jwt(token)
+    if not payload:
+        return dict(status='error', message='Invalid or expired token')
+
+    latest_mesh = db(
+        (db.mesh_model.customer_id == customer_id) &
+        (db.mesh_model.model_type == 'body')
+    ).select(orderby=~db.mesh_model.id, limitby=(0, 1)).first()
+    if not latest_mesh or not latest_mesh.glb_path:
+        return dict(status='error', message='No GLB mesh found for customer')
+    if not os.path.exists(latest_mesh.glb_path):
+        return dict(status='error', message='GLB file missing on disk')
+
+    body = request.json or {}
+    room = body.get('room', 'studio')
+    quality = body.get('quality', 'draft')
+    angles = body.get('angles', 1)
+
+    import uuid, threading
+    job_id = str(uuid.uuid4())[:8]
+    _render_jobs[job_id] = {
+        'status': 'running',
+        'customer_id': customer_id,
+        'started': time.time(),
+        'renders': [],
+        'error': None,
+    }
+    threading.Thread(
+        target=_do_render,
+        args=(job_id, latest_mesh.glb_path, room, quality, angles),
+        daemon=True,
+    ).start()
+
+    return dict(status='success', job_id=job_id, message='Render started')
+
+
+@action('api/customer/<customer_id:int>/render/<job_id>', method=['GET'])
+@action.uses(cors)
+def render_status(customer_id, job_id):
+    """Poll render job status."""
+    job = _render_jobs.get(job_id)
+    if not job:
+        return dict(status='error', message='Job not found')
+
+    result = dict(
+        status=job['status'],
+        elapsed=round(time.time() - job['started'], 1),
+        job_id=job_id,
+    )
+    if job['status'] == 'success' and job.get('renders'):
+        # Convert local paths → serveable URLs
+        result['renders'] = [
+            f'/web_app/api/render_image/{job_id}/{os.path.basename(p)}'
+            for p in job['renders']
+        ]
+    if job.get('error'):
+        result['error'] = job['error']
+    return result
+
+
+@action('api/render_image/<job_id>/<filename>', method=['GET'])
+@action.uses(cors)
+def serve_render_image(job_id, filename):
+    """Serve a rendered PNG from a completed render job."""
+    job = _render_jobs.get(job_id)
+    if not job or not job.get('output_dir'):
+        abort(404)
+    fpath = os.path.join(job['output_dir'], filename)
+    if not os.path.exists(fpath) or not fpath.endswith('.png'):
+        abort(404)
+    response.headers['Content-Type'] = 'image/png'
+    response.headers['Cache-Control'] = 'public, max-age=3600'
+    with open(fpath, 'rb') as f:
+        return f.read()
+
+
 @action('api/customer/<customer_id:int>/body_profile', method=['POST'])
 @action.uses(db, cors)
 def update_body_profile(customer_id):
@@ -2617,6 +2937,31 @@ def generate_body_model(customer_id):
                 notes=f'hash:{profile_hash} pipeline:smpl_direct',
             )
             db.commit()
+
+            # Generate PBR textures in background (non-blocking)
+            import threading as _pbr_t
+            _pbr_kw = dict(
+                pbr_dir=os.path.join(os.path.dirname(__file__), '..', 'uploads',
+                                     f'pbr_{customer_id}_{mesh_id}'),
+                albedo=texture_image.copy() if texture_image is not None else None,
+                uvs=uvs_for_glb.copy() if uvs_for_glb is not None else None,
+                verts=verts.copy(),
+                faces=faces.copy(),
+            )
+            def _gen_pbr(kw=_pbr_kw):
+                if kw['albedo'] is None or kw['uvs'] is None:
+                    return
+                if os.path.exists(os.path.join(kw['pbr_dir'], 'body_albedo.png')):
+                    return
+                try:
+                    from core.texture_factory import generate_pbr_textures, save_pbr_textures
+                    pbr_set = generate_pbr_textures(kw['albedo'], kw['uvs'], kw['verts'],
+                                                    kw['faces'], atlas_size=2048, upscale=False)
+                    save_pbr_textures(pbr_set, kw['pbr_dir'])
+                    logger.info('PBR textures saved to %s', kw['pbr_dir'])
+                except Exception as e:
+                    logger.warning('PBR texture generation failed: %s', e)
+            _pbr_t.Thread(target=_gen_pbr, daemon=True).start()
 
             return dict(
                 status='success',

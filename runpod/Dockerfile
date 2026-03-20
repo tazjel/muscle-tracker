@@ -37,14 +37,27 @@ RUN pip install --no-cache-dir git+https://github.com/shubham-goel/4D-Humans.git
 # DSINE dependencies
 RUN pip install --no-cache-dir geffnet
 
+# Real-ESRGAN for GPU texture upscaling
+RUN pip install --no-cache-dir \
+    realesrgan \
+    basicsr
+
 # Force numpy 1.x LAST — some deps pull in numpy 2.x which breaks torch.from_numpy()
 RUN pip install --no-cache-dir --force-reinstall "numpy==1.26.4"
 
 # Verify torch + numpy work together
 RUN python -c "import torch; import numpy as np; t = torch.from_numpy(np.zeros(3)); print('torch+numpy OK:', np.__version__)"
 
+# Verify Real-ESRGAN loads
+RUN python -c "from realesrgan import RealESRGANer; from basicsr.archs.rrdbnet_arch import RRDBNet; print('Real-ESRGAN OK')"
+
 # Pre-download DSINE model weights (model loads at runtime)
 RUN python -c "import torch; torch.hub.load('hugoycj/DSINE-hub', 'DSINE', trust_repo=True)" || true
+
+# Pre-download Real-ESRGAN model weights
+RUN python -c "from basicsr.utils.download_util import load_file_from_url; \
+    load_file_from_url('https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth', \
+    model_dir='/root/.cache/realesrgan')" || true
 
 # Copy SMPL model weights (required by HMR2.0)
 RUN mkdir -p /root/.cache/4DHumans/data/smpl
