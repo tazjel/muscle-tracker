@@ -31,6 +31,23 @@ Usage:
 
     # Click, type, interact — then screenshot the result
     $PY scripts/agent_browser.py interact http://localhost:8000/page --actions '[{"click":"#start"},{"wait":2},{"screenshot":"after_click.png"}]'
+
+    # --- NEW: Autonomous agent power tools ---
+
+    # Visual diff: compare two screenshots (returns MATCH/MINOR_DIFF/MAJOR_DIFF + similarity %)
+    $PY scripts/agent_browser.py diff captures/before.png captures/after.png
+
+    # Assert: pass/fail checks on a page (NO screenshot needed — pure JSON verdict)
+    $PY scripts/agent_browser.py assert http://localhost:8000/viewer3d/ --no-errors --canvas-rendered --min-meshes 1
+
+    # Watch: retry assertions until pass (agent edits code, runs watch, gets result)
+    $PY scripts/agent_browser.py watch http://localhost:8000/viewer3d/ --canvas-rendered --retries 5 --interval 3
+
+    # ADB: capture Android device screen
+    $PY scripts/agent_browser.py adb --serial R58W41RF6ZK
+
+    # Describe: text-only page inspection (MOST token-efficient — no image read needed)
+    $PY scripts/agent_browser.py describe http://localhost:8000/page
 """
 import argparse
 import json
@@ -472,10 +489,469 @@ def cmd_viewer3d(args):
         pw.stop()
 
 
+def cmd_diff(args):
+    """
+    Visual diff between two images. Returns:
+    - similarity % (SSIM-based)
+    - pixel diff count and highlighted diff image
+    - Compact text verdict: MATCH / MINOR_DIFF / MAJOR_DIFF
+
+    Use this to verify your changes actually improved the output.
+    Agent reads the verdict string — never needs to open the diff image unless debugging.
+    """
+    from PIL import Image, ImageChops, ImageStat
+    import math
+
+    img_a = Image.open(args.image_a).convert("RGB")
+    img_b = Image.open(args.image_b).convert("RGB")
+
+    # Resize to same dimensions if needed (use the smaller)
+    if img_a.size != img_b.size:
+        target = (min(img_a.width, img_b.width), min(img_a.height, img_b.height))
+        img_a = img_a.resize(target, Image.LANCZOS)
+        img_b = img_b.resize(target, Image.LANCZOS)
+
+    # Pixel-level diff
+    diff_img = ImageChops.difference(img_a, img_b)
+    stat = ImageStat.Stat(diff_img)
+    # Mean diff per channel (0-255), averaged across RGB
+    mean_diff = sum(stat.mean) / 3.0
+    # RMS diff per channel
+    rms_diff = math.sqrt(sum(c * c for c in stat.rms) / 3.0)
+
+    # Count significantly different pixels (threshold: 30/255 per channel)
+    threshold = 30
+    diff_pixels = 0
+    total_pixels = img_a.width * img_a.height
+    for pixel in diff_img.get_flattened_data():
+        if any(c > threshold for c in pixel):
+            diff_pixels += 1
+    diff_pct = (diff_pixels / total_pixels) * 100
+
+    # Similarity score (100 = identical)
+    similarity = max(0, 100 - (mean_diff / 255 * 100))
+
+    # Verdict
+    if similarity >= 99:
+        verdict = "MATCH"
+    elif similarity >= 90:
+        verdict = "MINOR_DIFF"
+    else:
+        verdict = "MAJOR_DIFF"
+
+    # Save highlighted diff image (amplified for visibility)
+    diff_amplified = ImageChops.multiply(diff_img, Image.new("RGB", diff_img.size, (5, 5, 5)))
+    diff_path = args.out or str(CAPTURES_DIR / f"diff_{_timestamp()}.png")
+    diff_amplified.save(diff_path)
+
+    result = {
+        "verdict": verdict,
+        "similarity_pct": round(similarity, 2),
+        "diff_pixels_pct": round(diff_pct, 2),
+        "rms_diff": round(rms_diff, 2),
+        "diff_image": diff_path,
+        "size": f"{img_a.width}x{img_a.height}",
+    }
+    print(json.dumps(result))
+
+
+def cmd_assert(args):
+    """
+    Run visual/DOM assertions on a page. Returns pass/fail + reasons.
+    Agent uses this instead of screenshot+manual-inspection to save tokens.
+
+    Checks (all optional, combine as needed):
+    --no-errors        : Fail if any console errors
+    --has-selector     : Fail if CSS selector not found
+    --no-selector      : Fail if CSS selector IS found (e.g., error banners)
+    --text-contains    : Fail if page text doesn't contain string
+    --text-absent      : Fail if page text contains this string
+    --canvas-rendered  : Fail if canvas is blank (all-white or all-black)
+    --min-meshes N     : Fail if Three.js scene has fewer than N meshes
+    --js-truthy EXPR   : Fail if JS expression evaluates to falsy
+    """
+    pw, browser, context = _launch_browser()
+    errors = []
+    console_errors = []
+    checks_passed = 0
+    checks_total = 0
+
+    try:
+        page = context.new_page()
+        page.on("console", lambda msg: console_errors.append(msg.text[:200])
+                if msg.type == "error" else None)
+        page.on("pageerror", lambda err: console_errors.append(str(err)[:200]))
+
+        page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+        _wait_for_page_ready(page, args.wait, args.timeout)
+
+        # --no-errors
+        if args.no_errors:
+            checks_total += 1
+            if console_errors:
+                errors.append(f"CONSOLE_ERRORS: {console_errors[:3]}")
+            else:
+                checks_passed += 1
+
+        # --has-selector
+        if args.has_selector:
+            checks_total += 1
+            el = page.query_selector(args.has_selector)
+            if el:
+                checks_passed += 1
+            else:
+                errors.append(f"MISSING_SELECTOR: {args.has_selector}")
+
+        # --no-selector
+        if args.no_selector:
+            checks_total += 1
+            el = page.query_selector(args.no_selector)
+            if el:
+                errors.append(f"UNWANTED_SELECTOR_FOUND: {args.no_selector}")
+            else:
+                checks_passed += 1
+
+        # --text-contains
+        if args.text_contains:
+            checks_total += 1
+            body_text = page.evaluate("() => document.body?.innerText || ''")
+            if args.text_contains.lower() in body_text.lower():
+                checks_passed += 1
+            else:
+                errors.append(f"TEXT_NOT_FOUND: '{args.text_contains}'")
+
+        # --text-absent
+        if args.text_absent:
+            checks_total += 1
+            body_text = page.evaluate("() => document.body?.innerText || ''")
+            if args.text_absent.lower() in body_text.lower():
+                errors.append(f"UNWANTED_TEXT_FOUND: '{args.text_absent}'")
+            else:
+                checks_passed += 1
+
+        # --canvas-rendered
+        if args.canvas_rendered:
+            checks_total += 1
+            canvas_ok = page.evaluate("""() => {
+                const c = document.querySelector('canvas');
+                if (!c) return false;
+                const ctx = c.getContext('2d', {willReadFrequently: true});
+                if (ctx) {
+                    const data = ctx.getImageData(0, 0, Math.min(c.width, 100), Math.min(c.height, 100)).data;
+                    let nonZero = 0;
+                    for (let i = 0; i < data.length; i += 4) {
+                        if (data[i] !== 0 || data[i+1] !== 0 || data[i+2] !== 0) nonZero++;
+                        if (data[i] !== 255 || data[i+1] !== 255 || data[i+2] !== 255) nonZero++;
+                    }
+                    return nonZero > 10;
+                }
+                // WebGL — just check it exists and has size
+                const gl = c.getContext('webgl2') || c.getContext('webgl');
+                return gl !== null && c.width > 0 && c.height > 0;
+            }""")
+            if canvas_ok:
+                checks_passed += 1
+            else:
+                errors.append("CANVAS_BLANK: canvas appears blank or missing")
+
+        # --min-meshes
+        if args.min_meshes is not None:
+            checks_total += 1
+            mesh_count = page.evaluate("""() => {
+                const scene = window.scene || window.viewer?.scene;
+                if (!scene) return 0;
+                let count = 0;
+                scene.traverse(obj => { if (obj.isMesh) count++; });
+                return count;
+            }""")
+            if mesh_count >= args.min_meshes:
+                checks_passed += 1
+            else:
+                errors.append(f"TOO_FEW_MESHES: found {mesh_count}, need >= {args.min_meshes}")
+
+        # --js-truthy
+        if args.js_truthy:
+            checks_total += 1
+            val = page.evaluate(f"() => !!({args.js_truthy})")
+            if val:
+                checks_passed += 1
+            else:
+                errors.append(f"JS_FALSY: `{args.js_truthy}` evaluated to false")
+
+        # Optional: capture screenshot on failure for debugging
+        shot_path = None
+        if errors and not args.no_screenshot:
+            shot_path = str(CAPTURES_DIR / f"assert_fail_{_timestamp()}.png")
+            page.screenshot(path=shot_path)
+
+        passed = checks_passed == checks_total
+        result = {
+            "passed": passed,
+            "checks": f"{checks_passed}/{checks_total}",
+        }
+        if errors:
+            result["failures"] = errors
+        if shot_path:
+            result["failure_screenshot"] = shot_path
+        print(json.dumps(result))
+
+    finally:
+        browser.close()
+        pw.stop()
+
+
+def cmd_watch(args):
+    """
+    Keep checking a URL until assertions pass OR max retries hit.
+    This is the "iterate until correct" loop — agent edits code, calls watch,
+    and gets a pass/fail without burning tokens on repeated screenshot+read cycles.
+
+    Runs the same assertion checks as cmd_assert, retrying every --interval seconds.
+    Returns on first success or after --retries attempts.
+    """
+    checks = {
+        "no_errors": args.no_errors,
+        "has_selector": args.has_selector,
+        "text_contains": args.text_contains,
+        "canvas_rendered": args.canvas_rendered,
+        "min_meshes": args.min_meshes,
+        "js_truthy": args.js_truthy,
+    }
+
+    for attempt in range(1, args.retries + 1):
+        pw, browser, context = _launch_browser()
+        console_errs = []
+        failures = []
+        checks_run = 0
+
+        try:
+            page = context.new_page()
+            page.on("console", lambda msg: console_errs.append(msg.text[:200])
+                    if msg.type == "error" else None)
+            page.on("pageerror", lambda err: console_errs.append(str(err)[:200]))
+
+            page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+            _wait_for_page_ready(page, args.wait, args.timeout)
+
+            if checks["no_errors"]:
+                checks_run += 1
+                if console_errs:
+                    failures.append(f"CONSOLE_ERRORS: {console_errs[:3]}")
+
+            if checks["has_selector"]:
+                checks_run += 1
+                if not page.query_selector(checks["has_selector"]):
+                    failures.append(f"MISSING: {checks['has_selector']}")
+
+            if checks["text_contains"]:
+                checks_run += 1
+                text = page.evaluate("() => document.body?.innerText || ''")
+                if checks["text_contains"].lower() not in text.lower():
+                    failures.append(f"TEXT_NOT_FOUND: {checks['text_contains']}")
+
+            if checks["canvas_rendered"]:
+                checks_run += 1
+                has_gl = page.evaluate("""() => {
+                    const c = document.querySelector('canvas');
+                    if (!c) return false;
+                    const gl = c.getContext('webgl2') || c.getContext('webgl');
+                    return gl !== null && c.width > 0 && c.height > 0;
+                }""")
+                if not has_gl:
+                    failures.append("CANVAS_BLANK")
+
+            if checks["min_meshes"] is not None:
+                checks_run += 1
+                mc = page.evaluate("""() => {
+                    const s = window.scene || window.viewer?.scene;
+                    if (!s) return 0;
+                    let c = 0; s.traverse(o => { if (o.isMesh) c++; }); return c;
+                }""")
+                if mc < checks["min_meshes"]:
+                    failures.append(f"MESHES: {mc} < {checks['min_meshes']}")
+
+            if checks["js_truthy"]:
+                checks_run += 1
+                if not page.evaluate(f"() => !!({checks['js_truthy']})"):
+                    failures.append(f"JS_FALSY: {checks['js_truthy']}")
+
+        finally:
+            browser.close()
+            pw.stop()
+
+        if not failures:
+            print(json.dumps({
+                "passed": True,
+                "attempt": attempt,
+                "checks": checks_run,
+            }))
+            return
+
+        if attempt < args.retries:
+            time.sleep(args.interval)
+
+    # All retries exhausted
+    shot_path = str(CAPTURES_DIR / f"watch_fail_{_timestamp()}.png")
+    # One final screenshot for debugging
+    pw2, br2, ctx2 = _launch_browser()
+    try:
+        pg = ctx2.new_page()
+        pg.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+        _wait_for_page_ready(pg, args.wait, args.timeout)
+        pg.screenshot(path=shot_path)
+    finally:
+        br2.close()
+        pw2.stop()
+
+    print(json.dumps({
+        "passed": False,
+        "attempts": args.retries,
+        "last_failures": failures,
+        "failure_screenshot": shot_path,
+    }))
+
+
+def cmd_adb(args):
+    """
+    Capture Android device screen via ADB. Works with Samsung A24 and MatePad Pro.
+    Returns screenshot path — agent reads the image file to see the APK output.
+
+    Usage:
+        $PY scripts/agent_browser.py adb                          # Default device
+        $PY scripts/agent_browser.py adb --serial R58W41RF6ZK     # Samsung A24
+        $PY scripts/agent_browser.py adb --serial 192.168.100.33:5555  # MatePad
+    """
+    import subprocess
+
+    out_path = args.out or str(CAPTURES_DIR / f"adb_{_timestamp()}.png")
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+
+    adb = "C:/Android/platform-tools/adb.exe"
+    cmd = [adb]
+    if args.serial:
+        cmd += ["-s", args.serial]
+
+    # Use exec-out screencap -p to get PNG bytes directly (avoids path mangling)
+    cmd += ["exec-out", "screencap", "-p"]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=10)
+        if result.returncode != 0:
+            err = result.stderr.decode(errors="replace")[:200]
+            print(json.dumps({"error": f"adb failed: {err}"}))
+            return
+
+        with open(out_path, "wb") as f:
+            f.write(result.stdout)
+
+        size_kb = round(os.path.getsize(out_path) / 1024)
+        print(json.dumps({"screenshot": out_path, "size_kb": size_kb}))
+
+    except subprocess.TimeoutExpired:
+        print(json.dumps({"error": "adb screencap timed out (10s)"}))
+    except FileNotFoundError:
+        print(json.dumps({"error": f"adb not found at {adb}"}))
+
+
+def cmd_describe(args):
+    """
+    Extract a structured text description of what's visible on a page.
+    Returns compact JSON the agent can reason about WITHOUT reading a screenshot image.
+    This is the MOST token-efficient way to understand page state.
+
+    Extracts: headings, visible text summary, form states, button labels,
+    error messages, image count, canvas state, layout info.
+    """
+    pw, browser, context = _launch_browser()
+    console_errors = []
+
+    try:
+        page = context.new_page()
+        page.on("console", lambda msg: console_errors.append(msg.text[:150])
+                if msg.type == "error" else None)
+
+        page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+        _wait_for_page_ready(page, args.wait, args.timeout)
+
+        desc = page.evaluate("""() => {
+            const d = {};
+
+            // Title
+            d.title = document.title;
+
+            // Headings
+            d.headings = [...document.querySelectorAll('h1,h2,h3')]
+                .slice(0, 10)
+                .map(h => h.innerText.trim().substring(0, 100));
+
+            // Visible error-like elements
+            const errSelectors = '.error, .alert-danger, .alert-error, [role="alert"], .warning, .toast-error';
+            d.errors_visible = [...document.querySelectorAll(errSelectors)]
+                .slice(0, 5)
+                .map(e => e.innerText.trim().substring(0, 150));
+
+            // Buttons and their states
+            d.buttons = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')]
+                .slice(0, 15)
+                .map(b => ({
+                    text: (b.innerText || b.value || b.title || '').trim().substring(0, 50),
+                    disabled: b.disabled || false,
+                }));
+
+            // Form inputs summary
+            d.inputs = [...document.querySelectorAll('input, select, textarea')]
+                .slice(0, 15)
+                .map(i => ({
+                    type: i.type || i.tagName.toLowerCase(),
+                    name: i.name || i.id || '',
+                    value: (i.value || '').substring(0, 50),
+                    placeholder: (i.placeholder || '').substring(0, 50),
+                }));
+
+            // Images
+            d.images = document.querySelectorAll('img').length;
+
+            // Canvas
+            const canvases = document.querySelectorAll('canvas');
+            d.canvas_count = canvases.length;
+            if (canvases.length > 0) {
+                const c = canvases[0];
+                d.canvas_size = [c.width, c.height];
+            }
+
+            // Visible text summary (first 500 chars)
+            const bodyText = document.body?.innerText || '';
+            d.text_preview = bodyText.substring(0, 500).replace(/\\s+/g, ' ').trim();
+            d.text_length = bodyText.length;
+
+            // Three.js scene summary
+            const scene = window.scene || window.viewer?.scene;
+            if (scene) {
+                let meshes = 0, lights = 0;
+                scene.traverse(o => {
+                    if (o.isMesh) meshes++;
+                    if (o.isLight) lights++;
+                });
+                d.threejs = { meshes, lights, children: scene.children.length };
+            }
+
+            return d;
+        }""")
+
+        result = {"description": desc}
+        if console_errors:
+            result["console_errors"] = console_errors[:5]
+
+        print(json.dumps(result, default=str))
+
+    finally:
+        browser.close()
+        pw.stop()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Agent browser tool — gives AI agents eyes via Playwright",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -533,6 +1009,57 @@ def main():
     p.add_argument("--base-url", default="http://192.168.100.16:8000", help="Server base URL")
     p.add_argument("--timeout", type=int, default=20)
     p.set_defaults(func=cmd_viewer3d)
+
+    # -- diff --
+    p = sub.add_parser("diff", help="Visual diff two images: similarity pct + highlighted diff")
+    p.add_argument("image_a", help="First image (baseline/reference)")
+    p.add_argument("image_b", help="Second image (current/test)")
+    p.add_argument("--out", help="Output diff image path")
+    p.set_defaults(func=cmd_diff)
+
+    # -- assert --
+    p = sub.add_parser("assert", help="Run DOM/visual assertions, returns pass/fail JSON")
+    p.add_argument("url")
+    p.add_argument("--wait", help="CSS selector to wait for")
+    p.add_argument("--timeout", type=int, default=15)
+    p.add_argument("--no-errors", action="store_true", help="Fail if console errors present")
+    p.add_argument("--has-selector", help="Fail if this selector is missing")
+    p.add_argument("--no-selector", help="Fail if this selector exists")
+    p.add_argument("--text-contains", help="Fail if page text doesn't contain this")
+    p.add_argument("--text-absent", help="Fail if page text contains this")
+    p.add_argument("--canvas-rendered", action="store_true", help="Fail if canvas is blank")
+    p.add_argument("--min-meshes", type=int, help="Fail if fewer Three.js meshes")
+    p.add_argument("--js-truthy", help="Fail if JS expression is falsy")
+    p.add_argument("--no-screenshot", action="store_true", help="Skip failure screenshot")
+    p.set_defaults(func=cmd_assert)
+
+    # -- watch --
+    p = sub.add_parser("watch", help="Retry assertions until pass or max retries")
+    p.add_argument("url")
+    p.add_argument("--wait", help="CSS selector to wait for")
+    p.add_argument("--timeout", type=int, default=15)
+    p.add_argument("--retries", type=int, default=10, help="Max retries (default 10)")
+    p.add_argument("--interval", type=float, default=3, help="Seconds between retries")
+    p.add_argument("--no-errors", action="store_true")
+    p.add_argument("--has-selector", help="Selector that must exist")
+    p.add_argument("--text-contains", help="Text that must be present")
+    p.add_argument("--canvas-rendered", action="store_true")
+    p.add_argument("--min-meshes", type=int)
+    p.add_argument("--js-truthy", help="JS expression that must be truthy")
+    p.set_defaults(func=cmd_watch)
+
+    # -- adb --
+    p = sub.add_parser("adb", help="Capture Android device screen via ADB")
+    p.add_argument("--serial", help="Device serial (e.g., R58W41RF6ZK)")
+    p.add_argument("--out", help="Output file path")
+    p.set_defaults(func=cmd_adb)
+
+    # -- describe --
+    p = sub.add_parser("describe", help="Extract text description of page (zero-screenshot audit)")
+    p.add_argument("url")
+    p.add_argument("--wait", help="CSS selector to wait for")
+    p.add_argument("--timeout", type=int, default=15)
+    p.set_defaults(func=cmd_describe)
 
     args = parser.parse_args()
     args.func(args)
