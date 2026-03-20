@@ -2980,6 +2980,7 @@ def generate_body_model(customer_id):
                     logger.warning('PBR texture generation failed: %s', e)
             _pbr_t.Thread(target=_gen_pbr, daemon=True).start()
 
+            logger.info('VIEWER: http://192.168.100.16:8000/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/%s.glb', mesh_id)
             return dict(
                 status='success',
                 mesh_id=mesh_id,
@@ -2997,6 +2998,8 @@ def generate_body_model(customer_id):
                 ),
                 viewer_url=f'/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/{mesh_id}.glb',
             )
+
+
 
         # ── Fallback: Anny path (no images, or SMPL failed) ─────────────────
         mesh = build_body_mesh(
@@ -3097,6 +3100,17 @@ def generate_body_model(customer_id):
                         normal_map = _generate_normal_map(verts, faces, uvs_for_glb, atlas_size=1024)
                     except Exception:
                         normal_map = None
+                    if depth_maps and normal_map is not None:
+                        try:
+                            from core.texture_enhance import depth_to_normal_map
+                            import cv2 as _cv2_n
+                            for dm in depth_maps:
+                                depth_img = dm.get('depth') or dm.get('depth_map')
+                                if depth_img is not None:
+                                    depth_normals = depth_to_normal_map(depth_img, atlas_size=1024)
+                                    normal_map = _cv2_n.addWeighted(normal_map, 0.7, depth_normals, 0.3, 0)
+                        except Exception:
+                            pass
             except Exception:
                 texture_image = None
                 uvs_for_glb   = None
@@ -3130,6 +3144,7 @@ def generate_body_model(customer_id):
         )
         db.commit()
 
+        logger.info('VIEWER: http://192.168.100.16:8000/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/%s.glb', mesh_id)
         return dict(
             status='success',
             mesh_id=mesh_id,

@@ -688,8 +688,9 @@ function init() {
   controls.target.set(0, 80, 0);  // roughly mid-torso height
   controls.update();
 
-  // Lights — clinical default (even, shadow-free for accurate body viewing)
-  _setupClinicalLights();
+  // Lights — studio default for PBR material visibility
+  _setupStudioLights();
+  _currentLightPreset = 'studio';
 
   // Environment map (PMREMGenerator gradient — no external HDR file needed)
   _setupEnvironment();
@@ -1255,6 +1256,12 @@ function _applyDefaultMaterial(object) {
           // Preserve embedded PBR maps — don't override with uniform values
           if (mat.roughnessMap) mat.roughnessFactor = 1.0;
           if (mat.aoMap) mat.aoMapIntensity = 0.8;
+          // Anisotropic filtering for all embedded maps
+          const _maxAniso = renderer.capabilities.getMaxAnisotropy();
+          if (mat.map) mat.map.anisotropy = _maxAniso;
+          if (mat.normalMap) mat.normalMap.anisotropy = _maxAniso;
+          if (mat.roughnessMap) mat.roughnessMap.anisotropy = _maxAniso;
+          if (mat.aoMap) mat.aoMap.anisotropy = _maxAniso;
           _applyPoreNormalPatch(mat);
           child.material = mat;
         } else {
@@ -1355,15 +1362,26 @@ function _setStatus(msg) {
   el.classList.toggle('loading', msg.includes('Loading') || msg.includes('loading'));
 }
 
-// ── Placeholder (no URL) ──────────────────────────────────────────────────────
+// ── Placeholder (no URL) — try static GLBs first ─────────────────────────────
 function _showPlaceholder() {
-  _setStatus('No model URL — use ?model=path.glb');
-  const geo = new THREE.CapsuleGeometry(30, 80, 16, 32);
-  const mat = SKIN_MATERIAL.clone();
-  bodyMesh = new THREE.Mesh(geo, mat);
-  bodyMesh.position.y = 80;
-  bodyMesh.castShadow = true;
-  scene.add(bodyMesh);
+  const candidates = ['demo_pbr.glb', 'photorealistic_body.glb', 'skin_textured.glb',
+                       'smpl_direct.glb', 'demo.glb'];
+  (async () => {
+    for (const name of candidates) {
+      try {
+        const resp = await fetch(name, { method: 'HEAD' });
+        if (resp.ok) { _loadGLB(name, null); return; }
+      } catch (_) {}
+    }
+    // Nothing found — show capsule fallback
+    _setStatus('No model — use ?model=path.glb');
+    const geo = new THREE.CapsuleGeometry(30, 80, 16, 32);
+    const mat = SKIN_MATERIAL.clone();
+    bodyMesh = new THREE.Mesh(geo, mat);
+    bodyMesh.position.y = 80;
+    bodyMesh.castShadow = true;
+    scene.add(bodyMesh);
+  })();
 }
 
 // ── Raycaster for MeasurementOverlay ─────────────────────────────────────────
