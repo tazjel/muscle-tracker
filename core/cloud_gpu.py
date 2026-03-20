@@ -22,6 +22,19 @@ import cv2
 
 logger = logging.getLogger('cloud_gpu')
 
+def _load_env():
+    """Manual .env loader to avoid new dependencies."""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env_path = os.path.join(base, '.env')
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    k, v = line.split('=', 1)
+                    os.environ[k.strip()] = v.strip().strip('"\'')
+_load_env()
+
 RUNPOD_API_KEY = os.environ.get('RUNPOD_API_KEY', '')
 RUNPOD_ENDPOINT = os.environ.get('RUNPOD_ENDPOINT', '')
 RUNPOD_BASE_URL = 'https://api.runpod.ai/v2'
@@ -104,8 +117,8 @@ def cloud_inference(images_dict, tasks=None):
     # Send to RunPod
     import urllib.request
     import urllib.error
+    import socket
 
-    url = f"{RUNPOD_BASE_URL}/{RUNPOD_ENDPOINT}/runsync"
     headers = {
         'Authorization': f'Bearer {RUNPOD_API_KEY}',
         'Content-Type': 'application/json',
@@ -115,18 +128,29 @@ def cloud_inference(images_dict, tasks=None):
     logger.info(f"Sending {len(data) / 1024:.0f}KB to RunPod ({len(images_dict)} images, "
                 f"tasks={tasks})")
 
+    # Multi-task requests (HMR+rembg+DSINE) take 50-70s — use async directly
+    if len(tasks) > 1:
+        logger.info("Multi-task request → using async endpoint")
+        return _run_async(payload, headers)
+
+    url = f"{RUNPOD_BASE_URL}/{RUNPOD_ENDPOINT}/runsync"
     try:
         req = urllib.request.Request(url, data=data, headers=headers, method='POST')
-        # Use runsync for fast requests (< 30s), fall back to async for longer
+        # Use runsync for fast single-task requests (< 60s)
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             if e.code == 408 or 'timeout' in str(e).lower():
-                # Switch to async mode
                 logger.info("Sync timed out, switching to async...")
                 return _run_async(payload, headers)
             raise
+        except (socket.timeout, urllib.error.URLError) as e:
+            if 'timed out' in str(e).lower():
+                logger.info("Sync timed out, switching to async...")
+                return _run_async(payload, headers)
+            logger.error(f"RunPod request failed: {e}")
+            return None
 
     except Exception as e:
         logger.error(f"RunPod request failed: {e}")
