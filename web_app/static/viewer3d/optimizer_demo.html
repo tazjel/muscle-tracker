@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SMPL Optimizer — 10 Parameters vs 20,670</title>
+<script type="importmap">
+{
+    "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+}
+</script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#111; color:#eee; font-family: 'Segoe UI', system-ui, sans-serif; overflow:hidden; }
+#header {
+    position:fixed; top:0; left:0; right:0; z-index:10;
+    background:rgba(0,0,0,0.85); backdrop-filter:blur(8px);
+    padding:12px 24px; text-align:center;
+    border-bottom:1px solid #333;
+}
+#header h1 { font-size:18px; font-weight:600; margin-bottom:4px; }
+#header p { font-size:12px; color:#888; }
+#container { display:flex; width:100vw; height:100vh; padding-top:56px; }
+.panel {
+    flex:1; position:relative; border-right:1px solid #222;
+}
+.panel:last-child { border-right:none; }
+.panel canvas { display:block; }
+.label {
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(0,0,0,0.8); padding:10px 16px;
+    text-align:center; z-index:5;
+}
+.label h2 { font-size:14px; font-weight:600; margin-bottom:2px; }
+.label p { font-size:11px; color:#888; }
+.label .stat { color:#4fc3f7; font-weight:600; }
+.label.target h2 { color:#66bb6a; }
+.label.optimized h2 { color:#42a5f5; }
+.label.average h2 { color:#ef5350; }
+#controls {
+    position:fixed; top:64px; right:16px; z-index:10;
+    background:rgba(0,0,0,0.7); border-radius:8px; padding:12px;
+    font-size:12px;
+}
+#controls label { display:block; margin:4px 0; cursor:pointer; }
+#controls input[type=checkbox] { margin-right:6px; }
+#sync-note { position:fixed; top:64px; left:50%; transform:translateX(-50%);
+    z-index:10; font-size:11px; color:#666; padding:6px; }
+</style>
+</head>
+<body>
+<div id="header">
+    <h1>SMPL Beta Optimizer: 10 Parameters Recover Full Body from 2 Silhouettes</h1>
+    <p>Drag to rotate any view — all 3 sync together. Scroll to zoom.</p>
+</div>
+<div id="sync-note">cameras synced</div>
+<div id="controls">
+    <label><input type="checkbox" id="wireframe"> Wireframe</label>
+    <label><input type="checkbox" id="autorotate" checked> Auto-rotate</label>
+</div>
+<div id="container">
+    <div class="panel" id="panel-avg">
+        <div class="label average">
+            <h2>Average Body (Start)</h2>
+            <p>betas = [0, 0, 0, ...] &mdash; <span class="stat">20,670 params</span> in old approach</p>
+        </div>
+    </div>
+    <div class="panel" id="panel-target">
+        <div class="label target">
+            <h2>Target (Ground Truth)</h2>
+            <p>betas = [1.5, -0.8, 0.7, ...] &mdash; the body we want to recover</p>
+        </div>
+    </div>
+    <div class="panel" id="panel-opt">
+        <div class="label optimized">
+            <h2>Optimized (Recovered)</h2>
+            <p><span class="stat">10 params</span>, 2 silhouettes, 0.07% measurement error</p>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const MODELS = [
+    { panel: 'panel-avg',    url: '/web_app/static/meshes/optimizer_average.glb', color: 0xef5350 },
+    { panel: 'panel-target', url: '/web_app/static/meshes/optimizer_target.glb',  color: 0x66bb6a },
+    { panel: 'panel-opt',    url: '/web_app/static/meshes/optimizer_result.glb',  color: 0x42a5f5 },
+];
+
+const viewers = [];
+const loader = new GLTFLoader();
+
+function createViewer(panelId, modelUrl, meshColor) {
+    const panel = document.getElementById(panelId);
+    const w = panel.clientWidth, h = panel.clientHeight;
+
+    const scene = new THREE.Scene();
+
+    // Lights
+    const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambient);
+    const dir1 = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir1.position.set(2, 3, 4);
+    scene.add(dir1);
+    const dir2 = new THREE.DirectionalLight(0x8888ff, 0.4);
+    dir2.position.set(-2, -1, 2);
+    scene.add(dir2);
+
+    // Floor grid
+    const grid = new THREE.GridHelper(3, 20, 0x333333, 0x222222);
+    grid.rotation.x = 0; // Y-up in Three.js
+    scene.add(grid);
+
+    // Camera
+    const camera = new THREE.PerspectiveCamera(35, w / h, 0.01, 50);
+    camera.position.set(0, 1.0, 3.5);
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(w, h);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    panel.insertBefore(renderer.domElement, panel.firstChild);
+
+    // Controls
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 0.85, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 1.5;
+    controls.update();
+
+    // Load model
+    loader.load(modelUrl, (gltf) => {
+        const model = gltf.scene;
+        // Apply material with color
+        // Our pipeline is Z-up, Three.js is Y-up — rotate to stand upright
+        model.rotation.x = -Math.PI / 2;
+        model.traverse(child => {
+            if (child.isMesh) {
+                child.material = new THREE.MeshStandardMaterial({
+                    color: meshColor,
+                    roughness: 0.55,
+                    metalness: 0.05,
+                    flatShading: false,
+                });
+            }
+        });
+        scene.add(model);
+    }, undefined, (err) => {
+        console.error('Load error:', modelUrl, err);
+    });
+
+    return { scene, camera, renderer, controls, panel };
+}
+
+// Create all 3 viewers
+for (const m of MODELS) {
+    viewers.push(createViewer(m.panel, m.url, m.color));
+}
+
+// Sync cameras: when one moves, update all others
+let syncing = false;
+function syncCameras(source) {
+    if (syncing) return;
+    syncing = true;
+    for (const v of viewers) {
+        if (v === source) continue;
+        v.camera.position.copy(source.camera.position);
+        v.camera.quaternion.copy(source.camera.quaternion);
+        v.controls.target.copy(source.controls.target);
+        v.controls.update();
+    }
+    syncing = false;
+}
+
+// Listen for control changes on each viewer
+for (const v of viewers) {
+    v.controls.addEventListener('change', () => syncCameras(v));
+}
+
+// Wireframe toggle
+document.getElementById('wireframe').addEventListener('change', (e) => {
+    const on = e.target.checked;
+    for (const v of viewers) {
+        v.scene.traverse(child => {
+            if (child.isMesh) {
+                child.material.wireframe = on;
+            }
+        });
+    }
+});
+
+// Auto-rotate toggle
+document.getElementById('autorotate').addEventListener('change', (e) => {
+    for (const v of viewers) {
+        v.controls.autoRotate = e.target.checked;
+    }
+});
+
+// Resize handler
+window.addEventListener('resize', () => {
+    for (const v of viewers) {
+        const w = v.panel.clientWidth, h = v.panel.clientHeight;
+        v.camera.aspect = w / h;
+        v.camera.updateProjectionMatrix();
+        v.renderer.setSize(w, h);
+    }
+});
+
+// Render loop
+function animate() {
+    requestAnimationFrame(animate);
+    for (const v of viewers) {
+        v.controls.update();
+        v.renderer.render(v.scene, v.camera);
+    }
+    // Keep cameras in sync during auto-rotate
+    if (viewers[0].controls.autoRotate) {
+        syncCameras(viewers[0]);
+    }
+}
+animate();
+</script>
+</body>
+</html>

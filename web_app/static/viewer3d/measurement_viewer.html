@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Body Measurement Viewer</title>
+<script type="importmap">
+{
+    "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+}
+</script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0a0f; color:#e0e0e0; font-family:'Segoe UI',system-ui,sans-serif; overflow:hidden; display:flex; height:100vh; }
+
+/* --- 3D viewport --- */
+#viewport { flex:1; position:relative; }
+#viewport canvas { display:block; }
+
+/* --- Sidebar --- */
+#sidebar {
+    width: 340px; background:#12121a; border-left:1px solid #1e1e2e;
+    display:flex; flex-direction:column; overflow-y:auto;
+}
+#sidebar-header {
+    padding:20px; border-bottom:1px solid #1e1e2e;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+}
+#sidebar-header h1 { font-size:16px; font-weight:700; color:#fff; margin-bottom:4px; }
+#sidebar-header .sub { font-size:11px; color:#888; }
+#sidebar-header .betas { font-size:10px; color:#555; margin-top:6px; font-family:monospace; }
+
+.section-title {
+    font-size:10px; text-transform:uppercase; letter-spacing:1.5px;
+    color:#555; padding:14px 20px 6px; font-weight:600;
+}
+
+/* --- Measurement rows --- */
+.mrow {
+    display:flex; align-items:center; padding:8px 20px; cursor:pointer;
+    transition: background 0.15s;
+}
+.mrow:hover { background:#1a1a2e; }
+.mrow.active { background:#1e2a4a; }
+.mrow .dot {
+    width:10px; height:10px; border-radius:50%; margin-right:12px; flex-shrink:0;
+    box-shadow: 0 0 6px var(--ring-color);
+}
+.mrow .info { flex:1; }
+.mrow .name { font-size:13px; font-weight:500; }
+.mrow .detail { font-size:10px; color:#666; margin-top:1px; }
+.mrow .values { text-align:right; }
+.mrow .fitted { font-size:15px; font-weight:700; color:#fff; }
+.mrow .target { font-size:10px; color:#888; }
+.mrow .diff { font-size:10px; font-weight:600; }
+.mrow .diff.good { color:#6bcb77; }
+.mrow .diff.warn { color:#ffd93d; }
+.mrow .diff.bad  { color:#ff6b6b; }
+
+/* --- Stats bar --- */
+#stats {
+    margin-top:auto; padding:16px 20px; border-top:1px solid #1e1e2e;
+    background:#0d0d14; font-size:11px; color:#666;
+}
+#stats .row { display:flex; justify-content:space-between; margin:3px 0; }
+#stats .val { color:#aaa; font-weight:600; }
+
+/* --- Loading overlay --- */
+#loading {
+    position:fixed; inset:0; background:#0a0a0f; display:flex;
+    align-items:center; justify-content:center; z-index:100;
+    font-size:14px; color:#555;
+}
+#loading.hidden { display:none; }
+</style>
+</head>
+<body>
+<div id="loading">Loading body model...</div>
+<div id="viewport"></div>
+<div id="sidebar">
+    <div id="sidebar-header">
+        <h1>Body Measurements</h1>
+        <div class="sub">SMPL fitted to your tape measurements</div>
+        <div class="betas" id="betas-display"></div>
+    </div>
+    <div class="section-title">Circumferences</div>
+    <div id="circ-list"></div>
+    <div class="section-title">Dimensions</div>
+    <div id="dim-list"></div>
+    <div class="section-title">Estimates</div>
+    <div id="est-list"></div>
+    <div id="stats">
+        <div class="row"><span>Vertices</span><span class="val">6,890</span></div>
+        <div class="row"><span>Triangles</span><span class="val">13,776</span></div>
+        <div class="row"><span>Method</span><span class="val">SMPL + L-BFGS-B</span></div>
+        <div class="row"><span>Parameters</span><span class="val">10 betas</span></div>
+    </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const DATA_URL = '/web_app/static/meshes/measurement_data.json';
+const BODY_URL = '/web_app/static/meshes/my_body.glb';
+
+let scene, camera, renderer, controls;
+let ringMeshes = {};  // name -> THREE.Mesh
+let activeRing = null;
+
+// --- Init scene ---
+const vp = document.getElementById('viewport');
+scene = new THREE.Scene();
+
+camera = new THREE.PerspectiveCamera(32, vp.clientWidth / vp.clientHeight, 0.01, 50);
+camera.position.set(0, 0.9, 3.2);
+
+renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(vp.clientWidth, vp.clientHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+vp.appendChild(renderer.domElement);
+
+controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.85, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.2;
+controls.minDistance = 1.5;
+controls.maxDistance = 6;
+controls.update();
+
+// Lights
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+const key = new THREE.DirectionalLight(0xffffff, 1.0);
+key.position.set(2, 3, 4);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0x6688cc, 0.35);
+fill.position.set(-3, 1, -2);
+scene.add(fill);
+const rim = new THREE.DirectionalLight(0xffffff, 0.25);
+rim.position.set(0, 2, -3);
+scene.add(rim);
+
+// Floor
+const grid = new THREE.GridHelper(4, 30, 0x222233, 0x181825);
+scene.add(grid);
+
+// --- Load data + body ---
+const [data, gltf] = await Promise.all([
+    fetch(DATA_URL).then(r => r.json()),
+    new Promise((resolve, reject) => {
+        new GLTFLoader().load(BODY_URL, resolve, undefined, reject);
+    }),
+]);
+
+// Body mesh
+const body = gltf.scene;
+body.rotation.x = -Math.PI / 2;  // Z-up -> Y-up
+body.traverse(child => {
+    if (child.isMesh) {
+        child.material = new THREE.MeshStandardMaterial({
+            color: 0x8899aa,
+            roughness: 0.45,
+            metalness: 0.02,
+        });
+    }
+});
+scene.add(body);
+
+// --- Measurement rings ---
+const ringGroup = new THREE.Group();
+ringGroup.rotation.x = -Math.PI / 2;  // same transform as body
+scene.add(ringGroup);
+
+for (const ring of data.rings) {
+    if (ring.radius <= 0) continue;  // height marker, no ring
+
+    const geom = new THREE.TorusGeometry(ring.radius, 0.0025, 8, 80);
+    const mat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(ring.color),
+        transparent: true,
+        opacity: 0.7,
+    });
+    const mesh = new THREE.Mesh(geom, mat);
+    // Ring at height z (in our Z-up space), lying horizontal
+    mesh.position.set(0, 0, ring.y);
+    mesh.rotation.x = Math.PI / 2;  // make torus horizontal
+    ringGroup.add(mesh);
+    ringMeshes[ring.name] = { mesh, color: ring.color, baseOpacity: 0.7 };
+}
+
+// --- Sidebar ---
+document.getElementById('betas-display').textContent =
+    `betas: [${data.betas.slice(0, 5).join(', ')}, ...]`;
+
+const circKeys = [
+    ['chest_circumference_cm',   'Chest',   '#ff6b6b'],
+    ['waist_circumference_cm',   'Waist',   '#ffd93d'],
+    ['hip_circumference_cm',     'Hip',     '#6bcb77'],
+    ['neck_circumference_cm',    'Neck',    '#a78bfa'],
+    ['thigh_circumference_cm',   'Thigh',   '#4d96ff'],
+    ['calf_circumference_cm',    'Calf',    '#45b7d1'],
+    ['bicep_circumference_cm',   'Bicep',   '#f093fb'],
+    ['forearm_circumference_cm', 'Forearm', '#fdcb6e'],
+];
+
+const dimKeys = [
+    ['height_cm',           'Height',      '#ffffff'],
+    ['shoulder_width_cm',   'Shoulders',   '#dfe6e9'],
+    ['torso_length_cm',     'Torso',       '#b2bec3'],
+    ['arm_length_cm',       'Arms',        '#a0a0b0'],
+    ['floor_to_knee_cm',    'Floor to Knee','#95a5a6'],
+];
+
+const estKeys = [
+    ['weight_est_kg',  'Weight',  '#ff7675', 'kg'],
+    ['bmi_est',        'BMI',     '#74b9ff', ''],
+];
+
+function createRow(key, label, color, unit = 'cm', ringName = null) {
+    const fitted = data.fitted[key];
+    const target = data.profile[key];
+    const diff = target !== undefined ? (fitted - target) : null;
+    const absDiff = diff !== null ? Math.abs(diff) : 0;
+    const diffClass = absDiff < 1.5 ? 'good' : absDiff < 4 ? 'warn' : 'bad';
+
+    const row = document.createElement('div');
+    row.className = 'mrow';
+    row.innerHTML = `
+        <div class="dot" style="--ring-color:${color}; background:${color}"></div>
+        <div class="info">
+            <div class="name">${label}</div>
+            ${target !== undefined ? `<div class="detail">Target: ${target} ${unit}</div>` : ''}
+        </div>
+        <div class="values">
+            <div class="fitted">${fitted} <small>${unit}</small></div>
+            ${diff !== null ? `<div class="diff ${diffClass}">${diff >= 0 ? '+' : ''}${diff.toFixed(1)} ${unit}</div>` : ''}
+        </div>
+    `;
+
+    // Map label to ring name for hover
+    const rName = ringName || label;
+    row.addEventListener('mouseenter', () => highlightRing(rName));
+    row.addEventListener('mouseleave', () => clearHighlight());
+    row.addEventListener('click', () => {
+        document.querySelectorAll('.mrow').forEach(r => r.classList.remove('active'));
+        row.classList.add('active');
+        highlightRing(rName, true);
+    });
+
+    return row;
+}
+
+const circList = document.getElementById('circ-list');
+for (const [key, label, color] of circKeys) {
+    circList.appendChild(createRow(key, label, color, 'cm', label));
+}
+
+const dimList = document.getElementById('dim-list');
+for (const [key, label, color] of dimKeys) {
+    dimList.appendChild(createRow(key, label, color));
+}
+
+const estList = document.getElementById('est-list');
+for (const [key, label, color, unit] of estKeys) {
+    estList.appendChild(createRow(key, label, color, unit));
+}
+
+// --- Ring interaction ---
+function highlightRing(name, lock = false) {
+    for (const [n, r] of Object.entries(ringMeshes)) {
+        if (n === name) {
+            r.mesh.material.opacity = 1.0;
+            r.mesh.scale.setScalar(1.08);
+        } else {
+            r.mesh.material.opacity = 0.25;
+            r.mesh.scale.setScalar(1.0);
+        }
+    }
+    if (lock) {
+        activeRing = name;
+        controls.autoRotate = false;
+    }
+}
+
+function clearHighlight() {
+    if (activeRing) return;
+    for (const r of Object.values(ringMeshes)) {
+        r.mesh.material.opacity = r.baseOpacity;
+        r.mesh.scale.setScalar(1.0);
+    }
+}
+
+// Click viewport to deselect
+renderer.domElement.addEventListener('click', () => {
+    activeRing = null;
+    controls.autoRotate = true;
+    document.querySelectorAll('.mrow').forEach(r => r.classList.remove('active'));
+    clearHighlight();
+});
+
+// Hide loading
+document.getElementById('loading').classList.add('hidden');
+
+// --- Resize ---
+window.addEventListener('resize', () => {
+    const w = vp.clientWidth, h = vp.clientHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+});
+
+// --- Render loop ---
+function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+
+    // Subtle ring pulse on active
+    if (activeRing && ringMeshes[activeRing]) {
+        const t = performance.now() * 0.003;
+        ringMeshes[activeRing].mesh.material.opacity = 0.7 + 0.3 * Math.sin(t);
+    }
+
+    renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
