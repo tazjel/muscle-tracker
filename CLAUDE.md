@@ -116,6 +116,23 @@ All wired together in `generate_body_model` in `controllers.py`.
 
 ---
 
+## Agent Tools (READ THIS → `.agent/TOOLS_GUIDE.md`)
+
+**Do NOT read script source files to learn tool usage.** The tools guide has every command, expected output, and workflow you need. Key tools:
+
+| Tool | Purpose | Time |
+|------|---------|------|
+| `photo_preflight.py` | Check photo quality BEFORE pipeline | ~1s |
+| `agent_verify.py` | GLB quality check (3 tiers) | ~2-10s |
+| `agent_browser.py` | Browser automation, viewer screenshots, visual diff | ~3-8s |
+| `run_densepose_texture.py --verify` | Full pipeline + quality gate | ~35s |
+| `quality_gate.py` | Video quality pre-filter | ~5s |
+| GTDdebug `agent-diff` | Before/after pixel comparison | ~5s |
+
+**Rule: Always run `photo_preflight.py` before the pipeline. Always run `agent_verify.py` after.**
+
+---
+
 ## Slash Commands
 
 ### /boot

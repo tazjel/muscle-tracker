@@ -1,4 +1,6 @@
-# Next Session Brief — gtd3d (2026-03-21)
+# Next Session Brief — gtd3d (2026-03-22)
+
+## READ FIRST: `.agent/TOOLS_GUIDE.md` — all verification/debugging tools in one place
 
 ## CRITICAL: Run Preflight Before Pipeline
 ```bash
