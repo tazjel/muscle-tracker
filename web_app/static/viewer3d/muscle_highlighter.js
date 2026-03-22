@@ -329,7 +329,7 @@ export function buildSkinUploadPanel(container, onModelReload) {
   const panel = document.createElement('div');
   panel.id = 'skin-upload-panel';
   panel.style.cssText = `
-    position: absolute; bottom: 12px; right: 12px;
+    position: absolute; bottom: 12px; left: 12px;
     background: rgba(20,20,20,0.88); border-radius: 10px;
     padding: 10px 8px; display: flex; flex-direction: column;
     gap: 3px; min-width: 180px; max-width: 220px; z-index: 200;
