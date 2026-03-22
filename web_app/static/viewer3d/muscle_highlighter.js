@@ -290,6 +290,17 @@ export function buildMusclePanel(highlighter, container) {
   };
   panel.appendChild(clearBtn);
 
+  // Verify Groups button
+  const verifyBtn = document.createElement('button');
+  verifyBtn.textContent = '⬥ Verify Groups';
+  verifyBtn.style.cssText = `
+    margin-top: 2px; background: rgba(70,130,255,0.15);
+    border: 1px solid rgba(70,130,255,0.3); border-radius: 5px;
+    color: #8af; padding: 4px 8px; cursor: pointer; font-size: 11px;
+  `;
+  verifyBtn.onclick = () => startMuscleVerification(highlighter, container);
+  panel.appendChild(verifyBtn);
+
   container.appendChild(panel);
   return panel;
 }
@@ -491,6 +502,25 @@ export function buildSkinUploadPanel(container, onModelReload) {
     row.appendChild(resetBtn);
     row.appendChild(fileInput);
     panel.appendChild(row);
+
+    // Photo gallery row (expandable)
+    const galleryRow = document.createElement('div');
+    galleryRow.style.cssText = 'display:none; padding:2px 0 4px 27px;';
+    const expandBtn = document.createElement('span');
+    expandBtn.textContent = '▸ phone';
+    expandBtn.style.cssText = 'font-size:9px; color:#668; cursor:pointer; margin-left:27px;';
+    expandBtn.onclick = () => {
+      if (galleryRow.style.display === 'none') {
+        galleryRow.style.display = 'block';
+        expandBtn.textContent = '▾ phone';
+        loadRegionPhotoGallery(region, galleryRow, onModelReload);
+      } else {
+        galleryRow.style.display = 'none';
+        expandBtn.textContent = '▸ phone';
+      }
+    };
+    panel.appendChild(expandBtn);
+    panel.appendChild(galleryRow);
   }
 
   panel.appendChild(statusEl);
@@ -530,6 +560,210 @@ export function buildSkinUploadPanel(container, onModelReload) {
   container.appendChild(panel);
   return panel;
 }
+
+
+// ── Muscle Group Verification Mode ──────────────────────────────────────────
+
+/**
+ * Start muscle group verification mode: step through each group,
+ * highlight it, let user mark Correct / Wrong / Skip.
+ * @param {MuscleHighlighter} highlighter
+ * @param {HTMLElement} container — panel element to inject verification UI into
+ */
+export function startMuscleVerification(highlighter, container) {
+  const groups = Object.keys(MUSCLE_LABELS);
+  let idx = 0;
+  const results = {};  // groupKey → 'correct' | 'wrong' | 'skip'
+
+  // Create overlay panel
+  const overlay = document.createElement('div');
+  overlay.id = 'verify-overlay';
+  overlay.style.cssText = `
+    position:absolute; top:80px; right:12px; z-index:300;
+    background:rgba(10,10,30,0.92); border-radius:10px; padding:14px 12px;
+    min-width:180px; font-family:sans-serif; color:#fff;
+    backdrop-filter:blur(8px); border:1px solid rgba(100,140,255,0.3);
+  `;
+
+  const titleEl = document.createElement('div');
+  titleEl.style.cssText = 'font-weight:700; font-size:13px; color:#8af; margin-bottom:8px; text-align:center;';
+  overlay.appendChild(titleEl);
+
+  const counterEl = document.createElement('div');
+  counterEl.style.cssText = 'font-size:10px; color:#888; text-align:center; margin-bottom:8px;';
+  overlay.appendChild(counterEl);
+
+  const vertexInfo = document.createElement('div');
+  vertexInfo.style.cssText = 'font-size:9px; color:#666; text-align:center; margin-bottom:10px;';
+  overlay.appendChild(vertexInfo);
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex; gap:6px; justify-content:center;';
+
+  function makeBtn(label, color, action) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText = `
+      background:${color}; border:none; border-radius:5px;
+      color:#fff; padding:6px 12px; cursor:pointer; font-size:12px; font-weight:600;
+    `;
+    b.onclick = action;
+    return b;
+  }
+
+  function showGroup() {
+    if (idx >= groups.length) {
+      showSummary();
+      return;
+    }
+    const key = groups[idx];
+    highlighter.highlight(key);
+    titleEl.textContent = MUSCLE_LABELS[key];
+    counterEl.textContent = `${idx + 1} / ${groups.length}`;
+    const verts = MUSCLE_GROUPS[key];
+    vertexInfo.textContent = `Vertices: ${verts[0]}–${verts[verts.length - 1]} (${verts.length} verts)`;
+  }
+
+  function advance(verdict) {
+    results[groups[idx]] = verdict;
+    idx++;
+    showGroup();
+  }
+
+  function showSummary() {
+    highlighter.clear();
+    const correct = Object.values(results).filter(v => v === 'correct').length;
+    const wrong = Object.values(results).filter(v => v === 'wrong').length;
+    const skipped = Object.values(results).filter(v => v === 'skip').length;
+
+    overlay.innerHTML = '';
+    const sumTitle = document.createElement('div');
+    sumTitle.style.cssText = 'font-weight:700; font-size:14px; color:#8af; margin-bottom:10px; text-align:center;';
+    sumTitle.textContent = 'Verification Complete';
+    overlay.appendChild(sumTitle);
+
+    const stats = document.createElement('div');
+    stats.style.cssText = 'font-size:12px; text-align:center; margin-bottom:8px;';
+    stats.innerHTML = `<span style="color:#6f6">✓ ${correct}</span> · <span style="color:#f66">✗ ${wrong}</span> · <span style="color:#888">⊘ ${skipped}</span>`;
+    overlay.appendChild(stats);
+
+    if (wrong > 0) {
+      const wrongList = document.createElement('div');
+      wrongList.style.cssText = 'font-size:11px; color:#f88; margin-top:6px;';
+      wrongList.innerHTML = '<b>Wrong groups:</b><br>' +
+        Object.entries(results)
+          .filter(([, v]) => v === 'wrong')
+          .map(([k]) => `• ${MUSCLE_LABELS[k]} (${k})`)
+          .join('<br>');
+      overlay.appendChild(wrongList);
+    }
+
+    const closeBtn = makeBtn('Close', 'rgba(100,100,100,0.5)', () => overlay.remove());
+    closeBtn.style.marginTop = '10px';
+    closeBtn.style.width = '100%';
+    overlay.appendChild(closeBtn);
+
+    // Log results to console for agent tools
+    console.log('[MuscleVerification]', JSON.stringify(results));
+  }
+
+  btnRow.appendChild(makeBtn('✓ Correct', 'rgba(50,180,50,0.6)', () => advance('correct')));
+  btnRow.appendChild(makeBtn('✗ Wrong', 'rgba(220,50,50,0.6)', () => advance('wrong')));
+  btnRow.appendChild(makeBtn('Skip', 'rgba(100,100,100,0.4)', () => advance('skip')));
+  overlay.appendChild(btnRow);
+
+  container.appendChild(overlay);
+  showGroup();
+}
+
+
+// ── Photo Gallery for Skin Regions ──────────────────────────────────────────
+
+/**
+ * Fetch and display available photos for a skin region.
+ * User can click a thumbnail to select it as the active texture source.
+ * @param {string} region — e.g. 'forearm'
+ * @param {HTMLElement} galleryEl — container to render thumbnails into
+ * @param {Function} onModelReload — called with new GLB URL after selection
+ */
+export async function loadRegionPhotoGallery(region, galleryEl, onModelReload) {
+  const params = new URLSearchParams(window.location.search);
+  const customerId = params.get('customer_id') || '1';
+  const token = params.get('token') || '';
+
+  galleryEl.innerHTML = '<span style="font-size:9px;color:#666">Loading...</span>';
+
+  try {
+    const resp = await fetch(`/web_app/api/customer/${customerId}/skin_region/${region}/photos`);
+    const data = await resp.json();
+    galleryEl.innerHTML = '';
+
+    if (!data.photos || data.photos.length === 0) {
+      galleryEl.innerHTML = '<span style="font-size:9px;color:#555">No photos from phone</span>';
+      return;
+    }
+
+    const strip = document.createElement('div');
+    strip.style.cssText = 'display:flex; gap:3px; overflow-x:auto; padding:2px 0;';
+
+    for (const photo of data.photos) {
+      const thumbWrap = document.createElement('div');
+      thumbWrap.style.cssText = `
+        width:36px; height:36px; flex-shrink:0; border-radius:4px;
+        border:2px solid rgba(255,255,255,0.15); cursor:pointer;
+        overflow:hidden; position:relative; transition:border-color 0.2s;
+      `;
+      thumbWrap.title = photo.filename;
+
+      const img = document.createElement('img');
+      img.src = photo.url;
+      img.style.cssText = 'width:100%; height:100%; object-fit:cover;';
+      img.loading = 'lazy';
+      thumbWrap.appendChild(img);
+
+      thumbWrap.onmouseenter = () => { thumbWrap.style.borderColor = 'rgba(70,130,255,0.7)'; };
+      thumbWrap.onmouseleave = () => { thumbWrap.style.borderColor = 'rgba(255,255,255,0.15)'; };
+
+      thumbWrap.onclick = async () => {
+        // Select this photo
+        strip.querySelectorAll('div').forEach(d => d.style.borderColor = 'rgba(255,255,255,0.15)');
+        thumbWrap.style.borderColor = 'rgba(50,180,50,0.8)';
+        galleryEl.querySelector('.gallery-status').textContent = 'Processing...';
+
+        try {
+          const selResp = await fetch(`/web_app/api/customer/${customerId}/skin_region/${region}/select`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ photo: photo.filename }),
+          });
+          const selData = await selResp.json();
+          if (selData.status === 'success') {
+            galleryEl.querySelector('.gallery-status').textContent = 'Selected ✓';
+            galleryEl.querySelector('.gallery-status').style.color = '#6f6';
+            if (selData.glb_url && onModelReload) onModelReload(selData.glb_url);
+          } else {
+            galleryEl.querySelector('.gallery-status').textContent = selData.message || 'Failed';
+          }
+        } catch (e) {
+          galleryEl.querySelector('.gallery-status').textContent = 'Error';
+        }
+      };
+
+      strip.appendChild(thumbWrap);
+    }
+
+    galleryEl.appendChild(strip);
+    const statusSpan = document.createElement('span');
+    statusSpan.className = 'gallery-status';
+    statusSpan.style.cssText = 'font-size:9px; color:#888; display:block; margin-top:2px;';
+    statusSpan.textContent = `${data.photos.length} photo(s) from phone`;
+    galleryEl.appendChild(statusSpan);
+
+  } catch (e) {
+    galleryEl.innerHTML = '<span style="font-size:9px;color:#f88">Load failed</span>';
+  }
+}
+
 
 // ── Public API ────────────────────────────────────────────────────────────────
 // Expose group list for external use

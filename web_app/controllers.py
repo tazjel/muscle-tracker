@@ -2331,7 +2331,8 @@ def upload_skin_region(customer_id, region):
                             f'customer_{customer_id}')
     os.makedirs(skin_dir, exist_ok=True)
     ext = os.path.splitext(upload.filename or 'photo.jpg')[1] or '.jpg'
-    raw_path = os.path.join(skin_dir, f'raw_{region}{ext}')
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    raw_path = os.path.join(skin_dir, f'raw_{region}_{ts}{ext}')
     upload.save(raw_path, overwrite=True)
 
     # Generate tileable texture
@@ -2429,6 +2430,158 @@ def list_skin_regions(customer_id):
         missing=[r for r in CAPTURE_REGIONS if r not in available],
         minimum_required=MINIMUM_REGIONS,
         coverage_pct=round(len(available) / len(CAPTURE_REGIONS) * 100, 1),
+    )
+
+
+@action('api/customer/<customer_id:int>/skin_region/<region>/photos', method=['GET'])
+@action.uses(cors)
+def list_skin_region_photos(customer_id, region):
+    """List all raw photos captured for a skin region."""
+    from core.skin_patch import CAPTURE_REGIONS
+    if region not in CAPTURE_REGIONS:
+        return dict(status='error', message=f'Unknown region: {region}')
+
+    skin_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'skin',
+                            f'customer_{customer_id}')
+    photos = []
+    if os.path.isdir(skin_dir):
+        import glob as _glob
+        for ext in ('*.jpg', '*.jpeg', '*.png'):
+            for p in _glob.glob(os.path.join(skin_dir, f'raw_{region}_*{ext}')):
+                fname = os.path.basename(p)
+                photos.append({
+                    'filename': fname,
+                    'url': f'/web_app/api/customer/{customer_id}/skin_photo/{fname}',
+                    'size': os.path.getsize(p),
+                    'mtime': os.path.getmtime(p),
+                })
+        # Also check legacy non-timestamped files
+        for ext in ('.jpg', '.jpeg', '.png'):
+            legacy = os.path.join(skin_dir, f'raw_{region}{ext}')
+            if os.path.exists(legacy):
+                fname = os.path.basename(legacy)
+                if not any(ph['filename'] == fname for ph in photos):
+                    photos.append({
+                        'filename': fname,
+                        'url': f'/web_app/api/customer/{customer_id}/skin_photo/{fname}',
+                        'size': os.path.getsize(legacy),
+                        'mtime': os.path.getmtime(legacy),
+                    })
+    photos.sort(key=lambda x: x['mtime'], reverse=True)
+    # Mark which one is currently selected (has tile)
+    tile_path = os.path.join(skin_dir, f'tile_{region}.png')
+    return dict(
+        status='success',
+        region=region,
+        photos=photos,
+        has_tile=os.path.exists(tile_path) if os.path.isdir(skin_dir) else False,
+    )
+
+
+@action('api/customer/<customer_id:int>/skin_photo/<filename>', method=['GET'])
+@action.uses(cors)
+def serve_skin_photo(customer_id, filename):
+    """Serve a raw skin photo for preview/thumbnail."""
+    import re
+    if not re.match(r'^raw_[a-z_]+.*\.(jpg|jpeg|png)$', filename, re.I):
+        raise HTTP(400, 'Invalid filename')
+    skin_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'skin',
+                            f'customer_{customer_id}')
+    fpath = os.path.join(skin_dir, filename)
+    if not os.path.exists(fpath):
+        raise HTTP(404, 'Photo not found')
+    ext = os.path.splitext(filename)[1].lower()
+    ct = 'image/jpeg' if ext in ('.jpg', '.jpeg') else 'image/png'
+    response.headers['Content-Type'] = ct
+    response.headers['Cache-Control'] = 'max-age=300'
+    return open(fpath, 'rb').read()
+
+
+@action('api/customer/<customer_id:int>/skin_region/<region>/select', method=['POST'])
+@action.uses(db, cors)
+def select_skin_photo(customer_id, region):
+    """Select a specific raw photo as the source for this region's tile texture."""
+    payload, err = _auth_check()
+    if err: return err
+
+    from core.skin_patch import CAPTURE_REGIONS, make_tileable, composite_skin_atlas
+    if region not in CAPTURE_REGIONS:
+        return dict(status='error', message=f'Unknown region: {region}')
+
+    data = request.json or {}
+    photo_filename = data.get('photo')
+    if not photo_filename:
+        return dict(status='error', message='Missing "photo" field')
+
+    skin_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'skin',
+                            f'customer_{customer_id}')
+    raw_path = os.path.join(skin_dir, photo_filename)
+    if not os.path.exists(raw_path):
+        return dict(status='error', message=f'Photo not found: {photo_filename}')
+
+    import cv2 as _cv2_sel
+    img = _cv2_sel.imread(raw_path)
+    if img is None:
+        return dict(status='error', message='Could not read image')
+
+    # Re-tile from selected photo
+    tile = make_tileable(img, out_size=512, patch_size=48, overlap=12)
+    tile_path = os.path.join(skin_dir, f'tile_{region}.png')
+    _cv2_sel.imwrite(tile_path, tile)
+
+    # Re-composite atlas
+    region_textures = {}
+    for rname in CAPTURE_REGIONS:
+        tp = os.path.join(skin_dir, f'tile_{rname}.png')
+        if os.path.exists(tp):
+            region_textures[rname] = _cv2_sel.imread(tp)
+
+    latest_mesh = None
+    try:
+        from core.texture_factory import _get_smpl_part_ids
+        import pickle as _pkl_sel
+        pkl_path = os.path.join(os.path.dirname(__file__), '..', '..', 'runpod', 'SMPL_NEUTRAL.pkl')
+        with open(pkl_path, 'rb') as f:
+            _smpl = _pkl_sel.load(f, encoding='latin1')
+        faces = np.array(_smpl['f'], dtype=np.int32)
+
+        from core.smpl_direct import _load_canonical_uvs, cylindrical_uvs
+        from core.smpl_optimizer import smpl_forward
+        verts, _ = smpl_forward(np.zeros(10))
+        uvs = _load_canonical_uvs()
+        if uvs is None:
+            uvs = cylindrical_uvs(verts)
+
+        part_ids = _get_smpl_part_ids()
+        atlas = composite_skin_atlas(uvs, part_ids, faces, region_textures, atlas_size=2048)
+        atlas_path = os.path.join(skin_dir, 'skin_atlas.png')
+        _cv2_sel.imwrite(atlas_path, atlas)
+
+        from core.skin_patch import generate_skin_normal_map
+        from core.texture_factory import generate_roughness_map
+        normal_map = generate_skin_normal_map(atlas, strength=10.0)
+        roughness_float = generate_roughness_map(uvs, atlas_size=2048, vertices=verts)
+        roughness_map = (roughness_float * 255).astype(np.uint8) if roughness_float is not None else None
+
+        latest_mesh = db(db.mesh_model.customer_id == customer_id).select(
+            orderby=~db.mesh_model.id).first()
+        if latest_mesh and latest_mesh.glb_path:
+            from core.mesh_reconstruction import export_glb
+            verts_m = verts / 1000.0
+            export_glb(verts_m, faces, latest_mesh.glb_path,
+                        uvs=uvs, texture_image=atlas,
+                        normal_map=normal_map, roughness_map=roughness_map)
+
+    except Exception as e:
+        logger.warning('Skin select compositing skipped (non-fatal): %s', e)
+        latest_mesh = None
+
+    return dict(
+        status='success',
+        region=region,
+        selected_photo=photo_filename,
+        regions_available=list(region_textures.keys()),
+        glb_url=f'/web_app/api/mesh/{latest_mesh.id}.glb' if latest_mesh else None,
     )
 
 

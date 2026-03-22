@@ -601,6 +601,58 @@ function setSkinTiling(tilesX, tilesY) {
 }
 window.setSkinTiling = setSkinTiling;
 
+// Studio: uniform texture scale (multiplier on base tiling)
+let _studioBaseX = 20, _studioBaseY = 28;
+function setTextureScale(scale) {
+  const tx = Math.round(_studioBaseX * scale);
+  const ty = Math.round(_studioBaseY * scale);
+  setSkinTiling(tx, ty);
+  // Sync fine-tune sliders if they exist
+  const sx = document.getElementById('studio-tile-x');
+  const sy = document.getElementById('studio-tile-y');
+  if (sx) sx.value = tx;
+  if (sy) sy.value = ty;
+  const xyLabel = document.getElementById('studio-xy-val');
+  if (xyLabel) xyLabel.textContent = tx + '×' + ty;
+  // Auto-switch to skin view if not already
+  const skinBtn = document.getElementById('btn-skin');
+  if (skinBtn && !skinBtn.classList.contains('active')) {
+    window.setViewMode('skin');
+  }
+}
+window.setTextureScale = setTextureScale;
+
+function setTextureOffset(ox, oy) {
+  if (!SKIN_MATERIAL.map) return;
+  SKIN_MATERIAL.map.offset.set(ox, oy);
+  if (SKIN_MATERIAL.normalMap) SKIN_MATERIAL.normalMap.offset.set(ox, oy);
+  if (SKIN_MATERIAL.roughnessMap) SKIN_MATERIAL.roughnessMap.offset.set(ox, oy);
+  SKIN_MATERIAL.needsUpdate = true;
+}
+window.setTextureOffset = setTextureOffset;
+
+function resetStudioDefaults() {
+  _studioBaseX = 20; _studioBaseY = 28;
+  setSkinTiling(20, 28);
+  setTextureOffset(0, 0);
+  // Reset all sliders
+  const els = {
+    'studio-scale': '1.0', 'studio-tile-x': '20', 'studio-tile-y': '28',
+    'studio-off-x': '0', 'studio-off-y': '0',
+  };
+  for (const [id, val] of Object.entries(els)) {
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  }
+  const scaleVal = document.getElementById('studio-scale-val');
+  if (scaleVal) scaleVal.textContent = '1.0×';
+  const xyVal = document.getElementById('studio-xy-val');
+  if (xyVal) xyVal.textContent = '20×28';
+  const offVal = document.getElementById('studio-off-val');
+  if (offVal) offVal.textContent = '(0,0)';
+}
+window.resetStudioDefaults = resetStudioDefaults;
+
 const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
   map:              _createSkinColorMap(),
   roughnessMap:     _createSkinRoughnessMap(),
@@ -809,6 +861,13 @@ function init() {
     document.querySelectorAll('.tab-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.tab === tabName);
     });
+    // Auto-switch to skin view when Studio tab is opened
+    if (tabName === 'studio') {
+      const skinBtn = document.getElementById('btn-skin');
+      if (skinBtn && !skinBtn.classList.contains('active')) {
+        window.setViewMode('skin');
+      }
+    }
     _saveViewerSettings();
   };
 

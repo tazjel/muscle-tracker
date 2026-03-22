@@ -64,6 +64,7 @@
         <button class="tab-btn active" data-tab="view" onclick="switchTab('view')">View</button>
         <button class="tab-btn" data-tab="scene" onclick="switchTab('scene')">Scene</button>
         <button class="tab-btn" data-tab="analyze" onclick="switchTab('analyze')">Analyze</button>
+        <button class="tab-btn" data-tab="studio" onclick="switchTab('studio')">Studio</button>
         <button class="tab-btn" data-tab="camera" onclick="switchTab('camera')">Camera</button>
       </div>
 
@@ -224,6 +225,69 @@
           <canvas id="radar-canvas" width="160" height="160" style="display:none;margin:0 auto 8px;"></canvas>
           <div id="analysis-content" style="font-size:11px;line-height:1.8;"></div>
         </div>
+      </div>
+
+      <!-- Studio tab -->
+      <div class="tab-content" data-tab="studio">
+        <div style="font-size:10px;color:#aaa;margin:4px 0 6px;">Skin Texture Controls</div>
+
+        <div style="margin-bottom:8px;">
+          <label style="font-size:10px;color:#8af;">Texture Scale</label>
+          <div style="display:flex;align-items:center;gap:4px;">
+            <input type="range" id="studio-scale" min="0.1" max="5.0" step="0.1" value="1.0"
+              style="flex:1;accent-color:#4682ff;"
+              oninput="setTextureScale(+this.value);document.getElementById('studio-scale-val').textContent=this.value+'×'">
+            <span id="studio-scale-val" style="font-size:10px;color:#4a9eff;min-width:28px;">1.0×</span>
+          </div>
+        </div>
+
+        <div style="margin-bottom:6px;">
+          <label style="font-size:10px;color:#888;">Fine-tune X</label>
+          <div style="display:flex;align-items:center;gap:4px;">
+            <input type="range" id="studio-tile-x" min="1" max="40" value="20"
+              style="flex:1;"
+              oninput="setSkinTiling(+this.value,+document.getElementById('studio-tile-y').value);document.getElementById('studio-xy-val').textContent=this.value+'×'+document.getElementById('studio-tile-y').value">
+            <span style="font-size:9px;color:#666;min-width:10px;">X</span>
+          </div>
+        </div>
+        <div style="margin-bottom:8px;">
+          <label style="font-size:10px;color:#888;">Fine-tune Y</label>
+          <div style="display:flex;align-items:center;gap:4px;">
+            <input type="range" id="studio-tile-y" min="1" max="50" value="28"
+              style="flex:1;"
+              oninput="setSkinTiling(+document.getElementById('studio-tile-x').value,+this.value);document.getElementById('studio-xy-val').textContent=document.getElementById('studio-tile-x').value+'×'+this.value">
+            <span id="studio-xy-val" style="font-size:9px;color:#666;min-width:28px;">20×28</span>
+          </div>
+        </div>
+
+        <div style="margin-bottom:6px;">
+          <label style="font-size:10px;color:#888;">Offset X</label>
+          <div style="display:flex;align-items:center;gap:4px;">
+            <input type="range" id="studio-off-x" min="-1" max="1" step="0.01" value="0"
+              style="flex:1;"
+              oninput="setTextureOffset(+this.value,+document.getElementById('studio-off-y').value);document.getElementById('studio-off-val').textContent='('+this.value+','+document.getElementById('studio-off-y').value+')'">
+            <span style="font-size:9px;color:#666;min-width:10px;">X</span>
+          </div>
+        </div>
+        <div style="margin-bottom:8px;">
+          <label style="font-size:10px;color:#888;">Offset Y</label>
+          <div style="display:flex;align-items:center;gap:4px;">
+            <input type="range" id="studio-off-y" min="-1" max="1" step="0.01" value="0"
+              style="flex:1;"
+              oninput="setTextureOffset(+document.getElementById('studio-off-x').value,+this.value);document.getElementById('studio-off-val').textContent='('+document.getElementById('studio-off-x').value+','+this.value+')'">
+            <span id="studio-off-val" style="font-size:9px;color:#666;min-width:40px;">(0,0)</span>
+          </div>
+        </div>
+
+        <div id="studio-tile-preview" style="text-align:center;margin:6px 0;">
+          <div style="font-size:9px;color:#666;margin-bottom:2px;">Tile Preview</div>
+          <div id="studio-preview-img" style="width:64px;height:64px;margin:0 auto;border:1px solid rgba(255,255,255,0.1);border-radius:4px;background:rgba(255,255,255,0.03);display:flex;align-items:center;justify-content:center;">
+            <span style="font-size:8px;color:#444;">No tile</span>
+          </div>
+        </div>
+
+        <button style="width:100%;margin-top:4px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:4px;color:#888;padding:4px;cursor:pointer;font-size:10px;"
+          onclick="resetStudioDefaults()">Reset Defaults</button>
       </div>
 
       <!-- Camera tab -->
