@@ -86,6 +86,10 @@ def project_normals_to_atlas(verts, faces, uvs, photo_normals, body_masks,
         normals_img = photo_normals[direction]  # (H, W, 3) in [-1, 1]
         mask = body_masks.get(direction,
                               np.ones(normals_img.shape[:2], dtype=np.uint8) * 255)
+        # Ensure mask matches normals image dimensions
+        if mask is not None and mask.shape[:2] != normals_img.shape[:2]:
+            mask = cv2.resize(mask, (normals_img.shape[1], normals_img.shape[0]),
+                              interpolation=cv2.INTER_NEAREST)
         h_img, w_img = normals_img.shape[:2]
 
         cam_pos, cam_fwd, cam_right, cam_up = get_camera(direction, dist_mm, cam_h_mm)

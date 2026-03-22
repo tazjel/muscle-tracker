@@ -118,13 +118,27 @@ def rasterize_texture(verts, faces, uvs, photo_data, body_masks,
 
     total_texels = 0
 
+    # LAB color harmonization: use front view as anchor to reduce seams
+    anchor_img = photo_data.get('front')
+    if anchor_img is not None:
+        from core.densepose_texture import harmonize_view
+    else:
+        harmonize_view = None
+
     for direction in ['front', 'back', 'left', 'right']:
         if direction not in photo_data:
             continue
 
         img_raw = photo_data[direction]
+        # Harmonize non-front views to match front view color
+        if direction != 'front' and harmonize_view is not None:
+            img_raw = harmonize_view(img_raw, anchor_img)
         mask = body_masks.get(direction,
                               np.ones(img_raw.shape[:2], dtype=np.uint8) * 255)
+        # Ensure mask matches image dimensions (MediaPipe may return different size)
+        if mask is not None and mask.shape[:2] != img_raw.shape[:2]:
+            mask = cv2.resize(mask, (img_raw.shape[1], img_raw.shape[0]),
+                              interpolation=cv2.INTER_NEAREST)
 
         # Gentle CLAHE — preserve skin color, even out brightness
         lab = cv2.cvtColor(img_raw, cv2.COLOR_BGR2LAB)
@@ -300,7 +314,7 @@ def generate_direct_smpl(images_dict, profile=None,
         logger.error("HMR2.0 shape prediction failed")
         return None
 
-    verts = result['vertices']  # (6890, 3) mm, Z-up
+    verts = np.array(result['vertices'], dtype=np.float64)  # (6890, 3) mm, Z-up
     verts_posed = result.get('vertices_posed') # Talent: Use posed mesh for projection alignment
     if verts_posed is None:
         verts_posed = verts.copy()
@@ -385,6 +399,11 @@ def generate_direct_smpl(images_dict, profile=None,
         else:
             from core.dsine_normals import estimate_normals
             for direction, img in images_dict.items():
+                # Resize to max 1024px for DSINE (4K is too slow on CPU)
+                h, w = img.shape[:2]
+                if max(h, w) > 1024:
+                    scale = 1024.0 / max(h, w)
+                    img = cv2.resize(img, (int(w * scale), int(h * scale)))
                 n = estimate_normals(img)
                 if n is not None:
                     photo_normals[direction] = n
