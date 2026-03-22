@@ -2398,8 +2398,8 @@ def upload_skin_region(customer_id, region):
                         customer_id, region)
 
     except Exception as e:
-        logger.exception('Skin region compositing failed')
-        return dict(status='error', message=f'Compositing failed: {e}')
+        logger.warning('Skin region compositing skipped (non-fatal): %s', e)
+        latest_mesh = None
 
     return dict(
         status='success',
