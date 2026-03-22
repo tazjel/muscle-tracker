@@ -50,7 +50,7 @@ def _load_hmr():
     logger.info("HMR2.0 not installed — using MediaPipe keypoint fallback for shape estimation")
 
 
-def predict_shape(images, directions=None):
+def predict_shape(images, directions=None, prefer_gpu='auto'):
     """
     Predict SMPL body shape from 1-4 images.
 
@@ -58,6 +58,8 @@ def predict_shape(images, directions=None):
         images: list of (H,W,3) uint8 BGR arrays
         directions: list of str ('front','back','left','right'), same len as images
                     If None, assumes ['front'] for 1 image, etc.
+        prefer_gpu: 'auto' (try RunPod CameraHMR first, fallback to local),
+                    'runpod' (force RunPod), 'local' (force local HMR2.0/keypoint)
 
     Returns:
         dict with keys:
@@ -69,12 +71,88 @@ def predict_shape(images, directions=None):
             'backend': str — which method was used
         or None on failure
     """
-    _load_hmr()
+    # Try RunPod CameraHMR first (better accuracy: 30.2mm V2V vs HMR2's ~47mm)
+    if prefer_gpu in ('auto', 'runpod'):
+        result = _predict_runpod_hmr(images, directions)
+        if result is not None:
+            return result
+        if prefer_gpu == 'runpod':
+            logger.warning("RunPod CameraHMR failed and prefer_gpu='runpod', returning None")
+            return None
 
+    # Local fallback
+    _load_hmr()
     if _hmr_backend in ('hmr2', 'tokenhmr'):
         return _predict_hmr(images, directions)
     else:
         return _predict_keypoint(images, directions)
+
+
+def _predict_runpod_hmr(images, directions):
+    """
+    Run shape prediction on RunPod GPU (CameraHMR or HMR2.0).
+
+    CameraHMR uses 138 dense keypoints for better shape estimation,
+    especially for body volume/muscularity capture.
+    """
+    import os
+    import base64
+
+    endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID', '')
+    api_key = os.environ.get('RUNPOD_API_KEY', '')
+    if not endpoint_id or not api_key:
+        return None
+
+    try:
+        import requests
+
+        # Encode images to base64
+        images_b64 = []
+        for img in images:
+            _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            images_b64.append(base64.b64encode(buf.tobytes()).decode('ascii'))
+
+        dirs = directions or ['front'] * len(images)
+
+        url = f"https://api.runpod.ai/v2/{endpoint_id}/runsync"
+        resp = requests.post(url, json={
+            'input': {
+                'action': 'hmr',
+                'images': images_b64,
+                'directions': dirs,
+            }
+        }, headers={'Authorization': f'Bearer {api_key}'}, timeout=120)
+
+        data = resp.json()
+        output = data.get('output', {})
+        if output.get('status') != 'success':
+            logger.warning(f"RunPod HMR failed: {output.get('message', 'unknown')}")
+            return None
+
+        betas = np.array(output['betas'], dtype=np.float32)
+
+        # Decode vertices if present
+        verts = None
+        if output.get('vertices_b64'):
+            verts_shape = output.get('vertices_shape', [6890, 3])
+            verts = np.frombuffer(
+                base64.b64decode(output['vertices_b64']), dtype=np.float32
+            ).reshape(verts_shape)
+
+        logger.info(f"RunPod HMR: betas[:3]={betas[:3].round(2)}, backend={output.get('backend', 'hmr2')}")
+
+        return {
+            'betas': betas,
+            'vertices': verts,
+            'pose': np.zeros(72, dtype=np.float32),
+            'joints_3d': None,
+            'confidence': float(output.get('confidence', 0.85)),
+            'backend': f"runpod_{output.get('backend', 'hmr2')}",
+        }
+
+    except Exception as e:
+        logger.warning(f"RunPod HMR call failed: {e}")
+        return None
 
 
 def _predict_hmr(images, directions):
