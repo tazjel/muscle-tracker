@@ -15,6 +15,7 @@ import { GLTFLoader }    from 'https://cdn.jsdelivr.net/npm/three@0.160.0/exampl
 import { OBJLoader }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
 import { DRACOLoader }   from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/DRACOLoader.js';
 import { RGBELoader }    from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/RGBELoader.js';
+import { MuscleHighlighter, buildMusclePanel } from './muscle_highlighter.js';
 import { EffectComposer } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js';
 import { SSAOPass }       from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/SSAOPass.js';
@@ -24,6 +25,7 @@ import { OutputPass }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examp
 let scene, camera, renderer, controls;
 let bodyMesh      = null;   // the loaded mesh object
 let heatmapOn     = false;
+const _muscleHL   = new MuscleHighlighter();  // muscle group highlighter
 let origMaterials = [];     // stored to restore after heatmap
 const _originalMaterials = new Map();  // mesh → original loaded material (for texture toggle)
 const raycaster  = new THREE.Raycaster();
@@ -1239,6 +1241,9 @@ function _loadGLB(url, onLoaded) {
       _ghostRich = {};
       _hideProgress();
       if (onLoaded) onLoaded();
+      // Attach muscle highlighter to the newly loaded mesh
+      _muscleHL.detach();
+      _muscleHL.attach(bodyMesh);
       // Try to load PBR textures first, fall back to real skin texture
       _loadPBRTextures().catch(() => _loadRealSkinTexture());
     },
@@ -3795,3 +3800,6 @@ async function _checkGPUStatus() {
 init();
 _checkGPUStatus();
 _mcpConnect();
+
+// Build muscle highlight panel (attaches to #canvas-container)
+buildMusclePanel(_muscleHL, document.getElementById('canvas-container') || document.body);
