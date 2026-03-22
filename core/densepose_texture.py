@@ -138,6 +138,24 @@ def iuv_to_atlas(image_bgr, iuv_map, atlas_size=1024):
     return atlas, weight
 
 
+def harmonize_view(source_bgr, anchor_bgr):
+    """
+    Match source photo colors to an anchor photo using LAB space histogram matching.
+    Eliminates global color shifts between camera views before UV baking.
+    The front photo is typically used as the anchor.
+    """
+    src_lab = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2LAB).astype("float32")
+    tar_lab = cv2.cvtColor(anchor_bgr, cv2.COLOR_BGR2LAB).astype("float32")
+    for i in range(3):
+        src_mu = src_lab[:, :, i].mean()
+        src_sigma = src_lab[:, :, i].std()
+        tar_mu = tar_lab[:, :, i].mean()
+        tar_sigma = tar_lab[:, :, i].std()
+        if src_sigma > 0:
+            src_lab[:, :, i] = (src_lab[:, :, i] - src_mu) * (tar_sigma / src_sigma) + tar_mu
+    return cv2.cvtColor(np.clip(src_lab, 0, 255).astype("uint8"), cv2.COLOR_LAB2BGR)
+
+
 def merge_atlases(atlases_and_weights):
     """
     Merge multiple atlas textures (from different views) with weighted blending.
@@ -351,12 +369,20 @@ def photo_to_body_texture(image_paths, iuv_maps, atlas_size=1024, output_dir=Non
             'coverage': float — percentage of atlas covered
     """
     atlases = []
+    anchor_img = None  # first valid image is the color anchor
 
     for i, (path, iuv) in enumerate(zip(image_paths, iuv_maps)):
         img = cv2.imread(path) if isinstance(path, str) else path
         if img is None:
             logger.warning(f"Could not read {path}, skipping")
             continue
+
+        # Harmonize all non-anchor views to match the anchor's color distribution
+        if anchor_img is None:
+            anchor_img = img
+        else:
+            img = harmonize_view(img, anchor_img)
+            logger.debug(f"View {i+1}: color harmonized to anchor")
 
         logger.info(f"Processing view {i+1}/{len(image_paths)}: {path if isinstance(path, str) else 'array'}")
         atlas, weight = iuv_to_atlas(img, iuv, atlas_size)
