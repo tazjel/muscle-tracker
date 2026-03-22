@@ -2303,6 +2303,122 @@ def serve_skin_texture(customer_id, tex_type):
         return f.read()
 
 
+@action('api/customer/<customer_id:int>/skin_region/<region>', method=['POST'])
+@action.uses(db, cors)
+def upload_skin_region(customer_id, region):
+    """
+    Upload a close-up skin photo for a specific body region.
+    Generates tileable texture, recomposites UV atlas, re-exports GLB.
+
+    Args (form/multipart):
+        image: JPEG/PNG close-up skin photo
+        region: one of forearm, abdomen, chest, thigh, calf, upper_arm, etc.
+    """
+    payload, err = _auth_check()
+    if err: return err
+
+    from core.skin_patch import CAPTURE_REGIONS, make_tileable, composite_skin_atlas
+    if region not in CAPTURE_REGIONS:
+        return dict(status='error',
+                    message=f'Unknown region: {region}. Valid: {sorted(CAPTURE_REGIONS.keys())}')
+
+    upload = request.files.get('image')
+    if not upload:
+        return dict(status='error', message='No image file provided')
+
+    # Save raw photo
+    skin_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'skin',
+                            f'customer_{customer_id}')
+    os.makedirs(skin_dir, exist_ok=True)
+    ext = os.path.splitext(upload.filename or 'photo.jpg')[1] or '.jpg'
+    raw_path = os.path.join(skin_dir, f'raw_{region}{ext}')
+    upload.save(raw_path, overwrite=True)
+
+    # Generate tileable texture
+    import cv2 as _cv2_sr
+    img = _cv2_sr.imread(raw_path)
+    if img is None:
+        return dict(status='error', message='Could not read image')
+
+    tile = make_tileable(img, out_size=512, patch_size=48, overlap=12)
+    tile_path = os.path.join(skin_dir, f'tile_{region}.png')
+    _cv2_sr.imwrite(tile_path, tile)
+
+    # Load all existing region tiles for this customer
+    region_textures = {}
+    for rname in CAPTURE_REGIONS:
+        tp = os.path.join(skin_dir, f'tile_{rname}.png')
+        if os.path.exists(tp):
+            region_textures[rname] = _cv2_sr.imread(tp)
+
+    # Composite into full atlas
+    try:
+        from core.texture_factory import _get_smpl_part_ids
+        import pickle as _pkl_sr
+        pkl_path = os.path.join(os.path.dirname(__file__), '..', 'runpod', 'SMPL_NEUTRAL.pkl')
+        with open(pkl_path, 'rb') as f:
+            _smpl = _pkl_sr.load(f, encoding='latin1')
+        faces = np.array(_smpl['f'], dtype=np.int32)
+
+        from core.smpl_direct import _load_canonical_uvs, cylindrical_uvs
+        from core.smpl_optimizer import smpl_forward
+        verts, _ = smpl_forward(np.zeros(10))
+        uvs = _load_canonical_uvs()
+        if uvs is None:
+            uvs = cylindrical_uvs(verts)
+
+        part_ids = _get_smpl_part_ids()
+
+        atlas = composite_skin_atlas(uvs, part_ids, faces, region_textures, atlas_size=2048)
+        atlas_path = os.path.join(skin_dir, 'skin_atlas.png')
+        _cv2_sr.imwrite(atlas_path, atlas)
+
+        # Re-export GLB with new skin texture
+        latest_mesh = db(db.mesh_model.customer_id == customer_id).select(
+            orderby=~db.mesh_model.id).first()
+        if latest_mesh and latest_mesh.glb_path:
+            from core.mesh_reconstruction import export_glb
+            verts_m = verts / 1000.0
+            export_glb(verts_m, faces, latest_mesh.glb_path,
+                        uvs=uvs, texture_image=atlas)
+            logger.info('Re-exported GLB with skin region %s for customer %s',
+                        region, customer_id)
+
+    except Exception as e:
+        logger.exception('Skin region compositing failed')
+        return dict(status='error', message=f'Compositing failed: {e}')
+
+    return dict(
+        status='success',
+        region=region,
+        regions_available=list(region_textures.keys()),
+        regions_remaining=[r for r in CAPTURE_REGIONS if r not in region_textures],
+        glb_url=f'/web_app/api/mesh/{latest_mesh.id}.glb' if latest_mesh else None,
+        viewer_url=(f'/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/{latest_mesh.id}.glb'
+                    if latest_mesh else None),
+    )
+
+
+@action('api/customer/<customer_id:int>/skin_regions', method=['GET'])
+@action.uses(cors)
+def list_skin_regions(customer_id):
+    """List available and missing skin regions for a customer."""
+    from core.skin_patch import CAPTURE_REGIONS, MINIMUM_REGIONS
+    skin_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'skin',
+                            f'customer_{customer_id}')
+    available = []
+    for rname in CAPTURE_REGIONS:
+        if os.path.exists(os.path.join(skin_dir, f'tile_{rname}.png')):
+            available.append(rname)
+    return dict(
+        status='success',
+        available=available,
+        missing=[r for r in CAPTURE_REGIONS if r not in available],
+        minimum_required=MINIMUM_REGIONS,
+        coverage_pct=round(len(available) / len(CAPTURE_REGIONS) * 100, 1),
+    )
+
+
 @action('api/customer/<customer_id:int>/pbr_textures', method=['GET'])
 @action.uses(db, cors)
 def get_pbr_textures(customer_id):

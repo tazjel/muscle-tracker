@@ -294,6 +294,118 @@ export function buildMusclePanel(highlighter, container) {
   return panel;
 }
 
+// ── Skin Upload Panel ────────────────────────────────────────────────────────
+
+// Maps muscle panel groups to skin capture regions
+const SKIN_REGION_MAP = {
+  forearms_l: 'forearm', forearms_r: 'forearm',
+  biceps_l: 'upper_arm', biceps_r: 'upper_arm',
+  pectorals: 'chest', abs: 'abdomen', obliques: 'abdomen',
+  deltoids_l: 'shoulders', deltoids_r: 'shoulders',
+  traps: 'back',
+  glutes: 'back',
+  quads_l: 'thigh', quads_r: 'thigh',
+  calves_l: 'calf', calves_r: 'calf',
+};
+
+/**
+ * Build a skin texture upload panel below the muscle panel.
+ * Allows per-region skin photo upload → API → model reload.
+ * @param {HTMLElement} container
+ * @param {Function} onModelReload — called with new GLB URL after upload
+ */
+export function buildSkinUploadPanel(container, onModelReload) {
+  const panel = document.createElement('div');
+  panel.id = 'skin-upload-panel';
+  panel.style.cssText = `
+    position: absolute; bottom: 12px; right: 12px;
+    background: rgba(20,20,20,0.85); border-radius: 10px;
+    padding: 10px 8px; display: flex; flex-direction: column;
+    gap: 4px; min-width: 150px; z-index: 200;
+    font-family: sans-serif; font-size: 12px; color: #fff;
+    backdrop-filter: blur(6px); user-select: none;
+  `;
+
+  const title = document.createElement('div');
+  title.textContent = 'Skin Texture';
+  title.style.cssText = 'font-weight:600; font-size:11px; color:#aaa; margin-bottom:4px; text-align:center;';
+  panel.appendChild(title);
+
+  const REGIONS = ['forearm', 'chest', 'abdomen', 'thigh', 'calf', 'upper_arm', 'shoulders', 'back'];
+  const statusEl = document.createElement('div');
+  statusEl.style.cssText = 'font-size:10px; color:#888; text-align:center; margin-top:4px;';
+  statusEl.textContent = 'Upload close-up skin photos';
+
+  for (const region of REGIONS) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; gap:4px;';
+
+    const label = document.createElement('span');
+    label.textContent = region.replace('_', ' ');
+    label.style.cssText = 'flex:1; text-transform:capitalize; font-size:11px;';
+
+    const uploadBtn = document.createElement('button');
+    uploadBtn.textContent = 'Upload';
+    uploadBtn.dataset.region = region;
+    uploadBtn.style.cssText = `
+      background: rgba(70,130,255,0.3); border: 1px solid rgba(70,130,255,0.5);
+      border-radius: 4px; color: #adf; padding: 2px 8px; cursor: pointer;
+      font-size: 10px;
+    `;
+
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'image/*';
+    fileInput.style.display = 'none';
+
+    uploadBtn.onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+      if (!fileInput.files.length) return;
+      uploadBtn.textContent = '...';
+      statusEl.textContent = `Uploading ${region}...`;
+
+      const params = new URLSearchParams(window.location.search);
+      const customerId = params.get('customer_id') || '1';
+      const token = params.get('token') || '';
+
+      const form = new FormData();
+      form.append('image', fileInput.files[0]);
+
+      try {
+        const resp = await fetch(`/web_app/api/customer/${customerId}/skin_region/${region}`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+          body: form,
+        });
+        const data = await resp.json();
+        if (data.status === 'success') {
+          uploadBtn.textContent = '\u2713';
+          uploadBtn.style.background = 'rgba(50,180,50,0.3)';
+          uploadBtn.style.borderColor = 'rgba(50,180,50,0.5)';
+          statusEl.textContent = `${data.regions_available.length} regions done`;
+          if (data.glb_url && onModelReload) onModelReload(data.glb_url);
+        } else {
+          uploadBtn.textContent = 'Retry';
+          statusEl.textContent = data.message || 'Failed';
+        }
+      } catch (e) {
+        uploadBtn.textContent = 'Retry';
+        statusEl.textContent = 'Upload failed';
+      }
+      fileInput.value = '';
+    };
+
+    row.appendChild(label);
+    row.appendChild(uploadBtn);
+    row.appendChild(fileInput);
+    panel.appendChild(row);
+  }
+
+  panel.appendChild(statusEl);
+  container.appendChild(panel);
+  return panel;
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 // Expose group list for external use
 export { MUSCLE_GROUPS, MUSCLE_LABELS };

@@ -15,7 +15,7 @@ import { GLTFLoader }    from 'https://cdn.jsdelivr.net/npm/three@0.160.0/exampl
 import { OBJLoader }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
 import { DRACOLoader }   from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/DRACOLoader.js';
 import { RGBELoader }    from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/RGBELoader.js';
-import { MuscleHighlighter, buildMusclePanel } from './muscle_highlighter.js';
+import { MuscleHighlighter, buildMusclePanel, buildSkinUploadPanel } from './muscle_highlighter.js';
 import { EffectComposer } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js';
 import { SSAOPass }       from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/SSAOPass.js';
@@ -3802,4 +3802,11 @@ _checkGPUStatus();
 _mcpConnect();
 
 // Build muscle highlight panel (attaches to #canvas-container)
-buildMusclePanel(_muscleHL, document.getElementById('canvas-container') || document.body);
+const _panelContainer = document.getElementById('canvas-container') || document.body;
+buildMusclePanel(_muscleHL, _panelContainer);
+
+// Build skin upload panel (bottom-right)
+buildSkinUploadPanel(_panelContainer, (newGlbUrl) => {
+  // Reload model when skin texture is updated
+  if (typeof loadModel === 'function') loadModel(newGlbUrl);
+});
