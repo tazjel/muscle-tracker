@@ -1,5 +1,5 @@
 body { margin: 0; background-color: #1a1a2e; color: #e0e0e0; font-family: sans-serif; overflow: hidden; }       
-#canvas-container { width: 100vw; height: 100vh; }
+#canvas-container { width: 100vw; height: 100vh; position: relative; }
 #ui-overlay { position: absolute; top: 20px; left: 20px; z-index: 10; pointer-events: none; }
 .card { background: rgba(22, 33, 62, 0.8); padding: 15px; border-radius: 8px; border: 1px solid #4a9eff; pointer-events: auto; }
 h2 { margin: 0 0 10px 0; color: #4a9eff; font-size: 1.2rem; }
