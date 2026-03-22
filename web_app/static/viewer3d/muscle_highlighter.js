@@ -309,8 +309,8 @@ const SKIN_REGION_MAP = {
 };
 
 /**
- * Build a skin texture upload panel below the muscle panel.
- * Allows per-region skin photo upload → API → model reload.
+ * Build a skin texture upload panel with coverage indicator, thumbnails,
+ * reset buttons, and loading spinners.
  * @param {HTMLElement} container
  * @param {Function} onModelReload — called with new GLB URL after upload
  */
@@ -319,38 +319,93 @@ export function buildSkinUploadPanel(container, onModelReload) {
   panel.id = 'skin-upload-panel';
   panel.style.cssText = `
     position: absolute; bottom: 12px; right: 12px;
-    background: rgba(20,20,20,0.85); border-radius: 10px;
+    background: rgba(20,20,20,0.88); border-radius: 10px;
     padding: 10px 8px; display: flex; flex-direction: column;
-    gap: 4px; min-width: 150px; z-index: 200;
+    gap: 3px; min-width: 180px; max-width: 220px; z-index: 200;
     font-family: sans-serif; font-size: 12px; color: #fff;
     backdrop-filter: blur(6px); user-select: none;
   `;
 
+  // Title
   const title = document.createElement('div');
   title.textContent = 'Skin Texture';
-  title.style.cssText = 'font-weight:600; font-size:11px; color:#aaa; margin-bottom:4px; text-align:center;';
+  title.style.cssText = 'font-weight:600; font-size:11px; color:#aaa; margin-bottom:2px; text-align:center;';
   panel.appendChild(title);
 
+  // Coverage progress bar
   const REGIONS = ['forearm', 'chest', 'abdomen', 'thigh', 'calf', 'upper_arm', 'shoulders', 'back'];
+  const MIN_REGIONS = 5;
+  const regionState = {};  // track uploaded state
+
+  const progressWrap = document.createElement('div');
+  progressWrap.style.cssText = 'margin-bottom:4px;';
+  const progressLabel = document.createElement('div');
+  progressLabel.style.cssText = 'font-size:10px; color:#888; text-align:center; margin-bottom:2px;';
+  progressLabel.textContent = `0 / ${MIN_REGIONS} minimum regions`;
+  const progressBar = document.createElement('div');
+  progressBar.style.cssText = 'height:4px; background:rgba(255,255,255,0.1); border-radius:2px; overflow:hidden;';
+  const progressFill = document.createElement('div');
+  progressFill.style.cssText = 'height:100%; width:0%; background:linear-gradient(90deg,#4682ff,#32b432); border-radius:2px; transition:width 0.3s;';
+  progressBar.appendChild(progressFill);
+  progressWrap.appendChild(progressLabel);
+  progressWrap.appendChild(progressBar);
+  panel.appendChild(progressWrap);
+
+  function updateProgress() {
+    const done = Object.values(regionState).filter(Boolean).length;
+    const pct = Math.min(100, (done / REGIONS.length) * 100);
+    progressFill.style.width = pct + '%';
+    if (done >= MIN_REGIONS) {
+      progressLabel.textContent = `${done} / ${REGIONS.length} regions (ready!)`;
+      progressLabel.style.color = '#6f6';
+      progressFill.style.background = 'linear-gradient(90deg,#32b432,#6f6)';
+    } else {
+      progressLabel.textContent = `${done} / ${MIN_REGIONS} minimum regions`;
+      progressLabel.style.color = '#888';
+    }
+  }
+
+  // Status message
   const statusEl = document.createElement('div');
-  statusEl.style.cssText = 'font-size:10px; color:#888; text-align:center; margin-top:4px;';
-  statusEl.textContent = 'Upload close-up skin photos';
+  statusEl.style.cssText = 'font-size:10px; color:#888; text-align:center; margin-top:2px; min-height:14px;';
 
   for (const region of REGIONS) {
+    regionState[region] = false;
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex; align-items:center; gap:4px;';
+    row.style.cssText = 'display:flex; align-items:center; gap:3px;';
+
+    // Thumbnail preview
+    const thumb = document.createElement('div');
+    thumb.style.cssText = `
+      width:24px; height:24px; border-radius:3px; flex-shrink:0;
+      background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1);
+      overflow:hidden; display:flex; align-items:center; justify-content:center;
+      font-size:8px; color:#555;
+    `;
+    thumb.textContent = '--';
 
     const label = document.createElement('span');
     label.textContent = region.replace('_', ' ');
     label.style.cssText = 'flex:1; text-transform:capitalize; font-size:11px;';
 
+    // Upload button
     const uploadBtn = document.createElement('button');
     uploadBtn.textContent = 'Upload';
     uploadBtn.dataset.region = region;
     uploadBtn.style.cssText = `
       background: rgba(70,130,255,0.3); border: 1px solid rgba(70,130,255,0.5);
-      border-radius: 4px; color: #adf; padding: 2px 8px; cursor: pointer;
-      font-size: 10px;
+      border-radius: 4px; color: #adf; padding: 2px 6px; cursor: pointer;
+      font-size: 10px; min-width: 44px;
+    `;
+
+    // Reset button (hidden until uploaded)
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = 'x';
+    resetBtn.title = 'Re-upload';
+    resetBtn.style.cssText = `
+      background: none; border: 1px solid rgba(255,80,80,0.4);
+      border-radius: 3px; color: #f88; padding: 1px 4px; cursor: pointer;
+      font-size: 9px; display: none;
     `;
 
     const fileInput = document.createElement('input');
@@ -358,15 +413,24 @@ export function buildSkinUploadPanel(container, onModelReload) {
     fileInput.accept = 'image/*';
     fileInput.style.display = 'none';
 
-    uploadBtn.onclick = () => fileInput.click();
-    fileInput.onchange = async () => {
+    async function doUpload() {
       if (!fileInput.files.length) return;
-      uploadBtn.textContent = '...';
+      // Show loading spinner
+      uploadBtn.disabled = true;
+      uploadBtn.innerHTML = '<span style="display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,0.3);border-top-color:#adf;border-radius:50%;animation:spin 0.6s linear infinite"></span>';
       statusEl.textContent = `Uploading ${region}...`;
 
       const params = new URLSearchParams(window.location.search);
       const customerId = params.get('customer_id') || '1';
       const token = params.get('token') || '';
+
+      // Show thumbnail preview from selected file
+      const previewUrl = URL.createObjectURL(fileInput.files[0]);
+      thumb.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = previewUrl;
+      img.style.cssText = 'width:100%; height:100%; object-fit:cover;';
+      thumb.appendChild(img);
 
       const form = new FormData();
       form.append('image', fileInput.files[0]);
@@ -379,29 +443,90 @@ export function buildSkinUploadPanel(container, onModelReload) {
         });
         const data = await resp.json();
         if (data.status === 'success') {
+          regionState[region] = true;
           uploadBtn.textContent = '\u2713';
           uploadBtn.style.background = 'rgba(50,180,50,0.3)';
           uploadBtn.style.borderColor = 'rgba(50,180,50,0.5)';
-          statusEl.textContent = `${data.regions_available.length} regions done`;
+          uploadBtn.style.color = '#6f6';
+          resetBtn.style.display = 'inline';
+          thumb.style.borderColor = 'rgba(50,180,50,0.4)';
+          statusEl.textContent = `${data.regions_available.length} regions uploaded`;
+          statusEl.style.color = '#6f6';
+          updateProgress();
           if (data.glb_url && onModelReload) onModelReload(data.glb_url);
         } else {
           uploadBtn.textContent = 'Retry';
           statusEl.textContent = data.message || 'Failed';
+          statusEl.style.color = '#f88';
         }
       } catch (e) {
         uploadBtn.textContent = 'Retry';
         statusEl.textContent = 'Upload failed';
+        statusEl.style.color = '#f88';
       }
+      uploadBtn.disabled = false;
       fileInput.value = '';
+    }
+
+    uploadBtn.onclick = () => fileInput.click();
+    fileInput.onchange = doUpload;
+    resetBtn.onclick = () => {
+      // Reset to allow re-upload
+      regionState[region] = false;
+      uploadBtn.textContent = 'Upload';
+      uploadBtn.style.background = 'rgba(70,130,255,0.3)';
+      uploadBtn.style.borderColor = 'rgba(70,130,255,0.5)';
+      uploadBtn.style.color = '#adf';
+      resetBtn.style.display = 'none';
+      thumb.innerHTML = '';
+      thumb.textContent = '--';
+      thumb.style.borderColor = 'rgba(255,255,255,0.1)';
+      updateProgress();
+      fileInput.click();
     };
 
+    row.appendChild(thumb);
     row.appendChild(label);
     row.appendChild(uploadBtn);
+    row.appendChild(resetBtn);
     row.appendChild(fileInput);
     panel.appendChild(row);
   }
 
   panel.appendChild(statusEl);
+
+  // CSS spinner animation
+  if (!document.getElementById('skin-panel-spin-css')) {
+    const style = document.createElement('style');
+    style.id = 'skin-panel-spin-css';
+    style.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+    document.head.appendChild(style);
+  }
+
+  // Load existing region state from API
+  (async () => {
+    const params = new URLSearchParams(window.location.search);
+    const customerId = params.get('customer_id') || '1';
+    try {
+      const resp = await fetch(`/web_app/api/customer/${customerId}/skin_regions`);
+      const data = await resp.json();
+      if (data.status === 'success' && data.regions_available) {
+        for (const r of data.regions_available) {
+          regionState[r] = true;
+          const btn = panel.querySelector(`button[data-region="${r}"]`);
+          if (btn) {
+            btn.textContent = '\u2713';
+            btn.style.background = 'rgba(50,180,50,0.3)';
+            btn.style.borderColor = 'rgba(50,180,50,0.5)';
+            btn.style.color = '#6f6';
+            btn.nextElementSibling.style.display = 'inline';
+          }
+        }
+        updateProgress();
+      }
+    } catch (_) {}
+  })();
+
   container.appendChild(panel);
   return panel;
 }

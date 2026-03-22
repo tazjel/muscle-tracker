@@ -653,6 +653,26 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   int _autoCountdown = 0;
   String _autoInstruction = '';
   Timer? _autoTimer;
+  // Skin Capture mode
+  bool _isSkinMode = false;
+  String _selectedSkinRegion = 'forearm';
+  final Map<String, bool> _skinRegionsUploaded = {};
+  static const List<String> _skinRegions = ['forearm', 'chest', 'abdomen', 'thigh', 'calf', 'upper_arm', 'shoulders', 'back'];
+  static const Map<String, String> _skinRegionLabels = {
+    'forearm': 'Forearm', 'chest': 'Chest', 'abdomen': 'Abdomen',
+    'thigh': 'Thigh', 'calf': 'Calf', 'upper_arm': 'Upper Arm',
+    'shoulders': 'Shoulders', 'back': 'Back',
+  };
+  static const Map<String, String> _skinRegionGuides = {
+    'forearm': 'Hold camera 10-15cm from inner forearm',
+    'chest': 'Hold camera 10-15cm from center chest',
+    'abdomen': 'Hold camera 10-15cm from stomach area',
+    'thigh': 'Hold camera 10-15cm from front thigh',
+    'calf': 'Hold camera 10-15cm from calf muscle',
+    'upper_arm': 'Hold camera 10-15cm from upper arm',
+    'shoulders': 'Hold camera 10-15cm from shoulder',
+    'back': 'Hold camera 10-15cm from lower back',
+  };
 
   @override
   void initState() { super.initState(); _loadDualRole().then((_) => _initCamera()); _initSensors(); }
@@ -804,6 +824,86 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   }
 
   bool get isLevel => _pitch.abs() < _levelTolerance && _roll.abs() < _levelTolerance;
+
+  Future<void> _captureSkinRegion() async {
+    if (_controller == null || !_controller!.value.isInitialized || _isCapturing) return;
+    setState(() { _isCapturing = true; _statusMessage = 'Capturing skin...'; });
+    try {
+      final XFile image = await _controller!.takePicture();
+      setState(() => _statusMessage = 'Uploading $_selectedSkinRegion...');
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/skin_region/$_selectedSkinRegion'),
+      );
+      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
+      request.files.add(await http.MultipartFile.fromPath('image', image.path));
+      var streamedResponse = await request.send().timeout(const Duration(seconds: 30));
+      var response = await http.Response.fromStream(streamedResponse);
+      if (!mounted) return;
+      final result = jsonDecode(response.body);
+      if (response.statusCode == 200 && result['status'] == 'success') {
+        setState(() {
+          _skinRegionsUploaded[_selectedSkinRegion] = true;
+          final uploaded = _skinRegionsUploaded.values.where((v) => v).length;
+          _statusMessage = '$uploaded/${_skinRegions.length} regions captured';
+          _isCapturing = false;
+          // Auto-advance to next uncaptured region
+          final next = _skinRegions.firstWhere(
+            (r) => _skinRegionsUploaded[r] != true,
+            orElse: () => _selectedSkinRegion,
+          );
+          _selectedSkinRegion = next;
+        });
+      } else {
+        setState(() { _statusMessage = 'Failed: ${result["message"] ?? "error"}'; _isCapturing = false; });
+      }
+    } catch (e) { setState(() { _statusMessage = 'Error: $e'; _isCapturing = false; }); }
+  }
+
+  Widget _buildSkinRegionSelector() {
+    final uploaded = _skinRegionsUploaded.values.where((v) => v).length;
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 60,
+      left: 8, right: 8,
+      child: Column(children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(12)),
+          child: Column(children: [
+            Text('SKIN CAPTURE  $uploaded/${_skinRegions.length}', style: const TextStyle(color: AppTheme.primaryTeal, fontWeight: FontWeight.bold, fontSize: 12)),
+            const SizedBox(height: 4),
+            Text(_skinRegionGuides[_selectedSkinRegion] ?? '', style: const TextStyle(color: Colors.white70, fontSize: 11)),
+          ]),
+        ),
+        const SizedBox(height: 8),
+        Wrap(spacing: 4, runSpacing: 4, alignment: WrapAlignment.center, children: _skinRegions.map((r) {
+          final done = _skinRegionsUploaded[r] == true;
+          final selected = r == _selectedSkinRegion;
+          return GestureDetector(
+            onTap: () => setState(() => _selectedSkinRegion = r),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: done ? AppTheme.accentGreen.withAlpha(80) : (selected ? AppTheme.primaryTeal.withAlpha(80) : Colors.white10),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: selected ? AppTheme.primaryTeal : (done ? AppTheme.accentGreen : Colors.white24)),
+              ),
+              child: Text(
+                _skinRegionLabels[r] ?? r,
+                style: TextStyle(color: done ? AppTheme.accentGreen : (selected ? AppTheme.primaryTeal : Colors.white70), fontSize: 11, fontWeight: selected ? FontWeight.bold : FontWeight.normal),
+              ),
+            ),
+          );
+        }).toList()),
+      ]),
+    );
+  }
+
+  Widget _buildSkinGuideOverlay() {
+    return Positioned.fill(
+      child: CustomPaint(painter: _SkinGuideOverlayPainter()),
+    );
+  }
 
   Future<void> _captureImage() async {
     if (_controller == null || !_controller!.value.isInitialized || _isCapturing) return;
@@ -1095,6 +1195,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         CustomPaint(painter: BodyGuidePainter(phase: _capturePhase, muscleGroup: _selectedMuscleGroup)),
         _buildTopBar(),
         _buildCaptureUI(),
+        if (_isSkinMode) _buildSkinGuideOverlay(),
+        if (_isSkinMode) _buildSkinRegionSelector(),
         if (_autoRunning) Positioned.fill(child: AbsorbPointer(absorbing: true, child: _buildAutoOverlay())),
         if (_isDualMode) _buildDualOverlay(),
         if (_profileLocked) _buildProfileLockScreen(),
@@ -1200,7 +1302,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Widget _buildCaptureUI() {
     final bottomPad = MediaQuery.of(context).padding.bottom + 24;
     return Positioned(bottom: 0, left: 0, right: 0, child: Container(padding: EdgeInsets.fromLTRB(24, 16, 24, bottomPad), decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: [Colors.black87, Colors.transparent])), child: Column(mainAxisSize: MainAxisSize.min, children: [
-      SingleChildScrollView(scrollDirection: Axis.horizontal, child: Container(margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [_modeBtn('PHOTO', !_isRecordingMode && !_isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('VIDEO', _isRecordingMode && !_isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('AUTO', _isAutoMode && !_isProfileMode && !_isDualMode), _modeBtn('PROFILE', _isProfileMode), _modeBtn('DUAL', _isDualMode)]))),
+      SingleChildScrollView(scrollDirection: Axis.horizontal, child: Container(margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [_modeBtn('PHOTO', !_isRecordingMode && !_isAutoMode && !_isProfileMode && !_isDualMode && !_isSkinMode), _modeBtn('VIDEO', _isRecordingMode && !_isAutoMode && !_isProfileMode && !_isDualMode && !_isSkinMode), _modeBtn('AUTO', _isAutoMode && !_isProfileMode && !_isDualMode && !_isSkinMode), _modeBtn('SKIN', _isSkinMode), _modeBtn('PROFILE', _isProfileMode), _modeBtn('DUAL', _isDualMode)]))),
       AnimatedSwitcher(duration: const Duration(milliseconds: 300), child: _isRecording ? Text('00:0$_recordingCountdown', key: const ValueKey('timer'), style: const TextStyle(color: AppTheme.accentRed, fontSize: 32, fontWeight: FontWeight.bold)) : Row(mainAxisSize: MainAxisSize.min, children: [_phaseDot(0), const SizedBox(width: 6), Text(_phaseLabels[_capturePhase], key: ValueKey(_capturePhase), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2)), const SizedBox(width: 6), _phaseDot(1)])),
       const SizedBox(height: 12),
       if (_statusMessage != null) Text(_statusMessage!, style: const TextStyle(color: AppTheme.primaryTeal, fontSize: 13, fontWeight: FontWeight.w500)),
@@ -1209,10 +1311,10 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         if (_frontPath != null) IconButton(onPressed: _resetCapture, icon: const Icon(Icons.refresh, color: Colors.white54)),
         const SizedBox(width: 24),
         GestureDetector(
-          onTap: (_isCapturing || _profileRunning) ? null : (_isDualMode ? _dualCapture : (_isProfileMode ? _startProfileCapture : (_isAutoMode ? _startAutoCapture : (_isRecordingMode ? _toggleRecording : _captureImage)))),
+          onTap: (_isCapturing || _profileRunning) ? null : (_isDualMode ? _dualCapture : (_isProfileMode ? _startProfileCapture : (_isAutoMode ? _startAutoCapture : (_isSkinMode ? _captureSkinRegion : (_isRecordingMode ? _toggleRecording : _captureImage))))),
           child: Container(width: 76, height: 76, decoration: BoxDecoration(shape: BoxShape.circle, color: _profileRunning ? AppTheme.accentRed : (_isRecording ? AppTheme.accentRed : AppTheme.primaryTeal), border: Border.all(color: Colors.white, width: 4)),
             child: _isCapturing || (_isUploading && _isRecordingMode) ? const Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: Colors.black, strokeWidth: 3))
-              : Icon(_isProfileMode ? (_profileRunning ? Icons.stop : Icons.person_search) : (_isAutoMode ? Icons.play_arrow : (_isRecordingMode ? (_isRecording ? Icons.stop : Icons.videocam) : _phaseIcons[_capturePhase])), color: Colors.black, size: 36))),
+              : Icon(_isProfileMode ? (_profileRunning ? Icons.stop : Icons.person_search) : (_isAutoMode ? Icons.play_arrow : (_isSkinMode ? Icons.camera_alt : (_isRecordingMode ? (_isRecording ? Icons.stop : Icons.videocam) : _phaseIcons[_capturePhase]))), color: Colors.black, size: 36))),
         const SizedBox(width: 72),
       ]),
     ])));
@@ -1225,6 +1327,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         _isAutoMode = l == 'AUTO';
         _isProfileMode = l == 'PROFILE';
         _isDualMode = l == 'DUAL';
+        _isSkinMode = l == 'SKIN';
         _statusMessage = null;
         if (_isDualMode) {
           _dualStatus = 'READY';
@@ -1440,6 +1543,38 @@ class GhostOverlayPainter extends CustomPainter {
   }
   @override
   bool shouldRepaint(covariant GhostOverlayPainter old) => old.image != image;
+}
+
+class _SkinGuideOverlayPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Draw a centered rectangle guide for skin close-up framing
+    final cx = size.width / 2, cy = size.height / 2;
+    final rw = size.width * 0.6, rh = size.height * 0.35;
+    final rect = Rect.fromCenter(center: Offset(cx, cy), width: rw, height: rh);
+    final paint = Paint()
+      ..color = const Color(0x5500BCD4)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5;
+    canvas.drawRRect(RRect.fromRectAndRadius(rect, const Radius.circular(16)), paint);
+    // Corner highlights
+    final cornerLen = 20.0;
+    final cp = Paint()..color = const Color(0xFF00BCD4)..strokeWidth = 3..style = PaintingStyle.stroke;
+    // Top-left
+    canvas.drawLine(Offset(rect.left, rect.top + cornerLen), rect.topLeft, cp);
+    canvas.drawLine(rect.topLeft, Offset(rect.left + cornerLen, rect.top), cp);
+    // Top-right
+    canvas.drawLine(Offset(rect.right - cornerLen, rect.top), rect.topRight, cp);
+    canvas.drawLine(rect.topRight, Offset(rect.right, rect.top + cornerLen), cp);
+    // Bottom-left
+    canvas.drawLine(Offset(rect.left, rect.bottom - cornerLen), rect.bottomLeft, cp);
+    canvas.drawLine(rect.bottomLeft, Offset(rect.left + cornerLen, rect.bottom), cp);
+    // Bottom-right
+    canvas.drawLine(Offset(rect.right - cornerLen, rect.bottom), rect.bottomRight, cp);
+    canvas.drawLine(rect.bottomRight, Offset(rect.right, rect.bottom - cornerLen), cp);
+  }
+  @override
+  bool shouldRepaint(covariant CustomPainter old) => false;
 }
 
 class ReviewScreen extends StatelessWidget {
