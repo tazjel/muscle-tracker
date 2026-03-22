@@ -1,44 +1,40 @@
-# Next Session Brief — gtd3d (2026-03-22)
+# Next Session Brief — 2026-03-22
 
-## READ FIRST: `.agent/TOOLS_GUIDE.md` — all verification/debugging tools in one place
+## What Was Done This Session
 
-## CRITICAL: Run Preflight Before Pipeline
-```bash
-PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
-$PY scripts/photo_preflight.py          # ALWAYS run first — catches lighting issues in 1s
-$PY scripts/agent_verify.py meshes/skin_densepose.glb  # Check seam + symmetry
-```
-**Current photos FAIL preflight** — all 4 have uneven left-right lighting (LR diff 25-46).
-No amount of software blending fixes bad input photos.
+### Sonnet Upgrade Tasks (S-U1 through S-U9) — ALL COMMITTED
+| Commit | Task | What |
+|--------|------|------|
+| 30fa4ae | S-U1 | LAB color harmonization for multi-view texture |
+| 362008d | S-U2 | SMPL vertex landmarks + hip circumference fix |
+| 723c70b | S-U3 | Three.js muscle group highlighter |
+| dcc1f9c | S-U4 | A2B regressor (measurements → betas) + ONNX |
+| 4437a30 | S-U5+S-U7 | SMPLitex + IntrinsiX RunPod handlers |
+| 7c93ca7 | S-U6 | Heatmap comparison viewer |
+| 7aa4209 | S-U8 | ML body composition from SMPL betas |
+| 20ba34d | S-U9 | CameraHMR RunPod path for shape estimation |
 
-## Current State
-- Pipeline score: 87 WARN (MILD_ASYMMETRY: lr_diff=10.3)
-- Root cause: uneven photo lighting, NOT a code bug
-- Fix options: (1) retake photos with even lighting, (2) Task 8 TexDreamer AI infill
+### Pipeline Bug Fixes — COMMITTED (03abd06)
+- Mask resize fix (MediaPipe returns different resolution than input image)
+- LAB harmonization wired into smpl_direct.py rasterizer
+- DSINE resize to 1024px max for CPU practicality
+- Read-only vertices array fix from HMR
 
-## Verification Tools (use these, don't iterate blindly)
-| Tool | When | Time |
-|------|------|------|
-| `$PY scripts/photo_preflight.py` | Before pipeline | ~1s |
-| `$PY scripts/agent_verify.py meshes/X.glb` | After pipeline | ~2s |
-| `$PY scripts/agent_verify.py meshes/X.glb --render` | Visual check | ~10s |
-| `$PY scripts/run_densepose_texture.py --verify` | Full pipeline + gate | ~35s |
-| `$PY scripts/agent_browser.py viewer3d X.glb --rotate 0,90,180,270` | Screenshots | ~8s |
+### Per-Region Skin Texture Pipeline — COMMITTED
+- `core/skin_patch.py` (b47fd81): Image Quilting + Laplacian blending
+- API + viewer UI (9601a63): POST /api/customer/<id>/skin_region/<region>, skin upload panel
 
-## Key Files
-- `core/texture_bake.py` — angular view weighting, seam smoother, torso=front+back only
-- `core/glb_inspector.py` — seam detection, symmetry check, render screenshot analysis
-- `scripts/photo_preflight.py` — photo lighting/exposure pre-check
-- `scripts/run_densepose_texture.py` — full pipeline with LAB harmonization, CLAHE, --verify
+### Key Discovery
+Full-body photo projection onto mesh is fundamentally broken (seams, gaps, distortion). New approach: per-region close-up skin photos tiled onto SMPL body parts. Pipeline works end-to-end in ~9 seconds.
 
-## Pending Work
-- **Task 8 (TexDreamer)**: AI texture infill from single photo — eliminates multi-view seams
-- **Task 9 (Photo→SMPL)**: Needs re-research (Gemini hallucinated model names)
-- **Photo retake**: Even lighting needed (face window or 2 symmetric lights)
-- research/SUMMARY.md has tasks 1-9 status
+## What's Next
+- **GEMINI_NEXT_TASKS.md** — 4 research tasks (canonical UVs is HIGH priority)
+- **SONNET_NEXT_TASKS.md** — 7 implementation tasks (PBR, canonical UVs, Flutter capture, pipeline wiring)
+- A2B regressor needs retraining with 10,000+ samples (currently 500)
+- Muscle highlighter vertex ranges are approximate — need real Meshcapade data
 
-## Lessons Learned (Don't Repeat)
-- Don't iterate on blending code if preflight shows bad photos — fix the input
-- Old score_glb gave false PASS (94) — now correctly reports WARN with asymmetry
-- Gemini's commit d8d6ec1 deleted export_glb — always check git diff before accepting Gemini work
-- GLB must be in web_app/static/viewer3d/ to serve via py4web (no /api/mesh/ for standalone files)
+## Branch
+`gemini/research-phase5` — all work on this branch
+
+## Server
+py4web on port 8000. Must restart after core/*.py changes. Demo user: demo@muscle.com / demo123, customer ID 1.

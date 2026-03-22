@@ -1,464 +1,299 @@
-# Sonnet Upgrade Tasks — Photorealism & Pipeline Quality
+# Sonnet Implementation Tasks — gtd3d Research-Informed Upgrades (v2)
 
-**Agent:** Sonnet | **Date:** 2026-03-22
-**Server restart:** YES after Python changes | **Port:** 8000
-**Python:** `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe`
-**When done:** Commit with descriptive message to master branch.
-
-> Goal: Upgrade gtd3d visual quality and pipeline defaults based on Phase 3 research
-> findings. Six tightly scoped tasks — do them in order.
+Generated: 2026-03-22 | Source: Gemini Research Phases 1-5 + Codebase Audit
+Previous Sonnet tasks: `SONNET_TASKS.md` (T1-T10: 2D silhouette pipeline) — still valid, these are ADDITIONAL.
 
 ---
 
-## CRITICAL RULES — READ BEFORE ANY TASK
+## Rules for Sonnet
 
-1. **`onBeforeCompile` is BANNED** — body_viewer.js:628 says it breaks `MeshPhysicalMaterial`'s transmission/IOR shader code. The viewer uses canvas compositing instead.
-2. **Do NOT use `transmission` or `thickness`** on the skin material — these make the mesh transparent (glass effect), NOT subsurface scattering. Skin is opaque.
-3. **Always grep before reading** — `controllers.py` is 3200+ lines, `body_viewer.js` is 3800+ lines, `main.dart` is 2300+ lines.
-4. **Test commands use `$PY`** — always set `PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe` first.
-5. **Read `.agent/TOOLS_GUIDE.md`** for all verification tool usage.
+- **Python**: `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe`
+- **Server restart required** after any `core/*.py` or `web_app/*.py` changes
+- **Always grep before reading** — `controllers.py` is 2200+ lines, `main.dart` is 1900+ lines
+- **Run `photo_preflight.py` before pipeline, `agent_verify.py` after** — always
+- **Do NOT use MCP tools** — use project scripts or create new ones in `scripts/`
+- **Do NOT run `flutter analyze`**
+- **Commit after each task completes** — descriptive message, no batching
+- **Read `.agent/TOOLS_GUIDE.md`** for all verification tool usage
+- **`onBeforeCompile` is BANNED** in viewer JS (breaks MeshPhysicalMaterial)
 
 ---
 
-## T1 — Default Atlas Resolution 1024 → 2048
+## S-U1: LAB Color Harmonization for Multi-View Texture
 
-**Effort:** 15 min | **Depends on:** Nothing | **Risk:** Low
+**Priority**: URGENT | **Effort**: Small (< 30 min) | **Depends on**: Nothing
 
-### What to read
-```bash
-grep -n 'default=1024\|atlas_size.*1024\|texture_size.*1024' scripts/run_densepose_texture.py core/densepose_texture.py core/texture_factory.py
+**Problem**: Color shifts between front/back/side photos create visible seams on the UV atlas.
+
+**What to build**: Pre-process all camera views to match the front photo's color before UV baking.
+
+**File to edit**: `core/densepose_texture.py`
+- Grep for `def.*bake` and `def.*inpaint` to find where multi-view photos are combined
+- Add `harmonize_view()` function BEFORE views enter UV baking
+
+**Exact algorithm** (from `research/task7_texture_seam_fix.md` — "Approach #1"):
+```python
+import cv2, numpy as np
+
+def harmonize_view(source_bgr, anchor_bgr):
+    """Match source photo colors to anchor (front) photo using LAB space."""
+    src_lab = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2LAB).astype("float32")
+    tar_lab = cv2.cvtColor(anchor_bgr, cv2.COLOR_BGR2LAB).astype("float32")
+    for i in range(3):
+        src_mu, src_sigma = src_lab[:,:,i].mean(), src_lab[:,:,i].std()
+        tar_mu, tar_sigma = tar_lab[:,:,i].mean(), tar_lab[:,:,i].std()
+        if src_sigma > 0:
+            src_lab[:,:,i] = (src_lab[:,:,i] - src_mu) * (tar_sigma / src_sigma) + tar_mu
+    return cv2.cvtColor(np.clip(src_lab, 0, 255).astype("uint8"), cv2.COLOR_LAB2BGR)
 ```
 
-### What to do
-1. Open `scripts/run_densepose_texture.py` line 36:
-   ```python
-   # BEFORE:
-   parser.add_argument('--atlas', type=int, default=1024, help='Atlas resolution')
-   # AFTER:
-   parser.add_argument('--atlas', type=int, default=2048, help='Atlas resolution')
-   ```
+**Integration**: Call `harmonize_view(back_img, front_img)` on every non-front view before they enter the baking loop.
 
-2. Check `core/densepose_texture.py` — if any function has `texture_size=1024` as default, change to `texture_size=2048`.
-
-3. Check `core/texture_factory.py` — if any function has `atlas_size=1024` as default, change to `atlas_size=2048`.
-
-4. Do NOT change any other defaults (e.g., in `core/texture_bake.py` or `controllers.py` — those are set per-call).
-
-### Test
+**Test**:
 ```bash
 PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
-$PY scripts/run_densepose_texture.py --help 2>&1 | grep atlas
-# Should show: default=2048
+$PY scripts/run_densepose_texture.py --verify
+$PY scripts/agent_verify.py meshes/latest.glb
 ```
 
-### DO NOT
-- Change body_viewer.js
-- Change export_glb
-- Change any resolution that's passed as a function argument (only change defaults)
+**Do NOT**: Touch UV mapping logic. Only pre-process input photos.
 
 ---
 
-## T2 — Wrap-Lighting SSS via Additive Overlay Mesh
+## S-U2: SMPL Vertex Index Integration for Measurements
 
-**Effort:** 2 hours | **Depends on:** Nothing | **Risk:** Medium
+**Priority**: HIGH | **Effort**: Medium | **Depends on**: Nothing
 
-### Context
-The skin currently looks "plastic" because there's no subsurface light scattering. We can't use `onBeforeCompile` (banned) or `transmission` (wrong effect). Instead, we add a SECOND transparent mesh that renders a warm glow at shadow edges.
+**Problem**: `core/smpl_optimizer.py` `extract_measurements()` (~line 356) uses approximate landmarks. Gemini Task 22 provides exact SMPL 6890 vertex indices.
 
-### What to read
-```bash
-grep -n 'SKIN_MATERIAL\|realSkinMat\|pbrMat\|bodyMesh\|loadModel' web_app/static/viewer3d/body_viewer.js | head -20
-```
-Focus on:
-- `SKIN_MATERIAL` definition (line ~602)
-- Where the GLB mesh is loaded and material applied (~line 1280-1310)
-- The `init()` function (~line 698)
+**What to build**: Replace approximate landmark detection with verified vertex indices for circumference cutting planes.
 
-### What to do
-1. After the GLB mesh is loaded and `SKIN_MATERIAL` applied, add a subsurface overlay:
+**File to edit**: `core/smpl_optimizer.py` — grep for `extract_measurements`
 
-```javascript
-// ── Subsurface Scattering Overlay ────────────────────────────────────────
-// Second-pass mesh with additive blending for warm glow at shadow edges.
-// Does NOT modify the main MeshPhysicalMaterial.
-function _addSSSOverlay(mesh) {
-  const sssUniforms = {
-    uLightDir:    { value: new THREE.Vector3(0.5, 1.0, 0.3).normalize() },
-    uSSSColor:    { value: new THREE.Color(0.8, 0.25, 0.15) }, // warm red
-    uSSSStrength: { value: 0.35 },
-    uWrap:        { value: 0.4 },
-  };
-
-  const sssMaterial = new THREE.ShaderMaterial({
-    uniforms: sssUniforms,
-    vertexShader: `
-      varying vec3 vNormal;
-      varying vec3 vWorldPos;
-      void main() {
-        vNormal = normalize(normalMatrix * normal);
-        vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      uniform vec3 uLightDir;
-      uniform vec3 uSSSColor;
-      uniform float uSSSStrength;
-      uniform float uWrap;
-      varying vec3 vNormal;
-      varying vec3 vWorldPos;
-      void main() {
-        float NdotL = dot(normalize(vNormal), uLightDir);
-        // Wrap lighting: light bleeds into shadow side
-        float wrapDiffuse = max(0.0, (NdotL + uWrap) / (1.0 + uWrap));
-        // SSS is strongest where light is just below the surface (shadow edge)
-        float sss = (1.0 - wrapDiffuse) * smoothstep(-0.3, 0.3, NdotL);
-        vec3 color = uSSSColor * sss * uSSSStrength;
-        gl_FragColor = vec4(color, sss * uSSSStrength * 0.6);
-      }
-    `,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    side: THREE.FrontSide,
-  });
-
-  mesh.traverse(child => {
-    if (child.isMesh) {
-      const overlay = new THREE.Mesh(child.geometry, sssMaterial);
-      overlay.renderOrder = child.renderOrder + 1;
-      overlay.name = 'sss_overlay';
-      child.parent.add(overlay);
-    }
-  });
-
-  // Expose for UI sliders
-  window.setSSSStrength = (val) => { sssUniforms.uSSSStrength.value = val; };
-  window.setSSSColor = (hex) => { sssUniforms.uSSSColor.value.set(hex); };
+**Vertex index mapping** (from `research/task22_smpl_anthropometry_mapping.md`):
+```python
+SMPL_LANDMARKS = {
+    'HEAD_TOP': 412, 'L_HEEL': 3458,
+    'NECK': 3050, 'L_NIPPLE': 3042, 'R_NIPPLE': 6489,
+    'BELLY_BUTTON': 3501, 'LOW_LEFT_HIP': 3134,
+    'L_SHOULDER': 3011, 'R_SHOULDER': 6470,
+    'L_THIGH': 947, 'L_CALF': 1103,
+    'R_BICEP': 4855, 'R_FOREARM': 5197,
+    'L_WRIST': 2241, 'R_WRIST': 5559,
+    'L_ANKLE': 3325, 'L_ELBOW': 1643, 'CROTCH': 1210,
 }
 ```
 
-2. Call `_addSSSOverlay(bodyMesh)` right after the GLB model is loaded and added to the scene.
-
-3. Find where `bodyMesh` is set (grep for `bodyMesh =` or `bodyMesh=`). Add the call after the mesh is positioned.
-
-4. Sync the `uLightDir` uniform with the scene's directional light. Find the main directional light (grep `DirectionalLight`) and update `uLightDir` in the render loop or when light changes.
-
-### Test
+**CRITICAL — verify indices first** (Gemini has fabricated data before):
 ```bash
-PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
-$PY scripts/agent_browser.py viewer3d skin_densepose.glb --rotate 0,90,180,270
-# Compare: shadow edges should have warm red-ish glow
+$PY -c "
+from core.smpl_direct import build_smpl_mesh
+m = build_smpl_mesh()
+v = m['vertices']
+print(f'Head top (412): Y={v[412][1]:.1f}')   # should be highest Y
+print(f'Waist (3501): Y={v[3501][1]:.1f}')     # should be mid-torso
+print(f'Heel (3458): Y={v[3458][1]:.1f}')      # should be near 0
+print(f'Neck (3050): Y={v[3050][1]:.1f}')       # should be below head
+print(f'L_Shoulder (3011): Y={v[3011][1]:.1f}') # should be near neck
+"
 ```
+If Y-values don't make anatomical sense → clone `https://github.com/DavidBoja/SMPL-Anthropometry` and extract correct indices from its `data/` files. Do NOT blindly trust the indices.
 
-### DO NOT
-- Use `onBeforeCompile` (breaks MeshPhysicalMaterial)
-- Modify `SKIN_MATERIAL` or `realSkinMat` or `pbrMat` properties
-- Use `transmission` or `thickness` (glass effect, wrong for skin)
-- Delete any existing code
+**For circumferences**: Use vertex as plane center, bone direction (parent_joint → child_joint) as plane normal, intersect mesh surface with plane, measure perimeter.
+
+**Acceptance**: Default-betas mesh measurements vs SMPL-Anthropometry library → MAE < 2cm on circumferences.
 
 ---
 
-## T3 — Improve Pore Normal Tiling Quality
+## S-U3: Three.js Muscle Group Highlighter
 
-**Effort:** 1 hour | **Depends on:** Nothing | **Risk:** Low
+**Priority**: MEDIUM | **Effort**: Medium | **Depends on**: Nothing
 
-### What to read
-```bash
-grep -n '_applyPoreNormalPatch\|_poreNormal\|poreSize\|tilesX' web_app/static/viewer3d/body_viewer.js
-```
-Focus on function `_applyPoreNormalPatch` at line 652.
+**Problem**: No per-muscle visualization in viewer. Users can't see which groups are tracked.
 
-### What to do
-The current pore tiling stamps a uniform 256px tile everywhere. This causes visible repetition. Upgrade:
+**Files**:
+- Read `web_app/static/viewer3d/viewer.js` — mesh loading
+- Read `web_app/static/viewer3d/measurement_overlay.js` — click/hover patterns
+- Create `web_app/static/viewer3d/muscle_highlighter.js`
 
-1. **In `_applyPoreNormalPatch` (line 652):** Replace the uniform tiling loop with rotation-randomized tiling:
+**Data source**: SMPL 24-part segmentation JSON from `https://github.com/Meshcapade/wiki/tree/main/assets/SMPL_body_segmentation` — download the JSON, embed vertex indices for 14 muscle groups:
 
+| Display Name | SMPL Segments to use |
+|---|---|
+| Biceps L/R | L_UpperArm / R_UpperArm |
+| Pectorals | Spine2 (chest) |
+| Abs | Spine1 (stomach) |
+| Glutes | Pelvis (buttocks) |
+| Quads L/R | L_Thigh / R_Thigh |
+| Calves L/R | L_Calf / R_Calf |
+| Deltoids L/R | L_Shoulder / R_Shoulder |
+
+**Three.js code** (from `research/task24_muscle_segmentation.md` Part 5):
 ```javascript
-// Replace the simple tile loop (lines 678-684) with:
-const tileW = 192; // smaller tiles = less visible repetition
-const tilesX = Math.ceil(size / tileW) + 1;
-const tilesY = Math.ceil(size / tileW) + 1;
-
-for (let y = 0; y < tilesY; y++) {
-  for (let x = 0; x < tilesX; x++) {
-    ctx.save();
-    const cx = x * tileW + tileW / 2;
-    const cy = y * tileW + tileW / 2;
-    // Pseudo-random rotation per tile (deterministic from position)
-    const angle = ((x * 7 + y * 13) % 4) * Math.PI / 2; // 0, 90, 180, 270°
-    ctx.translate(cx, cy);
-    ctx.rotate(angle);
-    ctx.drawImage(_poreNormalImg, -tileW / 2, -tileW / 2, tileW, tileW);
-    ctx.restore();
-  }
-}
+const count = geometry.attributes.position.count;
+geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+const colors = geometry.attributes.color;
+// Highlight selected group, default white for others
+material.vertexColors = true;
 ```
 
-2. **Vary intensity by region:** After the tiling loop, optionally darken the pore overlay in regions that should be smoother (lips, eyelids). This is optional and can be done by drawing a semi-transparent rectangle over those UV regions.
+**UI**: Sidebar with muscle group buttons. Click → highlight vertices → show group name.
 
-### Test
-```bash
-PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
-$PY scripts/agent_browser.py viewer3d skin_densepose.glb --rotate 0,45
-# Zoom in close — pore pattern should NOT show visible grid repetition
-```
-
-### DO NOT
-- Use `onBeforeCompile`
-- Change material type
-- Change `_poreNormalStrength` default (keep 0.3)
+**Do NOT**: Write custom shaders. Vertex colors + MeshStandardMaterial are sufficient and mobile-safe.
+**Do NOT**: Use `onBeforeCompile` (banned — breaks MeshPhysicalMaterial).
 
 ---
 
-## T4 — Add Displacement Map to GLB Export
+## S-U4: A2B Regressor (Measurements → SMPL Betas)
 
-**Effort:** 1 hour | **Depends on:** Nothing | **Risk:** Low
+**Priority**: HIGH | **Effort**: Large | **Depends on**: S-U2
 
-### What to read
-```bash
-grep -n 'def export_glb\|displacement\|ao_map' core/mesh_reconstruction.py | head -15
-grep -n 'displacement\|generate_displacement' core/texture_factory.py | head -10
-grep -n 'displacement' scripts/run_densepose_texture.py
+**Problem**: No inverse mapping from measurements → SMPL betas. Blocks "FutureMe" body morphing feature (user enters target weight/measurements → sees predicted body shape).
+
+**Create**: `core/a2b_regressor.py`
+**Read**: `core/smpl_optimizer.py` — `extract_measurements()` (~line 356) and `smpl_forward()` (~line 68)
+
+**Step 1 — Generate synthetic data** (run once, save to `data/a2b_training.csv`):
+```python
+import numpy as np
+for i in range(10000):
+    betas = np.random.randn(10) * 1.5  # wider than N(0,1) for body diversity
+    mesh = smpl_forward(betas)
+    measurements = extract_measurements(mesh['vertices'], mesh['joints'], mesh['faces'])
+    # CSV row: [all_measurement_values..., all_beta_values...]
 ```
 
-### What to do
-1. **In `core/mesh_reconstruction.py` function `export_glb` (line 142):**
-   Add `displacement_map=None` parameter alongside existing `ao_map=None`.
+**Step 2 — Train MLP** (from `research/task23_a2b_regressor_training.md`):
+- Architecture: input_dim→128→64→10 (ReLU, MSE loss, Adam lr=0.001, 200 epochs)
+- Split: 80/20 train/test
 
-   After the AO map encoding block (~line 194-195), add:
-   ```python
-   disp_buf_idx = None
-   if displacement_map is not None and uvs is not None:
-       success_d, enc_d = cv2.imencode('.png', displacement_map)
-       if success_d:
-           disp_buf_idx = len(gltf['buffers'][0]['uri_data'])
-           # ... same pattern as normal_map/roughness_map/ao_map encoding
-   ```
+**Step 3 — Validate**:
+- Round-trip: input_measurements → predict_betas → rebuild_mesh → extract_measurements → delta < 1cm per key
+- V2V mesh error: < 5mm average
 
-   Note: glTF 2.0 does NOT have a standard displacement map extension. Store it as an extra texture in `material.extensions` or as `material.extras.displacementMap`. The viewer can read it from extras.
+**Step 4 — Export**: `torch.onnx.export()` → int8 quantize → `models/a2b_regressor.onnx` (~20KB)
 
-2. **In `scripts/run_densepose_texture.py`:**
-   After generating the AO map, check if `texture_factory` produces a displacement map. If so, pass it to `export_glb(..., displacement_map=disp)`.
-
-3. **In the viewer (`body_viewer.js`):** After loading a GLB, check for `material.extras.displacementMap` and apply it:
-   ```javascript
-   if (mat.userData && mat.userData.displacementMap) {
-     mat.displacementMap = mat.userData.displacementMap;
-     mat.displacementScale = 0.5;
-   }
-   ```
-
-### Test
-```bash
-PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
-$PY scripts/agent_verify.py meshes/skin_densepose.glb
-# Should still PASS — displacement doesn't affect quality score
-```
-
-### DO NOT
-- Modify vertex positions in the mesh
-- Change existing normal_map/roughness_map/ao_map encoding
-- Use KHR_materials_displacement (not widely supported)
+**Do NOT**: Use ANSUR/CAESAR (restricted licenses). Synthetic data is sufficient and license-clean.
+**Do NOT**: Install heavy dependencies — torch is already available, just add onnxruntime for export.
 
 ---
 
-## T5 — Ensure Canonical SMPL UV Is Default Everywhere
+## S-U5: SMPLitex Texture Handler on RunPod
 
-**Effort:** 1 hour | **Depends on:** Nothing | **Risk:** Medium
+**Priority**: HIGH | **Effort**: Medium | **Depends on**: RunPod access
 
-### What to read
+**Problem**: `core/densepose_texture.py` `inpaint_atlas()` (~line 216) uses cv2.inpaint(Telea) for unseen body regions — looks flat/mannequin. SMPLitex generates realistic skin via diffusion.
+
+**Files**:
+- Edit `runpod/handler.py` — add SMPLitex action
+- Edit `core/densepose_texture.py` — add `inpaint_atlas_gpu()` calling RunPod
+
+**CRITICAL — verify model ID first** (Gemini has fabricated HuggingFace IDs):
 ```bash
-grep -n 'canonical\|cylindrical\|uv_mode\|compute_uvs\|_load_canonical' core/smpl_direct.py core/uv_unwrap.py core/uv_canonical.py scripts/run_densepose_texture.py | head -30
+curl -sI https://huggingface.co/mcomino/smplitex-controlnet | head -5
+# If 404 → search HuggingFace for "smplitex" to find real ID
+# Also check: https://github.com/ggxxii/texdreamer for the actual repo
 ```
 
-### Context
-- `core/smpl_direct.py` (line 27-33) already loads canonical SMPL UVs from `smpl_canonical_vert_uvs.npy`
-- `core/uv_canonical.py` has `get_canonical_uvs()` that extracts UVs from `SMPL_NEUTRAL.pkl`
-- `core/uv_unwrap.py` has cylindrical UV fallback
-- `scripts/run_densepose_texture.py` may use cylindrical UVs from uv_unwrap
-- SMPLitex (our next texture upgrade) REQUIRES canonical SMPL UVs
+**Handler code** (from `research/task25_smplitex_actual_api.md` Part 1):
+- Pipeline: `StableDiffusionControlNetInpaintPipeline` (diffusers)
+- ControlNet: `mcomino/smplitex-controlnet`
+- Base: `runwayml/stable-diffusion-v1-5`, torch.float16
+- Prompt MUST include: `"a sks texturemap of a human body"`
+- Input: 1024x1024 partial UV + binary mask
+- Output: complete UV atlas
+- Time: ~12.5s on A40
 
-### What to do
-1. **In `scripts/run_densepose_texture.py`:**
-   - Add `--uv-mode` argument:
-     ```python
-     parser.add_argument('--uv-mode', choices=['canonical', 'cylindrical'],
-                         default='canonical', help='UV layout (canonical for SMPLitex compat)')
-     ```
-   - Where UVs are computed, check `args.uv_mode`:
-     ```python
-     if args.uv_mode == 'canonical':
-         from core.uv_canonical import get_canonical_uvs
-         uvs = get_canonical_uvs()
-         if uvs is None:
-             logger.warning("Canonical UVs unavailable, falling back to cylindrical")
-             from core.uv_unwrap import compute_uvs
-             uvs = compute_uvs(verts)
-     else:
-         from core.uv_unwrap import compute_uvs
-         uvs = compute_uvs(verts)
-     ```
+**Feature flag**: `USE_GPU_INFILL = os.environ.get('GPU_INFILL', 'false') == 'true'`
 
-2. **Verify `core/smpl_direct.py`** already defaults to canonical (it does — line 340-343). No changes needed there.
-
-3. **Verify `SMPL_NEUTRAL.pkl` exists** at `runpod/SMPL_NEUTRAL.pkl`. If not, the fallback to cylindrical must work silently.
-
-### Test
-```bash
-PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
-$PY scripts/run_densepose_texture.py --uv-mode canonical --atlas 2048 --help
-# Verify the flag is listed
-
-# If SMPL_NEUTRAL.pkl exists:
-$PY -c "from core.uv_canonical import get_canonical_uvs; uvs=get_canonical_uvs(); print(f'Canonical UVs: {uvs.shape}' if uvs is not None else 'FALLBACK')"
-```
-
-### DO NOT
-- Delete cylindrical UV support (keep as fallback)
-- Modify `core/uv_canonical.py` (it works correctly)
-- Remove the SMPL_NEUTRAL.pkl path from any file
+**Do NOT**: Remove cv2.inpaint fallback. Keep as free-tier/offline path.
 
 ---
 
-## T6 — Photo Preflight Feedback in Flutter App
+## S-U6: Longitudinal Body Change Heatmap in Viewer
 
-**Effort:** 2 hours | **Depends on:** Nothing | **Risk:** Medium
+**Priority**: MEDIUM | **Effort**: Medium | **Depends on**: S-U2
 
-### What to read
-```bash
-grep -n 'CameraPreview\|StreamBuilder\|_cameraController\|_buildPreview\|captureImage' companion_app/lib/main.dart | head -20
-```
+**Problem**: `comparison_viewer.js` shows side-by-side meshes but no per-vertex change heatmap. Users can't see WHERE they changed.
 
-### Context
-Current photos FAIL preflight with LR brightness diff 25-46. Users have no idea their lighting is bad until after upload. Adding a real-time indicator during camera preview prevents bad captures.
+**Files**:
+- Read `core/mesh_comparison.py` — `compare_meshes()` returns displacement map
+- Read `core/progress.py` — trend analysis exists (~240 lines)
+- Edit `web_app/static/viewer3d/comparison_viewer.js` — add heatmap mode
 
-### What to do
-1. **In `main.dart`, find the camera preview widget** (grep for `CameraPreview` or the widget that shows the live camera feed).
+**Backend**:
+- New endpoint: `GET /api/customer/<id>/body_diff?from=<date>&to=<date>`
+- Zero pose params (theta=0) on both meshes before diff (pose-invariant — this is already how our meshes are stored in A-pose)
+- Return: `{vertex_displacements: [float...], min_mm, max_mm}`
 
-2. **Add a periodic brightness checker** that runs every 500ms during preview:
-   ```dart
-   Timer? _lightnessTimer;
+**Frontend**:
+- Load displacements → normalize to [-1, +1]
+- Map to colormap: blue (loss) → white (no change) → red (growth)
+- Apply as vertex color BufferAttribute
+- Toggle: "Show Changes" button in viewer toolbar
 
-   void _startLightnessCheck() {
-     _lightnessTimer = Timer.periodic(Duration(milliseconds: 500), (_) async {
-       if (_cameraController == null || !_cameraController!.value.isInitialized) return;
-       try {
-         final image = await _cameraController!.takePicture();
-         final bytes = await File(image.path).readAsBytes();
-         final decoded = img.decodeImage(bytes);
-         if (decoded == null) return;
-
-         // Split into left and right halves
-         final w = decoded.width;
-         final h = decoded.height;
-         double leftSum = 0, rightSum = 0;
-         int leftCount = 0, rightCount = 0;
-
-         for (int y = 0; y < h; y += 4) {  // sample every 4th pixel for speed
-           for (int x = 0; x < w; x += 4) {
-             final pixel = decoded.getPixel(x, y);
-             final lum = (0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b);
-             if (x < w ~/ 2) { leftSum += lum; leftCount++; }
-             else { rightSum += lum; rightCount++; }
-           }
-         }
-
-         final leftAvg = leftSum / leftCount;
-         final rightAvg = rightSum / rightCount;
-         final diff = (leftAvg - rightAvg).abs();
-
-         setState(() {
-           _lightingQuality = diff < 15 ? 'good' : (diff < 25 ? 'warn' : 'bad');
-           _lightingDiff = diff;
-         });
-
-         // Clean up temp file
-         File(image.path).deleteSync();
-       } catch (e) {
-         // Silently ignore — preview check is best-effort
-       }
-     });
-   }
-   ```
-
-3. **Add an overlay indicator** on the camera preview:
-   ```dart
-   Widget _buildLightingIndicator() {
-     final color = _lightingQuality == 'good' ? Colors.green
-                 : _lightingQuality == 'warn' ? Colors.orange
-                 : Colors.red;
-     final text = _lightingQuality == 'good' ? 'Lighting OK'
-                : _lightingQuality == 'warn' ? 'Uneven lighting'
-                : 'Bad lighting — face the light';
-     return Positioned(
-       top: 16, left: 16, right: 16,
-       child: Container(
-         padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-         decoration: BoxDecoration(
-           color: color.withOpacity(0.8),
-           borderRadius: BorderRadius.circular(8),
-         ),
-         child: Text(text, style: TextStyle(color: Colors.white, fontSize: 14)),
-       ),
-     );
-   }
-   ```
-
-4. **Wire it up:** Call `_startLightnessCheck()` when camera preview starts, cancel `_lightnessTimer` when navigating away.
-
-5. **Add `image` package** to `pubspec.yaml` if not already present:
-   ```yaml
-   dependencies:
-     image: ^4.0.0
-   ```
-
-### Test
-```bash
-# Build and deploy
-GTD="python C:/Users/MiEXCITE/Desktop/GTDdebug/gtddebug.py"
-cd companion_app
-/c/Users/MiEXCITE/development/flutter/bin/flutter.bat build apk --debug
-$GTD agent-cycle dev --json
-```
-
-### DO NOT
-- Run `flutter analyze`
-- Use `flutter run` (use `flutter build apk --debug` + `adb install`)
-- Modify server code
-- Block the UI thread (the brightness check MUST be async)
-- Take full-resolution photos for the check (use `takePicture` but sample sparsely)
+**Do NOT**: Build a timeline slider — just A-vs-B comparison for MVP.
+**Do NOT**: Use `onBeforeCompile` (banned).
 
 ---
 
-## Task Dependencies & Order
+## S-U7: IntrinsiX PBR Maps on RunPod
 
-```
-T1 (15 min) ──→ independent, do first (quick win)
-T2 (2 hours) ──→ independent (biggest visual impact)
-T3 (1 hour) ──→ independent (improves close-up detail)
-T4 (1 hour) ──→ independent (adds displacement to GLB)
-T5 (1 hour) ──→ independent (unblocks SMPLitex)
-T6 (2 hours) ──→ independent (prevents bad photo captures)
-```
+**Priority**: MEDIUM | **Effort**: Medium | **Depends on**: S-U5
 
-Recommended order: T1 → T5 → T3 → T2 → T4 → T6
-(Quick wins first, then viewer upgrades, then Flutter)
+**Problem**: Pipeline produces albedo only. Photorealistic Three.js rendering needs normal/roughness/metallic maps.
 
-## Verification After All Tasks
-
+**CRITICAL — verify first**:
 ```bash
-PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
+curl -sI https://huggingface.co/PeterKocsis/IntrinsiX | head -5
+```
 
-# 1. Atlas default is 2048
-$PY scripts/run_densepose_texture.py --help 2>&1 | grep -i 'atlas.*2048'
+**Handler code** (from `research/task25_smplitex_actual_api.md` Part 2):
+- `IntrinsiXPipeline` wrapping FLUX.1-dev + LoRA `PeterKocsis/IntrinsiX`
+- Input: albedo 1024x1024 → Output: normal_map, roughness_map, metallic_map
+- Time: ~18s on A40
 
-# 2. Canonical UVs work
-$PY -c "from core.uv_canonical import get_canonical_uvs; u=get_canonical_uvs(); print(u.shape if u is not None else 'NONE')"
+**Licensing**: FLUX.1-dev is non-commercial. SMPL topology is copyrighted. Flag for user decision before commercial use.
 
-# 3. Viewer loads (needs server running)
-$PY scripts/agent_browser.py audit http://localhost:8000/web_app/static/viewer3d/index.html
+**Total with S-U5**: ~35.5s for partial_UV → complete albedo → PBR maps.
 
-# 4. GLB quality check
-$PY scripts/agent_verify.py meshes/skin_densepose.glb
+---
+
+## S-U8: Body Composition ML — BLOCKED on Gemini G-R1
+
+**Priority**: HIGH | **Cannot start until**: Gemini G-R1 delivers verified paper + weights
+
+**When unblocked**: Add `estimate_body_composition_ml(betas)` to `core/body_composition.py` alongside existing Navy formula. Keep Navy as fallback.
+
+---
+
+## S-U9: Photo → SMPL Auto-Estimation — BLOCKED on Gemini G-R2
+
+**Priority**: HIGH | **Cannot start until**: Gemini G-R2 confirms weight URLs + dual-view support
+
+**When unblocked**: Add SMPLer-X to RunPod handler, add `fit_from_photos(front, side)` to `core/smpl_fitting.py`, make Flutter measurement entry optional.
+
+---
+
+## Execution Order
+
+```
+IMMEDIATE (no dependencies, can run in parallel):
+  S-U1  LAB color fix           ← 30 min, biggest texture quality win
+  S-U2  Vertex indices          ← foundation for S-U4, S-U6
+  S-U3  Muscle highlighter      ← standalone viewer feature
+
+AFTER S-U2:
+  S-U4  A2B regressor           ← needs accurate measurement extraction
+  S-U6  Heatmap viewer          ← needs vertex indices for region stats
+
+AFTER RunPod model IDs verified:
+  S-U5  SMPLitex texture        ← verify HuggingFace IDs before coding
+  S-U7  IntrinsiX PBR           ← needs S-U5 working
+
+BLOCKED (waiting on Gemini research):
+  S-U8  Body comp ML            ← blocked on G-R1
+  S-U9  Photo → SMPL auto       ← blocked on G-R2
+
+Recommended serial order: S-U1 → S-U2 → S-U3 → S-U4 → S-U5 → S-U6 → S-U7
 ```
