@@ -2373,16 +2373,29 @@ def upload_skin_region(customer_id, region):
         atlas_path = os.path.join(skin_dir, 'skin_atlas.png')
         _cv2_sr.imwrite(atlas_path, atlas)
 
-        # Re-export GLB with new skin texture
+        # Generate PBR maps from skin atlas
+        from core.skin_patch import generate_skin_normal_map
+        from core.texture_factory import generate_roughness_map
+        normal_map = generate_skin_normal_map(atlas, strength=10.0)
+        roughness_float = generate_roughness_map(uvs, atlas_size=2048, vertices=verts)
+        roughness_map = (roughness_float * 255).astype(np.uint8) if roughness_float is not None else None
+
+        # Save PBR maps for debugging
+        _cv2_sr.imwrite(os.path.join(skin_dir, 'skin_normal.png'), normal_map)
+        if roughness_map is not None:
+            _cv2_sr.imwrite(os.path.join(skin_dir, 'skin_roughness.png'), roughness_map)
+
+        # Re-export GLB with skin texture + PBR maps
         latest_mesh = db(db.mesh_model.customer_id == customer_id).select(
             orderby=~db.mesh_model.id).first()
         if latest_mesh and latest_mesh.glb_path:
             from core.mesh_reconstruction import export_glb
             verts_m = verts / 1000.0
             export_glb(verts_m, faces, latest_mesh.glb_path,
-                        uvs=uvs, texture_image=atlas)
-            logger.info('Re-exported GLB with skin region %s for customer %s',
-                        region, customer_id)
+                        uvs=uvs, texture_image=atlas,
+                        normal_map=normal_map, roughness_map=roughness_map)
+            logger.info('Re-exported GLB with skin PBR for customer %s (region: %s)',
+                        customer_id, region)
 
     except Exception as e:
         logger.exception('Skin region compositing failed')
@@ -3031,6 +3044,29 @@ def generate_body_model(customer_id):
             _hmr_confidence = smpl_result.get('hmr_confidence')
 
             _normal_map = smpl_result.get('normal_map')
+
+            # ── S-N5: Check for per-region skin textures ──────────────────────
+            _skin_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads',
+                                     'skin', f'customer_{customer_id}')
+            if os.path.isdir(_skin_dir) and uvs_for_glb is not None:
+                try:
+                    from core.skin_patch import CAPTURE_REGIONS, composite_skin_atlas, generate_skin_normal_map
+                    from core.texture_factory import _get_smpl_part_ids
+                    _region_textures = {}
+                    for _rname in CAPTURE_REGIONS:
+                        _tp = os.path.join(_skin_dir, f'tile_{_rname}.png')
+                        if os.path.exists(_tp):
+                            _region_textures[_rname] = _cv2.imread(_tp)
+                    if _region_textures:
+                        _part_ids = _get_smpl_part_ids()
+                        _skin_atlas = composite_skin_atlas(
+                            uvs_for_glb, _part_ids, faces, _region_textures, atlas_size=2048)
+                        texture_image = _skin_atlas
+                        _normal_map = generate_skin_normal_map(_skin_atlas, strength=10.0)
+                        logger.info('Using %d skin regions for body model texture', len(_region_textures))
+                except Exception as _skin_err:
+                    logger.warning('Skin region compositing in body_model failed: %s', _skin_err)
+
             export_obj(verts, faces, obj_path)
 
             # Generate PBR maps inline (before GLB export so they embed in the file)

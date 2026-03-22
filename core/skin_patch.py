@@ -112,33 +112,59 @@ def make_tileable(sample_bgr, out_size=512, patch_size=64, overlap=16):
 
 
 def _find_best_patch(canvas, sample, y, x, patch_size, overlap,
-                     has_top, has_left, n_candidates=50):
-    """Find the best matching patch from sample using SSD in overlap region."""
+                     has_top, has_left, n_candidates=200):
+    """
+    Find best matching patch using vectorized SSD with rotation augmentation.
+
+    Tests n_candidates random patches at 4 rotations (0/90/180/270) for
+    a total of n_candidates*4 comparisons. Uses batch SSD for speed.
+    """
     sh, sw = sample.shape[:2]
+
+    # Extract overlap reference regions from canvas once
+    left_ref = canvas[y:y+patch_size, x:x+overlap].astype(np.float32) if has_left else None
+    top_ref = canvas[y:y+overlap, x:x+patch_size].astype(np.float32) if has_top else None
+
+    # Sample random candidate patches
+    candidates = []
+    max_y, max_x = sh - patch_size, sw - patch_size
+    if max_y <= 0 or max_x <= 0:
+        # Sample too small — just return a random patch
+        sy = max(0, min(np.random.randint(0, max(1, max_y + 1)), sh - patch_size))
+        sx = max(0, min(np.random.randint(0, max(1, max_x + 1)), sw - patch_size))
+        patch = sample[sy:sy+patch_size, sx:sx+patch_size].copy()
+        mask = np.ones((patch_size, patch_size), dtype=np.float32)
+        return patch, mask
+
+    sy_arr = np.random.randint(0, max_y + 1, size=n_candidates)
+    sx_arr = np.random.randint(0, max_x + 1, size=n_candidates)
+
+    for i in range(n_candidates):
+        base = sample[sy_arr[i]:sy_arr[i]+patch_size, sx_arr[i]:sx_arr[i]+patch_size]
+        candidates.append(base)
+        # Rotation augmentation: 90, 180, 270 degrees
+        for k in (1, 2, 3):
+            candidates.append(np.rot90(base, k))
+
+    # Vectorized SSD computation
     best_ssd = float('inf')
-    best_patch = None
+    best_patch = candidates[0]
 
-    for _ in range(n_candidates):
-        sy = np.random.randint(0, sh - patch_size)
-        sx = np.random.randint(0, sw - patch_size)
-        candidate = sample[sy:sy+patch_size, sx:sx+patch_size]
-
+    for cand in candidates:
+        if cand.shape[0] != patch_size or cand.shape[1] != patch_size:
+            continue
         ssd = 0.0
-        # Left overlap
-        if has_left:
-            left_existing = canvas[y:y+patch_size, x:x+overlap].astype(np.float32)
-            left_candidate = candidate[:, :overlap].astype(np.float32)
-            ssd += np.sum((left_existing - left_candidate) ** 2)
-
-        # Top overlap
-        if has_top:
-            top_existing = canvas[y:y+overlap, x:x+patch_size].astype(np.float32)
-            top_candidate = candidate[:overlap, :].astype(np.float32)
-            ssd += np.sum((top_existing - top_candidate) ** 2)
-
+        if has_left and left_ref is not None:
+            diff = left_ref - cand[:, :overlap].astype(np.float32)
+            ssd += np.dot(diff.ravel(), diff.ravel())
+        if has_top and top_ref is not None:
+            diff = top_ref - cand[:overlap, :].astype(np.float32)
+            ssd += np.dot(diff.ravel(), diff.ravel())
         if ssd < best_ssd:
             best_ssd = ssd
-            best_patch = candidate.copy()
+            best_patch = cand
+
+    best_patch = best_patch.copy()
 
     # Compute minimum error boundary cut mask
     mask = np.ones((patch_size, patch_size), dtype=np.float32)
@@ -293,11 +319,126 @@ def _blend_laplacian(img_a, img_b, mask, levels=5):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  S-N3: Skin Tone Extraction (LAB-space + k-means)
+# ═══════════════════════════════════════════════════════════════════════
+
+def extract_skin_tone(img_bgr, k=3):
+    """
+    Extract dominant skin tone from a close-up photo using LAB color space.
+
+    Segments skin pixels via LAB a/b channel thresholds, then uses k-means
+    to find the dominant cluster. Handles dark/light skin, shadows, and hair.
+
+    Args:
+        img_bgr: BGR image (close-up skin photo or face photo)
+        k: number of k-means clusters (3 works well for skin+shadow+highlight)
+
+    Returns:
+        (3,) uint8 BGR skin tone color, or (160, 140, 120) if extraction fails
+    """
+    FALLBACK = np.array([160, 140, 120], dtype=np.uint8)
+    if img_bgr is None or img_bgr.size == 0:
+        return FALLBACK
+
+    # Resize for speed (k-means on full res is slow)
+    h, w = img_bgr.shape[:2]
+    scale = min(1.0, 256.0 / max(h, w))
+    if scale < 1.0:
+        img_bgr = cv2.resize(img_bgr, (int(w * scale), int(h * scale)))
+
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+
+    # Skin detection in LAB: a channel ~125-160, b channel ~115-155
+    # Wide range to handle dark to light skin under varying illumination
+    a_ch = lab[:, :, 1].astype(np.float32)
+    b_ch = lab[:, :, 2].astype(np.float32)
+    l_ch = lab[:, :, 0].astype(np.float32)
+
+    skin_mask = (
+        (a_ch >= 115) & (a_ch <= 165) &
+        (b_ch >= 110) & (b_ch <= 160) &
+        (l_ch >= 30) & (l_ch <= 230)  # exclude very dark shadows & blown highlights
+    )
+
+    # Morphological cleanup: remove hair strands, fill gaps
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    skin_mask_u8 = skin_mask.astype(np.uint8) * 255
+    skin_mask_u8 = cv2.morphologyEx(skin_mask_u8, cv2.MORPH_OPEN, kernel)
+    skin_mask_u8 = cv2.morphologyEx(skin_mask_u8, cv2.MORPH_CLOSE, kernel)
+
+    skin_pixels = img_bgr[skin_mask_u8 > 0]
+    if len(skin_pixels) < 50:
+        # Not enough skin pixels — fall back to center crop median
+        ch, cw = img_bgr.shape[0] // 4, img_bgr.shape[1] // 4
+        center = img_bgr[ch:ch*3, cw:cw*3]
+        if center.size > 0:
+            return np.median(center.reshape(-1, 3), axis=0).astype(np.uint8)
+        return FALLBACK
+
+    # K-means clustering on skin pixels (LAB space for perceptual uniformity)
+    skin_lab = cv2.cvtColor(skin_pixels.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    _, labels, centers = cv2.kmeans(skin_lab, min(k, len(skin_lab)), None,
+                                     criteria, 3, cv2.KMEANS_PP_CENTERS)
+
+    # Pick the cluster with the most pixels (dominant skin tone)
+    counts = np.bincount(labels.flatten(), minlength=len(centers))
+    dominant_idx = np.argmax(counts)
+    dominant_lab = centers[dominant_idx].reshape(1, 1, 3).astype(np.uint8)
+    dominant_bgr = cv2.cvtColor(dominant_lab, cv2.COLOR_LAB2BGR).flatten()
+
+    logger.info("Extracted skin tone: BGR(%d,%d,%d) from %d skin pixels, %d clusters",
+                dominant_bgr[0], dominant_bgr[1], dominant_bgr[2],
+                len(skin_pixels), len(centers))
+    return dominant_bgr
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  S-N1: PBR Maps from Skin Albedo (Scharr normal + anatomical roughness)
+# ═══════════════════════════════════════════════════════════════════════
+
+def generate_skin_normal_map(albedo_bgr, strength=10.0):
+    """
+    Generate a tangent-space normal map from skin albedo using frequency-separated
+    Scharr gradients. Isolates pore-level detail from baked-in lighting.
+
+    Args:
+        albedo_bgr: (H, W, 3) uint8 BGR skin atlas
+        strength: normal map intensity (higher = more pronounced pores)
+
+    Returns:
+        (H, W, 3) uint8 RGB tangent-space normal map
+    """
+    gray = cv2.cvtColor(albedo_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+
+    # High-pass: isolate pore micro-detail from low-freq lighting
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    high_freq = gray - blurred
+
+    # Scharr gradients (more rotationally invariant than Sobel)
+    dx = cv2.Scharr(high_freq, cv2.CV_32F, 1, 0)
+    dy = cv2.Scharr(high_freq, cv2.CV_32F, 0, 1)
+    z = np.ones_like(dx) / strength
+
+    norm = np.sqrt(dx ** 2 + dy ** 2 + z ** 2)
+    norm[norm == 0] = 1.0
+
+    # Tangent-space normal: RGB = (X+1)/2, (Y+1)/2, Z mapped to [0,255]
+    # OpenGL convention: R=X, G=Y, B=Z
+    nx = (dx / norm + 1.0) * 127.5
+    ny = (dy / norm + 1.0) * 127.5
+    nz = (z / norm + 1.0) * 127.5
+
+    normal_rgb = np.stack([nx, ny, nz], axis=-1).astype(np.uint8)
+    return normal_rgb
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  Region Compositor: tileable patches → full UV atlas
 # ═══════════════════════════════════════════════════════════════════════
 
 def composite_skin_atlas(uvs, part_ids, faces, region_textures,
-                         atlas_size=2048, default_tone=(160, 140, 120)):
+                         atlas_size=2048, default_tone=None):
     """
     Composite per-region tileable skin textures into a full UV atlas.
 
@@ -307,11 +448,19 @@ def composite_skin_atlas(uvs, part_ids, faces, region_textures,
         faces: (F, 3) int — triangle indices
         region_textures: dict {region_name: (H,W,3) uint8 BGR tileable texture}
         atlas_size: output atlas size
-        default_tone: BGR skin tone for uncovered regions
+        default_tone: BGR skin tone for uncovered regions (auto-extracted if None)
 
     Returns:
         (atlas_size, atlas_size, 3) uint8 BGR — composited UV atlas
     """
+    # Auto-extract skin tone from the first available region texture
+    if default_tone is None and region_textures:
+        first_tex = next(iter(region_textures.values()))
+        default_tone = extract_skin_tone(first_tex)
+        logger.info("Auto skin tone: BGR(%d,%d,%d)", *default_tone)
+    elif default_tone is None:
+        default_tone = (160, 140, 120)
+
     # Start with default skin tone
     atlas = np.full((atlas_size, atlas_size, 3), default_tone, dtype=np.uint8)
 
