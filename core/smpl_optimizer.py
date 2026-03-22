@@ -260,6 +260,7 @@ SMPL_LANDMARKS = {
     'R_SHOULDER': 6470,   # Z≈1439 — right shoulder tip
     'L_THIGH':     947,   # Z≈626  — left thigh midpoint
     'L_CALF':     1103,   # Z≈322  — left calf midpoint
+    'L_BICEP':    2029,   # Z≈1334 — left bicep midpoint (verified G-R4)
     'R_BICEP':    4855,   # Z≈1334 — right bicep midpoint
     'R_FOREARM':  5197,   # Z≈1337 — right forearm midpoint
     'L_WRIST':    2241,   # Z≈1408 — left wrist
