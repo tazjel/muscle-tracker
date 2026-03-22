@@ -689,7 +689,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       if (mounted) {
         setState(() {});
         Future.delayed(const Duration(seconds: 4), () {
-          if (mounted && !_autoRunning && !_isCapturing && !_isDualMode) _startAutoCapture();
+          if (mounted && !_autoRunning && !_isCapturing && !_isDualMode && !_isSkinMode) _startAutoCapture();
         });
       }
     }
@@ -901,7 +901,9 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
   Widget _buildSkinGuideOverlay() {
     return Positioned.fill(
-      child: CustomPaint(painter: _SkinGuideOverlayPainter()),
+      child: IgnorePointer(
+        child: CustomPaint(painter: _SkinGuideOverlayPainter()),
+      ),
     );
   }
 
@@ -1329,6 +1331,10 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         _isDualMode = l == 'DUAL';
         _isSkinMode = l == 'SKIN';
         _statusMessage = null;
+        if (_isSkinMode || !_isAutoMode) {
+          _autoRunning = false;
+          _autoTimer?.cancel();
+        }
         if (_isDualMode) {
           _dualStatus = 'READY';
           _dualCaptureCount = 0;
