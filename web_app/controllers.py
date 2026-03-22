@@ -2355,7 +2355,7 @@ def upload_skin_region(customer_id, region):
     try:
         from core.texture_factory import _get_smpl_part_ids
         import pickle as _pkl_sr
-        pkl_path = os.path.join(os.path.dirname(__file__), '..', 'runpod', 'SMPL_NEUTRAL.pkl')
+        pkl_path = os.path.join(os.path.dirname(__file__), '..', '..', 'runpod', 'SMPL_NEUTRAL.pkl')
         with open(pkl_path, 'rb') as f:
             _smpl = _pkl_sr.load(f, encoding='latin1')
         faces = np.array(_smpl['f'], dtype=np.int32)
