@@ -247,6 +247,29 @@ def optimize_betas(silhouette_views, initial_betas=None,
 
 # -- Cross-section measurement -------------------------------------------------
 
+# Verified SMPL 6890 vertex landmarks (verified 2026-03-22 against actual mesh geometry)
+# Z is the vertical axis in our coordinate system (Z=0 at heel, Z≈1717 at head top)
+SMPL_LANDMARKS = {
+    'HEAD_TOP':    412,   # Z≈1715 — crown of head
+    'NECK':       3050,   # Z≈1471 — Adam's apple / neck circumference plane
+    'L_NIPPLE':   3042,   # Z≈1262 — left nipple (chest plane reference)
+    'R_NIPPLE':   6489,   # Z≈1260 — right nipple
+    'BELLY_BUTTON': 3501, # Z≈1042 — navel / waist plane
+    'LOW_L_HIP':  3134,   # Z≈813  — left trochanter (hip circumference plane)
+    'L_SHOULDER': 3011,   # Z≈1440 — left shoulder tip
+    'R_SHOULDER': 6470,   # Z≈1439 — right shoulder tip
+    'L_THIGH':     947,   # Z≈626  — left thigh midpoint
+    'L_CALF':     1103,   # Z≈322  — left calf midpoint
+    'R_BICEP':    4855,   # Z≈1334 — right bicep midpoint
+    'R_FOREARM':  5197,   # Z≈1337 — right forearm midpoint
+    'L_WRIST':    2241,   # Z≈1408 — left wrist
+    'R_WRIST':    5559,   # Z≈1360 — right wrist
+    'L_ANKLE':    3325,   # Z≈96   — left ankle
+    'L_ELBOW':    1643,   # Z≈1376 — left elbow
+    'CROTCH':     1210,   # Z≈797  — crotch / inseam reference
+    'L_HEEL':     3458,   # Z≈10   — left heel (floor reference)
+}
+
 # SMPL 24-joint index map
 _J = dict(
     pelvis=0, l_hip=1, r_hip=2, spine1=3, l_knee=4, r_knee=5,
@@ -374,8 +397,11 @@ def extract_measurements(verts, joints, faces):
         _circumference(verts, faces, [0, 0, chest_z], Z_UP) * mm2cm, 1)
     m['waist_circumference_cm'] = round(
         _circumference(verts, faces, [0, 0, j[_J['spine1'], 2]], Z_UP) * mm2cm, 1)
+    # Hip circumference at trochanter level (SMPL_LANDMARKS['LOW_L_HIP'] Z),
+    # not pelvis joint — matches how hip circumference is measured in practice.
+    hip_z = float(verts[SMPL_LANDMARKS['LOW_L_HIP'], 2])
     m['hip_circumference_cm'] = round(
-        _circumference(verts, faces, [0, 0, j[_J['pelvis'], 2]], Z_UP) * mm2cm, 1)
+        _circumference(verts, faces, [0, 0, hip_z], Z_UP) * mm2cm, 1)
     m['neck_circumference_cm'] = round(
         _circumference(verts, faces, [0, 0, j[_J['neck'], 2]], Z_UP) * mm2cm, 1)
 
