@@ -78,10 +78,12 @@ const MUSCLE_LABELS = {
   forearms_r: 'Forearms (R)',
 };
 
-// Highlight color (RGB 0-1): warm red
-const HIGHLIGHT_COLOR = { r: 1.0, g: 0.3, b: 0.2 };
-// Default color: neutral off-white
-const DEFAULT_COLOR   = { r: 1.0, g: 1.0, b: 1.0 };
+// Highlight color (RGB 0-1): bright saturated red-orange (visible over texture)
+const HIGHLIGHT_COLOR = { r: 2.0, g: 0.15, b: 0.1 };
+// Dimmed color for non-highlighted areas (darkens texture to create contrast)
+const DEFAULT_COLOR   = { r: 0.35, g: 0.35, b: 0.4 };
+// Normal color when no highlighting is active
+const NEUTRAL_COLOR   = { r: 1.0, g: 1.0, b: 1.0 };
 
 /** Generate inclusive integer range [start, end] */
 function _range(start, end) {
@@ -156,6 +158,9 @@ export class MuscleHighlighter {
       return;
     }
 
+    // Ensure vertex colors are enabled on current material (may have been replaced)
+    this._ensureVertexColors();
+
     // Reset all to default
     this._fillAll(DEFAULT_COLOR);
 
@@ -173,11 +178,20 @@ export class MuscleHighlighter {
     this._activeGroup = groupKey;
   }
 
-  /** Clear all highlights (return to default color). */
+  /** Clear all highlights (return to normal appearance). */
   clear() {
     if (!this._enabled) return;
-    this._fillAll(DEFAULT_COLOR);
+    this._fillAll(NEUTRAL_COLOR);
     this._colorAttr.needsUpdate = true;
+    // Disable vertexColors so texture renders normally without tint
+    if (this._mesh) {
+      if (Array.isArray(this._mesh.material)) {
+        this._mesh.material.forEach(m => { m.vertexColors = false; m.needsUpdate = true; });
+      } else if (this._mesh.material) {
+        this._mesh.material.vertexColors = false;
+        this._mesh.material.needsUpdate = true;
+      }
+    }
     this._activeGroup = null;
   }
 
@@ -196,6 +210,26 @@ export class MuscleHighlighter {
 
   get activeGroup() { return this._activeGroup; }
   get isEnabled()   { return this._enabled; }
+
+  /** @private Ensure vertexColors is enabled on current material (may have been replaced by PBR loader). */
+  _ensureVertexColors() {
+    if (!this._mesh) return;
+    // Re-add color attribute if geometry lost it
+    if (!this._mesh.geometry.attributes.color) {
+      const colors = new Float32Array(this._vertexCount * 3).fill(1.0);
+      this._colorAttr = new THREE.BufferAttribute(colors, 3);
+      this._mesh.geometry.setAttribute('color', this._colorAttr);
+    }
+    // Enable vertexColors on current material
+    if (Array.isArray(this._mesh.material)) {
+      this._mesh.material.forEach(m => {
+        if (!m.vertexColors) { m.vertexColors = true; m.needsUpdate = true; }
+      });
+    } else if (this._mesh.material && !this._mesh.material.vertexColors) {
+      this._mesh.material.vertexColors = true;
+      this._mesh.material.needsUpdate = true;
+    }
+  }
 
   /** @private Fill all vertices with a color. */
   _fillAll(color) {
