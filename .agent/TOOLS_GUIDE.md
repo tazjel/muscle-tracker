@@ -27,9 +27,16 @@ GTD="python C:/Users/MiEXCITE/Desktop/GTDdebug/gtddebug.py"
 | Check video quality before 3D recon | `quality_gate.py` | ~5s |
 | Save a visual baseline | `$GTD aiart-save-baseline` | ~2s |
 | Regression test against baseline | `$GTD aiart-batch-audit` | ~10s |
-| Device screenshot + state | `$GTD agent-status --json` | ~5s |
-| Compare two screenshots (pixel diff) | `$GTD agent-diff` | ~5s |
-| Deploy Flutter app + verify | `$GTD agent-cycle --json` | ~70s |
+| **Build + deploy + test Flutter app** | **`agent_device.py deploy`** | **~80s** |
+| **Quick device screenshot + error check** | **`agent_device.py status`** | **~5s** |
+| **Full deploy + server check cycle** | **`agent_device.py full-cycle`** | **~90s** |
+| **Check py4web server health** | **`agent_device.py check-server`** | **~3s** |
+| **Before/after device visual diff** | **`agent_device.py diff`** | **~8s** |
+| **Flutter-filtered device logs** | **`agent_device.py logs`** | **~3s** |
+| **List devices + connection status** | **`agent_device.py devices`** | **~2s** |
+| **Test server API endpoints** | **`agent_test.py server`** | **~5s** |
+| **Test 3D viewer in browser** | **`agent_test.py viewer`** | **~8s** |
+| **Run all web tests** | **`agent_test.py full`** | **~15s** |
 
 ---
 
@@ -185,47 +192,90 @@ $PY scripts/agent_browser.py audit http://localhost:8000/web_app/static/viewer3d
 
 ### After Modifying Flutter App (companion_app/)
 ```bash
-$GTD agent-cycle dev --json        # Build + deploy + screenshot + state
-$GTD agent-status --json           # Quick: screenshot + state only
+$PY scripts/agent_device.py full-cycle                  # Build + deploy + check server + logcat
+$PY scripts/agent_device.py deploy --skip-build         # Re-deploy without rebuild
+$PY scripts/agent_device.py deploy --device matpad      # Deploy to MatePad
+$PY scripts/agent_device.py status                      # Quick screenshot + error check
+$PY scripts/agent_device.py logs                        # Flutter-filtered logcat
 ```
 
 ### Regression Check (before/after comparison)
 ```bash
 # Save baseline BEFORE your change
-$PY scripts/agent_browser.py viewer3d skin_densepose.glb  # saves screenshots
+$PY scripts/agent_device.py baseline save --label before_fix
 # ... make your change ...
+$PY scripts/agent_device.py deploy
 # Compare AFTER
-$PY scripts/agent_browser.py diff captures/before.png captures/after.png
+$PY scripts/agent_device.py diff --before captures/device/a24/deploy_PREV.png
+$PY scripts/agent_device.py baseline check --label before_fix
+```
+
+### Test Server + Viewer
+```bash
+$PY scripts/agent_test.py server          # Test all API endpoints
+$PY scripts/agent_test.py viewer          # Browser audit of 3D viewer
+$PY scripts/agent_test.py full            # All tests combined
 ```
 
 ---
 
-## D. GTDdebug Integration
+## D. agent_device.py Reference Card
+
+**The go-to tool for ALL Flutter device work.** Replaces manual flutter/adb calls.
+
+| Command | What | Time | Key Output |
+|---------|------|------|------------|
+| `deploy` | Build + install + launch + screenshot + logcat | ~80s | `{screenshot_path, errors[], crash_log}` |
+| `deploy --skip-build` | Install + launch (no rebuild) | ~20s | Same |
+| `deploy --device matpad` | Deploy to specific device | ~80s | Same |
+| `status` | Screenshot + app running check | ~5s | `{app_running, flutter_errors[]}` |
+| `check-server` | Test py4web API endpoints | ~3s | `{server_running, endpoints:{}}` |
+| `diff --before img.png` | Before/after visual diff (GTDdebug) | ~8s | `{verdict, zones}` |
+| `baseline save` | Save regression golden | ~3s | `{label, screenshot_path}` |
+| `baseline check` | Compare vs saved golden | ~3s | `{diff_pct}` |
+| `logs --seconds 10` | Flutter-filtered logcat | ~3s | `{flutter_errors[], crash_log}` |
+| `devices` | List profiles + connection status | ~2s | `{devices: [{connected}]}` |
+| `full-cycle` | check-server + deploy | ~90s | `{status:"pass"/"fail", summary}` |
+
+**Device profiles:** `scripts/device_profiles.json` — add new devices there, no code changes needed.
+
+**Failure recovery (automatic):**
+- Build fail → dart error in `steps.build.error`
+- Install fail → auto-uninstall + retry
+- Device offline → auto-reconnect WiFi ADB
+- App crash → full stacktrace in `crash_log`
+- MatePad → auto-handles uninstall-first + package verifier quirks
+
+**Act on result:**
+- `status == "ok"` + empty `errors[]` → App deployed successfully
+- `crash_log` present → Read it, fix the Dart code, run `deploy --skip-build`
+- `flutter_errors[]` → Non-fatal errors to investigate
+- `status == "error"` in `steps.build` → Compilation error, fix code first
+
+---
+
+## E. GTDdebug Integration (Advanced)
 
 **Path:** `python C:/Users/MiEXCITE/Desktop/GTDdebug/gtddebug.py`
 **Always add:** `--json` flag for machine-readable output
 
-### Discovery (run once per session if needed)
-```bash
-$GTD agent-help --json                    # All agent commands
-$GTD agent-vision-help --compact --json   # Vision commands (<3KB)
-```
+**Note:** For most Flutter/device work, use `agent_device.py` instead — it wraps GTDdebug.
+Use GTDdebug directly only for advanced vision analysis not covered by agent_device.py.
 
-### Key Commands for gtd3d
+### Direct GTDdebug Commands (when agent_device.py is insufficient)
 | Command | Purpose | When |
 |---------|---------|------|
-| `$GTD agent-status --json` | Screenshot + app state | After Flutter changes |
-| `$GTD agent-diff before.png after.png --json` | Pixel diff + zones | Before/after comparison |
-| `$GTD vision-compare img_a.png img_b.png --json` | Detailed pixel comparison | Texture quality comparison |
-| `$GTD aiart-save-baseline folder/ label --json` | Save baseline | Before risky changes |
+| `$GTD vision-compare img_a.png img_b.png --json` | Detailed pixel comparison | Texture quality analysis |
+| `$GTD aiart-save-baseline folder/ label --json` | Save perf baseline | Before risky perf changes |
 | `$GTD aiart-batch-audit folder/ --json` | Regression vs baseline | After changes, batch check |
-| `$GTD vision-golden current.png --json` | Golden image comparison | Regression gate |
-| `$GTD agent-cycle dev --json` | Full deploy + verify | After Flutter build |
+| `$GTD agent-audit --json` | Combined quality audit | Deep device inspection |
 
-### When to Use GTDdebug vs Local Scripts
-- **Device/Flutter work** → GTDdebug (it handles ADB, deploy, device screenshots)
-- **GLB/texture work** → Local scripts (agent_verify, agent_browser, photo_preflight)
-- **Image comparison** → Either works; GTDdebug has zone-aware diff, local has SSIM-based diff
+### When to Use What
+- **Flutter build/deploy/test** → `agent_device.py` (one command does everything)
+- **Server API testing** → `agent_test.py server`
+- **3D viewer testing** → `agent_test.py viewer` or `agent_browser.py audit`
+- **GLB/texture quality** → `agent_verify.py`, `agent_browser.py`
+- **Advanced vision analysis** → GTDdebug direct (vision-compare, aiart-*)
 
 ---
 

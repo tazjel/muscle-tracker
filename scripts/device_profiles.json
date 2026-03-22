@@ -1,0 +1,43 @@
+{
+  "devices": {
+    "a24": {
+      "name": "Samsung A24",
+      "serial": "R58W41RF6ZK",
+      "wifi_ip": "192.168.100.8",
+      "adb_port": 5555,
+      "sdk": 36,
+      "screen": "1080x2340",
+      "install_flags": ["-r"],
+      "quirks": [],
+      "platform": "android",
+      "notes": "Primary dev phone"
+    },
+    "matpad": {
+      "name": "Huawei MatePad Pro",
+      "serial": null,
+      "wifi_ip": "192.168.100.33",
+      "adb_port": 5555,
+      "sdk": 29,
+      "screen": "1600x2560",
+      "install_flags": [],
+      "quirks": ["uninstall_before_install", "disable_package_verifier"],
+      "platform": "android",
+      "notes": "Must uninstall before install, no -r flag"
+    },
+    "iphone": {
+      "name": "iPhone",
+      "serial": null,
+      "wifi_ip": null,
+      "adb_port": null,
+      "sdk": null,
+      "screen": null,
+      "install_flags": [],
+      "quirks": [],
+      "platform": "ios",
+      "notes": "iOS device — uses different deploy path (not yet implemented)"
+    }
+  },
+  "default_device": "a24",
+  "app_package": "com.example.companion_app",
+  "app_activity": ".MainActivity"
+}
