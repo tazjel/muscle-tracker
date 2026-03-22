@@ -365,4 +365,161 @@ def _run_pbr_textures(inp):
         return {'status': 'error', 'message': str(e)}
 
 
+# ── SMPLitex texture infill (diffusion-based) ────────────────────────────
+
+_smplitex_pipe = None
+
+def _load_smplitex():
+    """Load SMPLitex ControlNet inpainting pipeline (lazy, stays in GPU)."""
+    global _smplitex_pipe
+    if _smplitex_pipe is not None:
+        return _smplitex_pipe
+
+    import torch
+    from diffusers import StableDiffusionControlNetInpaintPipeline, ControlNetModel
+
+    controlnet = ControlNetModel.from_pretrained(
+        "mcomino/smplitex-controlnet", torch_dtype=torch.float16
+    )
+    _smplitex_pipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(
+        "runwayml/stable-diffusion-v1-5",
+        controlnet=controlnet,
+        torch_dtype=torch.float16,
+    )
+    _smplitex_pipe.to("cuda")
+    logger.info("SMPLitex loaded on CUDA")
+    return _smplitex_pipe
+
+
+def _run_smplitex(inp):
+    """Fill unseen UV regions with diffusion-generated skin texture."""
+    from PIL import Image
+
+    pipe = _load_smplitex()
+    partial_uv = _decode_image(inp['partial_uv_b64'])
+    mask = _decode_image(inp['mask_b64'])
+
+    # Convert to PIL (RGB)
+    partial_pil = Image.fromarray(cv2.cvtColor(partial_uv, cv2.COLOR_BGR2RGB))
+    mask_pil = Image.fromarray(mask[:, :, 0] if len(mask.shape) == 3 else mask)
+
+    result = pipe(
+        prompt="a sks texturemap of a human body",
+        image=partial_pil,
+        mask_image=mask_pil,
+        control_image=partial_pil,
+        num_inference_steps=int(inp.get('steps', 50)),
+    ).images[0]
+
+    # Convert back to BGR numpy
+    result_bgr = cv2.cvtColor(np.array(result), cv2.COLOR_RGB2BGR)
+    return {
+        'status': 'success',
+        'atlas_b64': _encode_image(result_bgr, quality=95),
+        'shape': list(result_bgr.shape),
+    }
+
+
+# ── IntrinsiX PBR map generation ─────────────────────────────────────────
+
+_intrinsix_pipe = None
+
+def _load_intrinsix():
+    """Load IntrinsiX FLUX-based PBR map generator (lazy, stays in GPU)."""
+    global _intrinsix_pipe
+    if _intrinsix_pipe is not None:
+        return _intrinsix_pipe
+
+    import torch
+    from intrinsix.pipeline import IntrinsiXPipeline
+
+    _intrinsix_pipe = IntrinsiXPipeline.from_pretrained(
+        "black-forest-labs/FLUX.1-dev",
+        torch_dtype=torch.bfloat16,
+    )
+    _intrinsix_pipe.load_lora_weights(
+        "PeterKocsis/IntrinsiX", weight_name="intrinsix_lora.safetensors"
+    )
+    _intrinsix_pipe.to("cuda")
+    logger.info("IntrinsiX loaded on CUDA")
+    return _intrinsix_pipe
+
+
+def _run_intrinsix(inp):
+    """Generate PBR maps (normal, roughness, metallic) from albedo texture."""
+    from PIL import Image
+
+    pipe = _load_intrinsix()
+    albedo = _decode_image(inp['albedo_b64'])
+    albedo_pil = Image.fromarray(cv2.cvtColor(albedo, cv2.COLOR_BGR2RGB))
+
+    output = pipe(
+        image=albedo_pil,
+        prompt=inp.get('prompt', 'physically based rendering maps, high quality'),
+        height=int(inp.get('height', 1024)),
+        width=int(inp.get('width', 1024)),
+    )
+
+    result = {}
+    for map_name in ('normal_map', 'roughness_map', 'metallic_map'):
+        img = getattr(output, map_name, None)
+        if img is not None:
+            bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            result[map_name.replace('_map', '')] = {
+                'texture_b64': _encode_image(bgr, quality=95),
+                'shape': list(bgr.shape),
+            }
+
+    return {'status': 'success', 'maps': result}
+
+
+# ── Main handler ──────────────────────────────────────────────────────────
+
+def handler(job):
+    """Route incoming jobs by 'action' field."""
+    inp = job['input']
+    action = inp.get('action', 'hmr')
+
+    try:
+        if action == 'hmr':
+            images = inp.get('images', [])
+            directions = inp.get('directions', ['front'] * len(images))
+            result = _run_hmr(images, directions)
+            if result is None:
+                return {'status': 'error', 'message': 'HMR prediction failed'}
+            return {'status': 'success', **result}
+
+        elif action == 'rembg':
+            images = inp.get('images', [])
+            directions = inp.get('directions', ['front'] * len(images))
+            masks = _run_rembg(images, directions)
+            return {'status': 'success', 'masks': masks}
+
+        elif action == 'dsine':
+            images = inp.get('images', [])
+            directions = inp.get('directions', ['front'] * len(images))
+            normals = _run_dsine(images, directions)
+            return {'status': 'success', 'normals': normals}
+
+        elif action == 'pbr_textures':
+            return _run_pbr_textures(inp)
+
+        elif action == 'smplitex':
+            if 'partial_uv_b64' not in inp or 'mask_b64' not in inp:
+                return {'status': 'error', 'message': 'smplitex requires partial_uv_b64 and mask_b64'}
+            return _run_smplitex(inp)
+
+        elif action == 'intrinsix':
+            if 'albedo_b64' not in inp:
+                return {'status': 'error', 'message': 'intrinsix requires albedo_b64'}
+            return _run_intrinsix(inp)
+
+        else:
+            return {'status': 'error', 'message': f'Unknown action: {action}'}
+
+    except Exception as e:
+        logger.error(f"Handler error ({action}): {e}")
+        return {'status': 'error', 'message': str(e)}
+
+
 runpod.serverless.start({"handler": handler})

@@ -266,6 +266,62 @@ def inpaint_atlas(atlas, weight, method='telea'):
     return result
 
 
+def inpaint_atlas_gpu(atlas, weight):
+    """
+    Inpaint uncovered atlas regions using SMPLitex on RunPod GPU.
+    Falls back to cv2.inpaint if RunPod is unavailable.
+
+    Requires: USE_GPU_INFILL=true env var and valid RunPod credentials.
+    """
+    use_gpu = os.environ.get('USE_GPU_INFILL', 'false').lower() == 'true'
+    if not use_gpu:
+        logger.info("GPU infill disabled (USE_GPU_INFILL != true), using Telea")
+        return inpaint_atlas(atlas, weight)
+
+    try:
+        import base64
+        import requests
+        import json
+
+        endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID', '')
+        api_key = os.environ.get('RUNPOD_API_KEY', '')
+        if not endpoint_id or not api_key:
+            logger.warning("RunPod credentials missing, falling back to Telea")
+            return inpaint_atlas(atlas, weight)
+
+        # Encode partial UV and mask
+        mask = (weight == 0).astype(np.uint8) * 255
+        _, uv_buf = cv2.imencode('.png', atlas)
+        _, mask_buf = cv2.imencode('.png', mask)
+        uv_b64 = base64.b64encode(uv_buf.tobytes()).decode('ascii')
+        mask_b64 = base64.b64encode(mask_buf.tobytes()).decode('ascii')
+
+        url = f"https://api.runpod.ai/v2/{endpoint_id}/runsync"
+        resp = requests.post(url, json={
+            'input': {
+                'action': 'smplitex',
+                'partial_uv_b64': uv_b64,
+                'mask_b64': mask_b64,
+            }
+        }, headers={'Authorization': f'Bearer {api_key}'}, timeout=120)
+
+        result = resp.json()
+        if result.get('output', {}).get('status') == 'success':
+            atlas_b64 = result['output']['atlas_b64']
+            img_bytes = base64.b64decode(atlas_b64)
+            arr = np.frombuffer(img_bytes, dtype=np.uint8)
+            filled = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            logger.info("SMPLitex GPU infill complete")
+            return filled
+        else:
+            logger.warning(f"SMPLitex failed: {result}, falling back to Telea")
+            return inpaint_atlas(atlas, weight)
+
+    except Exception as e:
+        logger.warning(f"GPU infill error: {e}, falling back to Telea")
+        return inpaint_atlas(atlas, weight)
+
+
 def _split_atlas_to_parts(atlas_texture, part_size=200):
     """
     Split a single atlas grid image (4 cols × 6 rows) into 24 separate part textures.
