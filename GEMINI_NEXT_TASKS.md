@@ -1,110 +1,83 @@
-# Gemini Research Tasks — MPFB2 Texture Compatibility (2026-03-23)
+# Gemini Research Tasks — Phase 3: Phenotype, DensePose, Sliders (2026-03-23)
 
 ## Context
-MPFB2 template pipeline is working (13,380 verts, 15 muscle groups, runtime deformation). But the **texture subsystem** (`texture_factory.py`, `skin_patch.py`) is hardcoded to SMPL's 6890-vert / 24-joint topology. We need research to inform the adapter layer that maps MPFB2 groups to SMPL-compatible part IDs.
+Phases 1-2 complete: MPFB2 template (13,380 verts), bone-axis deformation, texture dispatcher, e2e test passing. Phase 3 adds runtime shape key morphing, DensePose texture on MPFB2, and live deformation via viewer sliders. These 3 research tasks unblock Sonnet's implementation.
 
 ## RULES — READ BEFORE STARTING
 1. **Read `CLAUDE.md` FIRST** — paths, gotchas, conventions
 2. **RESEARCH ONLY** — do NOT write code, do NOT run Blender, do NOT run Python
-3. **Never read files over 200 lines** — grep for specific sections
-4. **Reports under 100 lines** — concise findings, not essays
-5. **Save reports to `research/`** with `g_r` prefix
-6. **Do NOT read:** `controllers.py` (3600+ lines), `body_viewer.js` (3900+ lines), `template_vert_segmentation.json` (one giant line)
-7. **Do NOT re-research topics already covered** — check existing reports first
+3. **Reports under 100 lines** — concise findings, save to `research/` with `g_r` prefix
+4. **Do NOT re-research:** g_r7-g_r14 (all completed and committed)
+5. **Do NOT read:** `controllers.py` (3600+), `body_viewer.js` (4000+), `main.dart` (2500+)
+6. Reference existing research where applicable
 
 ## Existing Research (DO NOT REDO)
-- `research/g_r5_smpl_segmentation_data.md` — SMPL 24-joint part IDs and vertex assignments
-- `research/g_r7_mpfb2_vertex_groups.md` — MPFB2 bone names, front/back splitting (FIXED)
-- `research/g_r8_makehuman_shape_keys.md` — Shape key naming patterns ($ma, $mu)
-- `research/g_r9_mpfb2_uv_layout.md` — Single-atlas UV layout confirmed
-- `research/g_r10_runtime_deformation.md` — NumPy deformation approach
-
-## Current Template Stats (DO NOT re-derive)
-- 13,380 body vertices, 26,756 triangulated faces
-- 4,623 vertices assigned to 15 muscle groups (34.6%)
-- 8,757 unassigned (head, hands, feet, inner surfaces)
-- Groups: biceps_l/r, forearms_l/r, deltoids_l/r, pectorals, traps, abs, obliques, glutes, quads_l/r, calves_l/r
+- g_r7: MPFB2 vertex groups — g_r8: shape keys ($ma/$mu patterns) — g_r9: UV layout (single atlas)
+- g_r10: deformation (NumPy) — g_r11: MPFB2→SMPL region map — g_r12: shape key deltas
+- g_r13: bone-axis PCA — g_r14: unassigned verts (KDTree strategy)
 
 ---
 
-## Task G-R11: MPFB2-to-SMPL Region Mapping (HIGH PRIORITY — DO FIRST)
+## Task G-R15: Shape Key Delta Extraction Order (HIGH PRIORITY — DO FIRST)
 
-**Why:** Sonnet needs to build a dispatcher that converts MPFB2 muscle groups into SMPL-compatible integer part IDs (0-23). Wrong mapping = wrong roughness zones and broken skin compositing.
+**Why:** The Blender script removes 5,778 helper vertices (eyes, hair, etc.) BEFORE baking shape keys. Shape keys reference ALL 19,158 vertices. If we extract deltas before vertex removal, indices won't match the 13,380-body mesh. Need the correct order.
 
 **What to research:**
-1. For each of the 15 MPFB2 muscle groups, which SMPL joint part ID(s) correspond anatomically?
-2. Reference `research/g_r5_smpl_segmentation_data.md` for the SMPL joint index table
-3. Some MPFB2 groups span multiple SMPL joints (e.g., traps might map to spine2 + neck) — pick the single best match
-4. Verify the proposed mapping in the plan is correct:
-   - pectorals→9, traps→12, abs→3, obliques→3, glutes→0
-   - quads_l→1, quads_r→2, calves_l→4, calves_r→5
-   - biceps_l→16, biceps_r→17, forearms_l→18, forearms_r→19
-   - deltoids_l→13, deltoids_r→14
+1. In Blender Python, when vertices are deleted from a mesh (`bmesh.ops.delete`), do shape key vertex arrays auto-shrink to match?
+2. Or do shape key `data[i].co` indices become stale after vertex deletion?
+3. What is the correct order:
+   - (a) Remove helpers → extract deltas (shape keys auto-reindexed to 13,380 verts)
+   - (b) Extract deltas for all 19,158 → remove helpers → re-index deltas manually
+4. Does `bpy.ops.object.shape_key_remove(all=True, apply_mix=True)` preserve the mesh if called AFTER extraction?
+5. Reference `research/g_r12_shape_key_deltas.md` for extraction snippet
 
-**Output:** `research/g_r11_mpfb2_smpl_region_map.md`
-- Table: MPFB2 Group | Best SMPL Part ID | SMPL Joint Name | Region Name | Confidence
-- Flag any mappings that are ambiguous or could cause texture seams
+**Output:** `research/g_r15_shape_key_extraction_order.md`
+- Which order is correct (a or b)
+- Blender Python snippet for safe extraction (DO NOT RUN)
+- Any edge cases (shape keys with drivers, relative vs absolute)
 
 ---
 
-## Task G-R14: Unassigned Vertex Coverage Analysis (HIGH PRIORITY)
+## Task G-R16: DensePose IUV-to-MPFB2 UV Transfer (HIGH PRIORITY)
 
-**Why:** 8,757 of 13,380 vertices have no muscle group assignment. The adapter needs a strategy to assign them part IDs (for roughness maps, skin compositing, anatomical overlay).
+**Why:** DensePose outputs IUV maps in SMPL's UV parameterization (24 body parts, each with own UV space). Need to know if/how this maps to MPFB2's single-atlas UV layout.
 
 **What to research:**
-1. What body regions do the unassigned 8,757 vertices belong to? (head, hands, feet, inner thighs, lower back, armpits?)
-2. Check MPFB2 source for additional vertex groups beyond what we mapped (e.g., head, hands, feet groups)
-3. Would KDTree nearest-neighbor from the 4,623 assigned vertices produce reasonable results? Or would it create artifacts (e.g., hand vertices assigned to forearm)?
-4. Alternative: height-band heuristic (Z-ranges for head, torso, arms, legs)
-5. Should the Blender script export additional groups (head, hands, feet, back)?
+1. DensePose IUV format: I = body part index (1-24), U/V = surface coordinates within that part. Are U/V normalized [0,1]?
+2. Is DensePose UV space tied to SMPL mesh topology, or is it a continuous body surface parameterization?
+3. Transfer approach: DensePose (I, U, V) → SMPL 3D surface point → KDTree nearest MPFB2 vertex → MPFB2 UV
+4. Does this require a precomputed SMPL→MPFB2 correspondence map? Or can KDTree on 3D positions work?
+5. Any open-source tools for cross-topology texture transfer via DensePose? (e.g., DensePose Transfer, Tex2Shape)
 
-**Output:** `research/g_r14_unassigned_vertex_analysis.md`
-- Height-band breakdown: Z ranges for each body region
-- Recommended assignment strategy (KDTree vs height-band vs extra groups)
-- List of additional MPFB2 vertex groups available but not yet exported
+**Output:** `research/g_r16_densepose_mpfb2_transfer.md`
+- Transfer algorithm (step by step)
+- Whether a precomputed correspondence table is needed
+- Estimated quality (lossy? seams?)
 
 ---
 
-## Task G-R12: Shape Key Delta Export for Runtime Phenotype
+## Task G-R17: Viewer Slider Architecture
 
-**Why:** Currently the Blender script bakes shape keys into the mesh. To support runtime body type adjustment (muscle, fat, proportions) without re-running Blender, we need shape key deltas as numpy arrays.
+**Why:** Sonnet needs to wire viewer sliders to a new server endpoint. Need the current event model without reading 4000 lines of JS.
 
 **What to research:**
-1. Mathematical structure of MPFB2 shape key deltas (per-vertex displacement vectors?)
-2. Can deltas be extracted via Blender Python as `(N, 3)` arrays per shape key?
-3. Are shape key combinations linear (additive) or do they interact non-linearly?
-4. How many shape keys are relevant for fitness tracking? (muscle definition, body fat, limb proportions)
-5. Storage size estimate: how many numpy files, how many MB?
+1. Grep `body_viewer.js` for lines 1785-1813 ONLY — what HTML elements are the sliders? (`input[type=range]`?)
+2. What events do they fire? (`input`, `change`, custom?)
+3. Do they currently POST to any API, or only modify Three.js BufferGeometry locally?
+4. What measurement keys do sliders use? (e.g., `chest_width` maps to which profile field?)
+5. Is there a debounce/throttle utility already in the viewer JS?
+6. How does the viewer know which customer_id to use? (URL param? global var?)
 
-**Reference:** `research/g_r8_makehuman_shape_keys.md` for shape key naming patterns
-
-**Output:** `research/g_r12_shape_key_deltas.md`
-- Blender Python snippet to extract deltas (DO NOT RUN IT)
-- List of fitness-relevant shape keys with names
-- Storage/linearity analysis
-
----
-
-## Task G-R13: Bone-Axis-Aligned Deformation Research
-
-**Why:** Current deformation uses simple radial XY scaling from body center. Limbs not aligned with XY axes (e.g., arms at an angle) get distorted. Need per-group bone-axis scaling.
-
-**What to research:**
-1. For each of the 15 muscle groups, what is the natural scaling axis? (perpendicular to bone direction)
-2. How to compute per-group principal axis from vertex positions (PCA on vertex cloud)
-3. Best boundary smoothing: Laplacian vs heat diffusion vs distance-weighted blend
-4. Any open-source implementations for reference?
-
-**Reference:** `research/g_r10_runtime_deformation.md` for prior deformation findings
-
-**Output:** `research/g_r13_bone_axis_deform.md`
-- Per-group axis table: Group | Bone Direction | Scale Plane
-- Pseudocode for PCA axis computation
-- Recommended smoothing method with rationale
+**Output:** `research/g_r17_viewer_slider_architecture.md` — under 60 lines
+- Slider element type + event model
+- Key→measurement mapping table
+- Customer ID source
+- Whether any API calls exist
 
 ---
 
-## DEPENDENCY INFO FOR GEMINI
-- **G-R11 and G-R14 are HIGH PRIORITY** — Sonnet is blocked until these are done
-- **G-R12 and G-R13 can run after** — they inform Phase 2/3, not blocking Phase 1
-- Do G-R11 and G-R14 first, then G-R12 and G-R13
+## DEPENDENCY INFO
+- **G-R15 blocks S-T7** (shape key delta export)
+- **G-R16 blocks S-T9** (DensePose MPFB2 integration)
+- **G-R17 blocks S-T11** (viewer slider wiring)
+- All 3 can run in parallel — no interdependencies

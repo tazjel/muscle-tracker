@@ -1,272 +1,258 @@
-# Sonnet Implementation Tasks — MPFB2 Texture Compatibility (2026-03-23)
+# Sonnet Implementation Tasks — Phase 3: Phenotype, DensePose, Live Deformation (2026-03-23)
 
 ## Context
-MPFB2 template pipeline works (13,380 verts, deformation, viewer). But 6 callsites in the texture subsystem are hardcoded to SMPL's 6890-vert topology via `_get_smpl_part_ids()`. When MPFB2 mesh hits these paths, skin compositing fails and roughness falls back to low-quality height zones. Both pipelines must coexist: SMPL for photo-based (HMR2.0), MPFB2 for measurement-based.
+Phases 1-2 done: MPFB2 template (13,380 verts), bone-axis deformation, texture part ID dispatcher, skin regions, e2e test 5/5. Phase 3 adds: runtime shape key morphing (muscle/fat sliders), DensePose skin texture on MPFB2, and live deformation API for viewer interaction.
 
 ## RULES — READ BEFORE STARTING
 1. **Read `CLAUDE.md` FIRST** — paths, gotchas, conventions
 2. **Read `.agent/next-session-brief.md`** — current state
-3. **NEVER read `controllers.py` or `body_viewer.js` fully** — grep for exact line numbers
+3. **NEVER read `controllers.py` or `body_viewer.js` fully** — grep for exact lines
 4. **NEVER modify the SMPL direct pipeline** (controllers.py lines 3143-3320)
-5. **NEVER re-run the Blender template script** — mesh is generated and correct
-6. **NEVER modify `muscle_highlighter.js` or `body_viewer.js`** — they already work
-7. **NEVER install new packages** — use numpy, scipy, cv2 only
-8. **Use full Python path:** `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe`
-9. **py4web does NOT hot-reload** — kill and restart after core/*.py changes
-10. **Stop after first successful test** — don't re-run for marginal improvements
+5. **Use full Python path:** `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe`
+6. **py4web does NOT hot-reload** — kill and restart after core/*.py changes
+7. **Run `scripts/test_mpfb2_pipeline.py` after ANY core/*.py change** — regression check
+8. **Stop after first successful test** — don't re-run for marginal improvements
+9. **Blender path:** `"/c/Program Files/Blender Foundation/Blender 5.1/blender.exe"`
 
 ## File Sizes (grep-only unless noted)
 - `controllers.py` — 3600+ lines (GREP ONLY)
-- `body_viewer.js` — 3900+ lines (DO NOT TOUCH)
-- `texture_factory.py` — 466 lines (OK to read)
-- `skin_patch.py` — 538 lines (OK to read)
-- `body_deform.py` — 325 lines (OK to read)
+- `body_viewer.js` — 4000+ lines (GREP ONLY)
+- `body_deform.py` — 357 lines (OK to read)
+- `texture_factory.py` — 530+ lines (OK to read)
+- `blender_create_template.py` — 480 lines (OK to read)
+- `run_densepose_texture.py` — 370 lines (OK to read)
+- `skin_patch.py` — 561 lines (OK to read)
 
 ## Gemini Research to Check Before Starting
-- `research/g_r11_mpfb2_smpl_region_map.md` — MPFB2→SMPL part ID mapping table (REQUIRED for S-T1)
-- `research/g_r14_unassigned_vertex_analysis.md` — strategy for 8757 unassigned verts (REQUIRED for S-T1)
-- If these files don't exist yet, STOP and tell user "Gemini research G-R11/G-R14 not ready"
+- `research/g_r15_shape_key_extraction_order.md` — REQUIRED for S-T7 (extraction order: before or after helper removal?)
+- `research/g_r16_densepose_mpfb2_transfer.md` — REQUIRED for S-T9 (IUV transfer algorithm)
+- `research/g_r17_viewer_slider_architecture.md` — REQUIRED for S-T11 (slider event model + key mapping)
+- **If any file is missing, STOP and tell user** "Gemini research G-R1x not ready"
 
 ---
 
-## Task S-T1: MPFB2 Part ID Adapter (DO FIRST)
+## Task S-T7: Export Shape Key Deltas (DO FIRST)
 
-**File:** `core/texture_factory.py` (466 lines, OK to read)
+**Depends on:** G-R15 (extraction order research)
+
+**File:** `scripts/blender_create_template.py` (480 lines, OK to read)
 
 **What to do:**
-1. Add `_get_mpfb2_part_ids()` after line 102 (after `_get_smpl_part_ids`):
-   - Load `web_app/static/viewer3d/template_vert_segmentation.json`
-   - Map each of 15 groups to SMPL part IDs using table from `research/g_r11_mpfb2_smpl_region_map.md`
-   - For 8,757 unassigned vertices: use `scipy.spatial.KDTree` nearest-neighbor from assigned vertices (or whatever G-R14 recommends)
-   - Return `(13380,)` int32 array
-   - Cache in module-level variable (same pattern as `_get_smpl_part_ids`)
+1. Read G-R15 to determine correct extraction order (before or after helper vertex removal)
+2. Add a new step BEFORE the bake (line 167: `bpy.ops.object.shape_key_remove(all=True, apply_mix=True)`):
+   - Create `meshes/shape_deltas/` directory
+   - Get basis shape key: `basis = obj.data.shape_keys.key_blocks['Basis']`
+   - For each non-Basis key: compute `delta[i] = key.data[i].co - basis.data[i].co`
+   - Filter to fitness-relevant keys (name contains `$ma`, `$mu`, `$fe`, `$wg`)
+   - Save each as `meshes/shape_deltas/{sanitized_name}.npy` — shape `(N, 3)` float32
+   - Save `meshes/shape_deltas/index.json`:
+     ```json
+     {"key_name": {"file": "sanitized_name.npy", "baked_value": 0.465, "category": "muscle"}}
+     ```
+3. Proceed with existing bake step (unchanged)
 
-2. Add dispatcher `get_part_ids(n_verts)`:
-   - `6890` → `_get_smpl_part_ids()`
-   - `13380` → `_get_mpfb2_part_ids()`
-   - else → `None`
-
-3. Update internal callers:
-   - Line 121 (in `generate_roughness_map`): `_get_smpl_part_ids()` → `get_part_ids(len(uvs))`
-   - Line 283 (in `generate_anatomical_overlay`): `_get_smpl_part_ids()` → `get_part_ids(len(uvs))`
-
-**Proposed mapping** (verify against G-R11 research):
-```python
-_MPFB2_TO_SMPL = {
-    'pectorals': 9, 'traps': 12, 'abs': 3, 'obliques': 3, 'glutes': 0,
-    'quads_l': 1, 'quads_r': 2, 'calves_l': 4, 'calves_r': 5,
-    'biceps_l': 16, 'biceps_r': 17, 'forearms_l': 18, 'forearms_r': 19,
-    'deltoids_l': 13, 'deltoids_r': 14,
-}
-```
+**Key concern:** If G-R15 says shape keys auto-reindex after vertex removal, extract AFTER step 4 (helper removal) but BEFORE step 6 (baking). If NOT, extract BEFORE step 4 and manually re-index.
 
 **Verification:**
 ```bash
+"/c/Program Files/Blender Foundation/Blender 5.1/blender.exe" --background --python scripts/blender_create_template.py
+ls meshes/shape_deltas/
 PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
-$PY -c "
-from core.texture_factory import get_part_ids
-import numpy as np
-smpl = get_part_ids(6890)
-print(f'SMPL: {smpl.shape if smpl is not None else None}')
-mpfb = get_part_ids(13380)
-print(f'MPFB2: {mpfb.shape}, unique={len(np.unique(mpfb))}')
-assert mpfb is not None and len(mpfb) == 13380
-assert len(np.unique(mpfb)) >= 10, 'Too few unique part IDs'
-print('PASS')
-"
+$PY -c "import numpy as np, json; idx=json.load(open('meshes/shape_deltas/index.json')); print(f'{len(idx)} shape keys exported'); k=list(idx.keys())[0]; d=np.load(f'meshes/shape_deltas/{idx[k][\"file\"]}'); print(f'{k}: {d.shape}, max_delta={abs(d).max():.4f}m')"
 ```
 
-**DO NOT:** Change `_get_smpl_part_ids` behavior. Do not read `controllers.py`.
+**DO NOT:** Change the existing mesh output (verts, faces, UVs, GLB must remain identical). Only ADD the delta export step.
 
 ---
 
-## Task S-T2: MPFB2 Capture Regions — `core/skin_patch.py`
+## Task S-T8: Runtime Shape Key Application
 
-**Depends on:** S-T1
+**Depends on:** S-T7
 
-**File:** `core/skin_patch.py` (538 lines, OK to read)
+**File:** `core/body_deform.py` (357 lines, OK to read)
 
 **What to do:**
-1. Add `MPFB2_CAPTURE_REGIONS` dict after line 36 (after existing `CAPTURE_REGIONS`):
-```python
-MPFB2_CAPTURE_REGIONS = {
-    'forearm':    ['forearms_l', 'forearms_r'],
-    'abdomen':    ['abs', 'obliques'],
-    'chest':      ['pectorals'],
-    'thigh':      ['quads_l', 'quads_r'],
-    'calf':       ['calves_l', 'calves_r'],
-    'upper_arm':  ['biceps_l', 'biceps_r'],
-    'shoulders':  ['deltoids_l', 'deltoids_r'],
-    'back':       ['traps'],
-    'neck':       [],
-    'hands':      [],
-    'feet':       [],
-    'face':       [],
-}
-```
+1. Add `_load_shape_deltas()` function:
+   - Load `meshes/shape_deltas/index.json`
+   - Lazy-load `.npy` delta arrays on first access
+   - Cache in module-level dict
 
-2. Update `composite_skin_atlas` (line 440) to accept optional `seg_dict` param:
-   - If `seg_dict` is provided AND `region_name` is in `MPFB2_CAPTURE_REGIONS`: use muscle group vertex indices from `seg_dict`
-   - If `seg_dict` is None: use existing `part_ids` + `CAPTURE_REGIONS` path (backward compatible)
+2. Add new profile keys to `_DEFAULT` dict:
+   - `'muscle_factor': 0.5` (0.0=min, 1.0=max)
+   - `'weight_factor': 0.5`
+   - `'gender_factor': 1.0` (0.0=female, 1.0=male)
 
-**Verification:**
-```bash
-$PY -c "
-from core.skin_patch import MPFB2_CAPTURE_REGIONS, CAPTURE_REGIONS
-assert set(MPFB2_CAPTURE_REGIONS.keys()) == set(CAPTURE_REGIONS.keys())
-print('Region keys match:', sorted(MPFB2_CAPTURE_REGIONS.keys()))
-print('PASS')
-"
-```
+3. In `deform_template()`, AFTER loading base verts but BEFORE height scaling (line ~207):
+   ```python
+   # Apply shape key deltas
+   deltas = _load_shape_deltas()
+   for key_name, info in deltas.items():
+       target = p.get(info['profile_key'], info['baked_value'])
+       diff = target - info['baked_value']
+       if abs(diff) > 0.01:
+           verts += info['delta'] * diff
+   ```
 
-**DO NOT:** Modify `CAPTURE_REGIONS` (SMPL still needs it). Do not touch Image Quilting code.
-
----
-
-## Task S-T3: Wire Dispatcher into controllers.py
-
-**Depends on:** S-T1, S-T2
-
-**File:** `web_app/controllers.py` — GREP ONLY, read 10-20 lines around each callsite
-
-**Exact callsites to change (3 locations):**
-
-1. **Lines 2370/2384** (inside `upload_skin_region`):
-   - `from core.texture_factory import _get_smpl_part_ids` → `from core.texture_factory import get_part_ids`
-   - `part_ids = _get_smpl_part_ids()` → `part_ids = get_part_ids(len(uvs))`
-
-2. **Lines 2554/2568** (inside `select_skin_photo`):
-   - Same pattern as above
-
-3. **Lines 3220/3227** (inside `generate_body_model`, SMPL skin texture path):
-   - `from core.texture_factory import _get_smpl_part_ids` → `from core.texture_factory import get_part_ids`
-   - `_part_ids = _get_smpl_part_ids()` → `_part_ids = get_part_ids(len(uvs_for_glb))`
-
-**Verification:**
-```bash
-grep -n '_get_smpl_part_ids' web_app/controllers.py
-# Should return 0 lines
-
-grep -n 'get_part_ids' web_app/controllers.py
-# Should return 3+ lines
-```
-
-**DO NOT:** Read the full file. Do not modify SMPL direct pipeline (lines 3143-3320). Do not change endpoint signatures.
-
----
-
-## Task S-T4: Fix body_part_ids in body_deform.py
-
-**Depends on:** S-T1
-
-**File:** `core/body_deform.py` (325 lines, OK to read)
-
-**What to do:**
-1. At line 274, replace `np.zeros(len(verts_mm), dtype=np.int32)` with proper part IDs:
-```python
-try:
-    from core.texture_factory import get_part_ids
-    _part_ids = get_part_ids(len(verts_mm))
-except Exception:
-    _part_ids = None
-...
-'body_part_ids': _part_ids if _part_ids is not None else np.zeros(len(verts_mm), dtype=np.int32),
-```
-   Use try/except to avoid circular import issues.
-
-2. Add `'mesh_type': 'mpfb2'` key to return dict.
+4. Map shape key categories to profile keys:
+   - `$ma` keys → `gender_factor`
+   - `$mu` keys → `muscle_factor`
+   - `$wg` keys → `weight_factor`
 
 **Verification:**
 ```bash
 $PY -c "
 from core.body_deform import deform_template
-m = deform_template()
-print(f'body_part_ids: {m[\"body_part_ids\"].shape}, unique: {len(set(m[\"body_part_ids\"].tolist()))}')
-assert m['body_part_ids'].max() > 0, 'All zeros — mapping failed'
-print(f'mesh_type: {m.get(\"mesh_type\")}')
+lean = deform_template({'height_cm': 175, 'muscle_factor': 0.2})
+buff = deform_template({'height_cm': 175, 'muscle_factor': 0.9})
+print(f'Lean vol: {lean[\"volume_cm3\"]:.0f}, Buff vol: {buff[\"volume_cm3\"]:.0f}')
+assert buff['volume_cm3'] > lean['volume_cm3'], 'More muscle should = more volume'
 print('PASS')
 "
 ```
 
-**DO NOT:** Change deformation logic, boundary smoothing, or coordinate conversion.
+Then run regression: `$PY scripts/test_mpfb2_pipeline.py`
+
+**DO NOT:** Change height scaling, bone-axis deformation, or boundary smoothing. Only ADD shape key blending as a pre-step.
 
 ---
 
-## Task S-T5: End-to-End Test Script
+## Task S-T9: DensePose Texture on MPFB2
 
-**Depends on:** S-T1, S-T2, S-T3, S-T4
+**Depends on:** G-R16 (IUV transfer research)
 
-**Create:** `scripts/test_mpfb2_pipeline.py`
-
-**What it should test:**
-1. `deform_template(profile)` with sample measurements → check verts, faces, UVs, body_part_ids
-2. `generate_roughness_map(uvs, atlas_size=512, vertices=verts)` → check non-None, correct shape
-3. `generate_ao_map(verts, faces, uvs, atlas_size=512)` → check non-None
-4. `export_glb(verts, faces, 'meshes/test_mpfb2_e2e.glb', uvs=uvs)` → check file exists
-5. Print pass/fail for each step, total time
-
-**Verification:** Run the script itself:
-```bash
-$PY scripts/test_mpfb2_pipeline.py
-```
-
-**DO NOT:** Test the SMPL pipeline. Do not start py4web. Do not upload anything.
-
----
-
-## Task S-T6: Bone-Axis-Aligned Deformation (Phase 2)
-
-**Depends on:** G-R13 research, S-T4
-
-**File:** `core/body_deform.py` (325 lines)
+**File:** `scripts/run_densepose_texture.py` (370 lines, OK to read)
 
 **What to do:**
-1. Replace radial XY scaling (lines 219-256) with per-group PCA-axis scaling:
-   - For each muscle group, compute PCA of its vertex positions
-   - First principal component = bone direction
-   - Scale in the plane perpendicular to the bone axis
-2. Upgrade `_smooth_boundaries` to distance-weighted blend (not binary boundary)
+1. After loading the target mesh/GLB, detect vertex count:
+   - 6890 → SMPL path (existing, unchanged)
+   - 13380 → MPFB2 path (new)
+2. For MPFB2 path:
+   - Load `meshes/template_uvs.npy` for UV coordinates
+   - Use `get_part_ids(13380)` from `texture_factory.py` for part IDs
+   - Follow the transfer algorithm from G-R16 for DensePose IUV → MPFB2 UV mapping
+3. Keep SMPL path completely unchanged (backward compatible)
 
 **Verification:**
 ```bash
-$PY -c "
-from core.body_deform import deform_template
-import numpy as np
-m = deform_template({'chest_circumference_cm': 120, 'bicep_circumference_cm': 45})
-v = m['vertices']
-assert np.isfinite(v).all(), 'Non-finite vertices!'
-print(f'Height: {v[:,2].max()-v[:,2].min():.0f}mm, Vol: {m[\"volume_cm3\"]:.0f}cm3')
-print('PASS')
-"
+$PY scripts/run_densepose_texture.py --verify --mesh meshes/gtd3d_body_template.glb --photo captures/test_front.jpg
+```
+(If no test photo exists, create a simple test with a placeholder image)
+
+**DO NOT:** Modify `core/densepose_infer.py`. Do not change SMPL path behavior.
+
+---
+
+## Task S-T10: Live Deformation API Endpoint
+
+**Depends on:** None (can start immediately)
+
+**File:** `web_app/controllers.py` — GREP ONLY, add new endpoint
+
+**What to do:**
+1. Grep for `generate_body_model` to find its location (~line 3077)
+2. Add new endpoint AFTER the generate_body_model function:
+   ```python
+   @action('api/customer/<customer_id:int>/update_deformation', method=['POST'])
+   @action.uses(db, cors)
+   def update_deformation(customer_id):
+   ```
+3. Implementation:
+   - Parse JSON body for partial measurements
+   - Load current profile from `db.body_profile(customer_id)`
+   - Merge: `{**stored_profile, **partial_updates}`
+   - Call `deform_template(merged)` + `export_glb()`
+   - Insert/update mesh record in DB
+   - Return `{status, mesh_id, glb_url, viewer_url}`
+4. Must be fast (<2s total) — no texture projection, just deformation + GLB
+
+**Where to add:** Grep for the end of `generate_body_model` (the return dict), add after that function.
+
+**Verification:**
+```bash
+# Start server first, then:
+curl -s http://localhost:8000/web_app/api/customer/1/update_deformation \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"chest_circumference_cm": 105, "bicep_circumference_cm": 38}'
 ```
 
-**DO NOT:** Change height scaling. Do not change output format. Do not modify UVs.
+**DO NOT:** Read the full controllers.py. Do not touch generate_body_model. Do not add texture projection to this endpoint (deformation only, for speed).
+
+---
+
+## Task S-T11: Wire Viewer Sliders to Live API
+
+**Depends on:** S-T10, G-R17 (slider architecture)
+
+**File:** `web_app/static/viewer3d/body_viewer.js` — GREP ONLY for slider lines
+
+**What to do:**
+1. Read G-R17 to understand slider event model and key mapping
+2. Add a `change` event listener (not `input` — avoid spamming) to measurement sliders
+3. On change: collect all current slider values, POST to `/api/customer/<id>/update_deformation`
+4. On success: reload GLB from returned `glb_url` using existing `_loadGLB()` function
+5. Add 500ms debounce to batch rapid slider changes
+6. Show/hide a "Updating..." status during server call
+
+**Key info needed from G-R17:**
+- How sliders are created (static HTML or JS-generated?)
+- Event names they fire
+- How to get customer_id from the page context
+- Key-to-measurement mapping
+
+**Verification:** Open viewer in browser, adjust a slider, confirm mesh visually updates.
+
+**DO NOT:** Read full body_viewer.js. Only grep for slider-related code and add the wiring.
+
+---
+
+## Task S-T12: Full Pipeline Integration Test
+
+**Depends on:** S-T7, S-T8, S-T9, S-T10, S-T11
+
+**Create:** `scripts/test_mpfb2_full.py`
+
+**What to test:**
+1. `deform_template()` with default params (regression)
+2. `deform_template()` with shape key params (`muscle_factor=0.8`) — verify volume changes
+3. `generate_roughness_map()` + `generate_ao_map()` on deformed mesh
+4. `export_glb()` with UVs
+5. Run `scripts/agent_verify.py` on output GLB (quality gate)
+6. Print per-step timing + pass/fail summary
+
+**Verification:** `$PY scripts/test_mpfb2_full.py`
+
+**DO NOT:** Test SMPL pipeline. Do not start py4web. Do not test DensePose (requires GPU).
 
 ---
 
 ## DEPENDENCY GRAPH
 ```
-S-T1 (part ID adapter) ──┬──> S-T2 (skin_patch regions)
-                          │         │
-                          ├─────────┴──> S-T3 (controllers wiring)
-                          │
-                          └──> S-T4 (body_deform fix)
-                                    │
-S-T1 + S-T2 + S-T3 + S-T4 ────────> S-T5 (e2e test)
-
-G-R13 (research) ──────────────────> S-T6 (bone-axis deform)
+G-R15 ──> S-T7 (export deltas) ──> S-T8 (runtime shape keys)
+                                              │
+G-R16 ──> S-T9 (DensePose MPFB2) ────────────┤
+                                              │
+S-T10 (deformation API) ──────────────────────┤
+  │                                           │
+G-R17 ──> S-T11 (viewer sliders) ─────────────┤
+                                              │
+                              S-T12 (full e2e test)
 ```
 
-**Execution order:** S-T1 → (S-T2 + S-T4 parallel) → S-T3 → S-T5 → S-T6
+**Execution order:**
+1. S-T10 (no dependencies, can start now)
+2. S-T7 → S-T8 (after G-R15)
+3. S-T9 (after G-R16)
+4. S-T11 (after S-T10 + G-R17)
+5. S-T12 (after all above)
 
 ---
 
 ## WHAT NOT TO DO
-- Do NOT re-create `blender_create_template.py` or re-run Blender
-- Do NOT modify `muscle_highlighter.js` — already handles template segmentation
-- Do NOT modify `body_viewer.js` — already prefers template GLB
-- Do NOT touch `core/smpl_direct.py` — SMPL direct pipeline is separate
-- Do NOT modify `_get_smpl_part_ids()` function — only add new functions alongside
-- Do NOT run `flutter analyze` or modify Flutter app
-- Do NOT add comments, docstrings, or type annotations to existing code you didn't write
-- Do NOT explore `research/` files unless fixing a specific bug
+- Do NOT re-run Blender script EXCEPT in S-T7 (and only ONCE)
+- Do NOT modify `muscle_highlighter.js` — it works
+- Do NOT modify `_get_smpl_part_ids()` or `_get_mpfb2_part_ids()` — they work
+- Do NOT touch Flutter app or main.dart
+- Do NOT read full `controllers.py` or `body_viewer.js` — grep only
+- Do NOT add npm/pip packages
+- Do NOT add texture projection to the `update_deformation` endpoint (keep it fast)
+- Do NOT modify the SMPL direct pipeline (controllers.py lines 3143-3320)
