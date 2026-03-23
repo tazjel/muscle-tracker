@@ -48,6 +48,10 @@ db.define_table('customer',
     Field('calf_circumference_cm', 'double'),
     # Appearance
     Field('skin_tone_hex', 'string', length=8),
+    # Phenotype factors (0.0–1.0)
+    Field('muscle_factor', 'double', default=0.5),
+    Field('weight_factor', 'double', default=0.5),
+    Field('gender_factor', 'double', default=1.0),
     Field('profile_completed', 'boolean', default=False),
     Field('notes', 'text'),
     Field('created_on', 'datetime', default=lambda: datetime.now()),

@@ -2126,6 +2126,7 @@ _BODY_PROFILE_FIELDS = [
     'waist_circumference_cm', 'hip_circumference_cm',
     'thigh_circumference_cm', 'quadricep_circumference_cm',
     'calf_circumference_cm', 'skin_tone_hex',
+    'muscle_factor', 'weight_factor', 'gender_factor',
 ]
 
 
@@ -3526,7 +3527,7 @@ def update_deformation(customer_id):
             return dict(status='error', message='No measurements provided')
 
         # Load stored profile
-        customer = db.customer_profile(customer_id)
+        customer = db.customer(customer_id)
         if not customer:
             return dict(status='error', message='Customer not found')
         stored = {f: getattr(customer, f, None) for f in _BODY_PROFILE_FIELDS}
