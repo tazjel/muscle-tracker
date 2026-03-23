@@ -417,7 +417,7 @@ async function _loadRealSkinTexture() {
     albedo.colorSpace = THREE.SRGBColorSpace;
     // ~3cm micro patch: start at realistic scale (high tiling).
     // User adjusts slider down to enlarge and see detail.
-    albedo.repeat.set(30, 55);
+    albedo.repeat.set(18, 34);
     // Slight random offset to break grid alignment across UV seams
     albedo.offset.set(0.13, 0.07);
     // Anisotropic filtering for sharp detail at oblique angles
@@ -429,7 +429,7 @@ async function _loadRealSkinTexture() {
         loader.load(baseUrl + '/normal', resolve, undefined, reject);
       });
       normalTex.wrapS = normalTex.wrapT = THREE.RepeatWrapping;
-      normalTex.repeat.set(30, 55);
+      normalTex.repeat.set(18, 34);
       normalTex.offset.set(0.13, 0.07);
       normalTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     } catch (e) { /* use procedural fallback */ }
@@ -440,7 +440,7 @@ async function _loadRealSkinTexture() {
         loader.load(baseUrl + '/roughness', resolve, undefined, reject);
       });
       roughTex.wrapS = roughTex.wrapT = THREE.RepeatWrapping;
-      roughTex.repeat.set(30, 55);
+      roughTex.repeat.set(18, 34);
       roughTex.offset.set(0.13, 0.07);
       roughTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     } catch (e) { /* use procedural fallback */ }
@@ -657,7 +657,7 @@ function setSkinTiling(tilesX, tilesY) {
 window.setSkinTiling = setSkinTiling;
 
 // Studio: uniform texture scale (multiplier on base tiling)
-let _studioBaseX = 30, _studioBaseY = 55;
+let _studioBaseX = 18, _studioBaseY = 34;
 function setTextureScale(scale) {
   const tx = _studioBaseX * scale;
   const ty = _studioBaseY * scale;
@@ -687,12 +687,12 @@ function setTextureOffset(ox, oy) {
 window.setTextureOffset = setTextureOffset;
 
 function resetStudioDefaults() {
-  _studioBaseX = 20; _studioBaseY = 28;
-  setSkinTiling(1.4, 1.4);
+  _studioBaseX = 18; _studioBaseY = 34;
+  setSkinTiling(18, 34);
   setTextureOffset(0, 0);
   // Reset all sliders
   const els = {
-    'studio-scale': '1.0', 'studio-tile-x': '1.4', 'studio-tile-y': '1.4',
+    'studio-scale': '1.0', 'studio-tile-x': '18', 'studio-tile-y': '34',
     'studio-off-x': '0', 'studio-off-y': '0',
   };
   for (const [id, val] of Object.entries(els)) {
@@ -702,7 +702,7 @@ function resetStudioDefaults() {
   const scaleVal = document.getElementById('studio-scale-val');
   if (scaleVal) scaleVal.textContent = '1.0×';
   const xyVal = document.getElementById('studio-xy-val');
-  if (xyVal) xyVal.textContent = '1.4×1.4';
+  if (xyVal) xyVal.textContent = '18×34';
   const offVal = document.getElementById('studio-off-val');
   if (offVal) offVal.textContent = '(0,0)';
 }
@@ -711,7 +711,7 @@ window.resetStudioDefaults = resetStudioDefaults;
 // Load real skin photo texture (tiled)
 const _skinPhotoTex = new THREE.TextureLoader().load('./skin_photo.jpg', (tex) => {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(30, 55);
+  tex.repeat.set(18, 34);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   if (SKIN_MATERIAL) { SKIN_MATERIAL.map = tex; SKIN_MATERIAL.needsUpdate = true; }
