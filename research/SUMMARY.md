@@ -46,5 +46,14 @@
 - [Task 24: Muscle Segmentation](task24_muscle_segmentation.md)
 - [Task 25: Actual API fix](task25_smplitex_actual_api.md)
 
+| **Phase 6** (custom mesh pipeline — blocks all viewer work) | | | | |
+| 26 | **MakeHuman/MPFB2 Mesh Spec** — topology, UVs, vertex groups, GLB export | CRITICAL | ⬜ TODO | Gemini |
+| 27 | **Anny Body Model Evaluation** — API, blendshapes, UV, SMPL comparison | CRITICAL | ⬜ TODO | Gemini |
+| 28 | **UV Unwrap Best Practices** — seam placement, DensePose→mesh UV, blending | HIGH | ⬜ TODO | Gemini |
+| 29 | **Vertex Group Segmentation** — muscle groups, weight transfer, Blender script | HIGH | ⬜ TODO | Gemini |
+| 30 | **GLB Export Pipeline** — Python export with UVs+texture+PBR+morphs | HIGH | ⬜ TODO | Gemini |
+| 31 | **Full Pipeline Design** — capstone synthesis, integration plan for Claude | CRITICAL | ⬜ TODO | Gemini |
+
 ---
-**Status Update**: 2026-03-22 | Phase 5 tasks completed. All findings committed to `gemini/research-phase5`.
+**Status Update**: 2026-03-23 | Phase 6 tasks created. Custom mesh pipeline research — blocks all viewer, texture, and muscle highlight work.
+Previous: 2026-03-22 | Phase 5 tasks completed.
