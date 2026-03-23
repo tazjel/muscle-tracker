@@ -1397,6 +1397,7 @@ function _loadGLB(url, onLoaded) {
 
   loader.load(url,
     (gltf) => {
+      if (bodyMesh) { scene.remove(bodyMesh); }
       bodyMesh = gltf.scene;
       _applyDefaultMaterial(bodyMesh);
       _centerAndScale(bodyMesh);
@@ -1441,6 +1442,7 @@ function _loadOBJ(url) {
   const loader = new OBJLoader();
   loader.load(url,
     (obj) => {
+      if (bodyMesh) { scene.remove(bodyMesh); }
       bodyMesh = obj;
       _applyDefaultMaterial(bodyMesh);
       _centerAndScale(bodyMesh);
@@ -1611,6 +1613,7 @@ function _showPlaceholder() {
     }
     // Nothing found — show capsule fallback
     _setStatus('No model — use ?model=path.glb');
+    if (bodyMesh) { scene.remove(bodyMesh); }
     const geo = new THREE.CapsuleGeometry(30, 80, 16, 32);
     const mat = SKIN_MATERIAL.clone();
     bodyMesh = new THREE.Mesh(geo, mat);
