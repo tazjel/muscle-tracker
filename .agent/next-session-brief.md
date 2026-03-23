@@ -1,42 +1,45 @@
 # Next Session Brief — 2026-03-23
 
-## What Was Done This Session (Opus)
+## What Was Done (Opus + Gemini)
 
-### MPFB2 Template Pipeline (Plan Steps 1-3 partially done)
-- **`scripts/blender_create_template.py`** — CREATED but NOT YET RUN. Full pipeline script that:
-  - Creates MPFB2 human, removes helpers, keeps body mesh only
-  - Extracts verts/faces/UVs to numpy, vertex groups to JSON
-  - Exports `meshes/gtd3d_body_template.glb` with PBR material
-  - Creates `template_vert_segmentation.json` from bone weights
-- **`web_app/static/viewer3d/template_vert_segmentation.json`** — placeholder created with bone→muscle mapping
-- **`web_app/static/viewer3d/smpl_vert_segmentation.json`** — working SMPL segmentation (current fallback)
+### MPFB2 Template Pipeline — FULLY WORKING
+- **`scripts/blender_create_template.py`** — RUN + FIXED (front/back Y-axis flip for pec/trap splitting)
+- **Template mesh generated:** 13,380 verts, 26,756 faces, 15 muscle groups, 4,623 assigned verts
+- **`core/body_deform.py`** — CREATED (325 lines). Runtime deformation: height + per-region radial scaling + Laplacian smoothing. Input: profile dict (cm). Output: verts (mm), faces, UVs, volume.
+- **`controllers.py`** — NEW route `/api/mesh/template.glb`. `deform_template()` wired as primary fallback in `generate_body_model`. Template UVs preserved (not overwritten by cylindrical).
+- **`body_viewer.js`** — tries `/web_app/api/mesh/template.glb` first in placeholder candidates
+- **Gemini research** — g_r7 (vertex groups), g_r8 (shape keys), g_r9 (UVs), g_r10 (deformation) complete
 
-### Viewer Improvements (COMMITTED + PUSHED to master)
-- **body_viewer.js**: Auto-detect Z-up vs Y-up GLB (no more sideways meshes), async muscle attach, mobile UI toggle functions, `gtd3d_body_template.glb` as first candidate in placeholder list
-- **muscle_highlighter.js**: Async segmentation loading (tries template first, falls back to SMPL), proper error handling
-- **styles.css**: Full mobile-responsive layout (card hidden by default on mobile, toggle buttons)
-- **index.html**: Mobile toggle buttons for card and muscle panel
-- **device_profiles.json**: Samsung A24 profile added
+### Template Files in `meshes/` (committed, force-added past .gitignore)
+- `template_verts.npy`, `template_faces.npy`, `template_uvs.npy`, `template_normals.npy`
+- `template_joint_landmarks.json`, `gtd3d_body_template.glb` (612 KB)
+- `web_app/static/viewer3d/template_vert_segmentation.json`
 
-### Research
-- Gemini Phase 6 research tasks (26-32) created and committed
-- Task 32: MakeHuman body vertex segmentation research — complete with bone→muscle mapping table
+### Commit: `9e9d34b` on master
 
-## What's NOT Done (Critical Path)
+## What's NOT Done — Phase 1: Texture Compatibility
 
-### STEP 1 BLOCKER: Run Blender Script
-The template script exists but has NOT been executed. Must run:
-```bash
-"/c/Program Files/Blender Foundation/Blender 5.1/blender.exe" --background --python scripts/blender_create_template.py
-```
-This will produce: `meshes/template_verts.npy`, `template_faces.npy`, `template_uvs.npy`, `template_vertex_groups.json`, `gtd3d_body_template.glb`
+**Problem:** 6 callsites use `_get_smpl_part_ids()` (returns 6890-length array). MPFB2's 13,380-vert mesh gets wrong part IDs → skin compositing fails, roughness falls back to height zones.
 
-### STEP 4: Wire viewer to serve template mesh (controllers.py)
-### STEP 5: Runtime deformation module (core/body_deform.py)
-### STEP 6: Wire export_glb to use template UVs
+### Blocked on Gemini Research
+- `research/g_r11_mpfb2_smpl_region_map.md` — MPFB2→SMPL part ID mapping (HIGH PRIORITY)
+- `research/g_r14_unassigned_vertex_analysis.md` — strategy for 8,757 unassigned verts
+
+### Sonnet Tasks (after Gemini research)
+- **S-T1:** Add `get_part_ids(n_verts)` dispatcher in `texture_factory.py` (lines 102, 121, 283)
+- **S-T2:** Add `MPFB2_CAPTURE_REGIONS` in `skin_patch.py` (line 37)
+- **S-T3:** Replace `_get_smpl_part_ids` at 3 callsites in `controllers.py` (lines 2370, 2554, 3220)
+- **S-T4:** Fix all-zeros `body_part_ids` in `body_deform.py` (line 274)
+- **S-T5:** End-to-end test script
+- **S-T6:** Bone-axis-aligned deformation (after G-R13)
+
+### Task Files
+- `GEMINI_NEXT_TASKS.md` — 4 research tasks (G-R11, G-R12, G-R13, G-R14)
+- `SONNET_NEXT_TASKS.md` — 6 implementation tasks (S-T1 through S-T6)
+- Plan: `.claude/plans/recursive-percolating-emerson.md`
 
 ## Branch
-All work pushed to `master` (was on gemini/research-phase5 earlier, merged)
+All on `master`.
 
 ## Server
-py4web on port 8000. Must restart after core/*.py changes. Demo user: demo@muscle.com / demo123, customer ID 1.
+py4web on port 8000. Must restart after core/*.py changes. Demo: demo@muscle.com / demo123, customer ID 1.

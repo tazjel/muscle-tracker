@@ -1,144 +1,272 @@
-# Sonnet Implementation Tasks — MPFB2 Template Pipeline (2026-03-23)
+# Sonnet Implementation Tasks — MPFB2 Texture Compatibility (2026-03-23)
 
 ## Context
-Switching from SMPL to MPFB2/MakeHuman mesh. A 6-step plan exists in `.claude/plans/cryptic-nibbling-petal.md`. Steps 1-3 are partially done (script created, viewer updated). Steps 4-6 remain.
+MPFB2 template pipeline works (13,380 verts, deformation, viewer). But 6 callsites in the texture subsystem are hardcoded to SMPL's 6890-vert topology via `_get_smpl_part_ids()`. When MPFB2 mesh hits these paths, skin compositing fails and roughness falls back to low-quality height zones. Both pipelines must coexist: SMPL for photo-based (HMR2.0), MPFB2 for measurement-based.
 
 ## RULES — READ BEFORE STARTING
 1. **Read `CLAUDE.md` FIRST** — paths, gotchas, conventions
-2. **Read `.agent/next-session-brief.md`** — current state summary
-3. **Read the plan file** `.claude/plans/cryptic-nibbling-petal.md` — full architecture
-4. **NEVER read large files whole** — grep for specific line numbers
-5. **NEVER run `flutter analyze`** — delegate to Gemini
-6. **NEVER use MCP tools** — use project scripts or create new ones
-7. **Run `photo_preflight.py` before pipeline, `agent_verify.py` after**
-8. **Stop after first successful run** — don't re-run for marginal improvements
-9. **py4web does NOT hot-reload** — must kill and restart server after core/*.py changes
-10. **Use full Python path:** `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe`
+2. **Read `.agent/next-session-brief.md`** — current state
+3. **NEVER read `controllers.py` or `body_viewer.js` fully** — grep for exact line numbers
+4. **NEVER modify the SMPL direct pipeline** (controllers.py lines 3143-3320)
+5. **NEVER re-run the Blender template script** — mesh is generated and correct
+6. **NEVER modify `muscle_highlighter.js` or `body_viewer.js`** — they already work
+7. **NEVER install new packages** — use numpy, scipy, cv2 only
+8. **Use full Python path:** `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe`
+9. **py4web does NOT hot-reload** — kill and restart after core/*.py changes
+10. **Stop after first successful test** — don't re-run for marginal improvements
 
-## Key File Sizes (DO NOT read fully — grep only)
-- `controllers.py` — 2200+ lines. Grep for `generate_body_model` (~line 2126)
-- `body_viewer.js` — 3900+ lines. Grep for specific functions
-- `muscle_highlighter.js` — ~350 lines (OK to read)
-- `blender_create_template.py` — ~300 lines (OK to read)
+## File Sizes (grep-only unless noted)
+- `controllers.py` — 3600+ lines (GREP ONLY)
+- `body_viewer.js` — 3900+ lines (DO NOT TOUCH)
+- `texture_factory.py` — 466 lines (OK to read)
+- `skin_patch.py` — 538 lines (OK to read)
+- `body_deform.py` — 325 lines (OK to read)
+
+## Gemini Research to Check Before Starting
+- `research/g_r11_mpfb2_smpl_region_map.md` — MPFB2→SMPL part ID mapping table (REQUIRED for S-T1)
+- `research/g_r14_unassigned_vertex_analysis.md` — strategy for 8757 unassigned verts (REQUIRED for S-T1)
+- If these files don't exist yet, STOP and tell user "Gemini research G-R11/G-R14 not ready"
 
 ---
 
-## Task S-T1: Run Blender Template Script (HIGHEST PRIORITY — DO THIS FIRST)
+## Task S-T1: MPFB2 Part ID Adapter (DO FIRST)
 
-**What:** Execute the existing script to generate the template mesh.
+**File:** `core/texture_factory.py` (466 lines, OK to read)
 
-**Command:**
-```bash
-"/c/Program Files/Blender Foundation/Blender 5.1/blender.exe" --background --python scripts/blender_create_template.py
+**What to do:**
+1. Add `_get_mpfb2_part_ids()` after line 102 (after `_get_smpl_part_ids`):
+   - Load `web_app/static/viewer3d/template_vert_segmentation.json`
+   - Map each of 15 groups to SMPL part IDs using table from `research/g_r11_mpfb2_smpl_region_map.md`
+   - For 8,757 unassigned vertices: use `scipy.spatial.KDTree` nearest-neighbor from assigned vertices (or whatever G-R14 recommends)
+   - Return `(13380,)` int32 array
+   - Cache in module-level variable (same pattern as `_get_smpl_part_ids`)
+
+2. Add dispatcher `get_part_ids(n_verts)`:
+   - `6890` → `_get_smpl_part_ids()`
+   - `13380` → `_get_mpfb2_part_ids()`
+   - else → `None`
+
+3. Update internal callers:
+   - Line 121 (in `generate_roughness_map`): `_get_smpl_part_ids()` → `get_part_ids(len(uvs))`
+   - Line 283 (in `generate_anatomical_overlay`): `_get_smpl_part_ids()` → `get_part_ids(len(uvs))`
+
+**Proposed mapping** (verify against G-R11 research):
+```python
+_MPFB2_TO_SMPL = {
+    'pectorals': 9, 'traps': 12, 'abs': 3, 'obliques': 3, 'glutes': 0,
+    'quads_l': 1, 'quads_r': 2, 'calves_l': 4, 'calves_r': 5,
+    'biceps_l': 16, 'biceps_r': 17, 'forearms_l': 18, 'forearms_r': 19,
+    'deltoids_l': 13, 'deltoids_r': 14,
+}
 ```
-
-**Expected outputs in `meshes/`:**
-- `template_verts.npy` — (N, 3) float32
-- `template_faces.npy` — (M, 3) int32
-- `template_uvs.npy` — (N, 2) float32
-- `template_vertex_groups.json` — bone→vertex list mapping
-- `gtd3d_body_template.glb` — production GLB
-
-**Expected output in `web_app/static/viewer3d/`:**
-- `template_vert_segmentation.json` — muscle group→vertex indices
-
-**If script fails:** Read the error, check Gemini research in `research/g_r7_*.md` for correct vertex group names, fix the mapping, retry. Common issues:
-- MPFB2 operator name might be `create_human` or `add_human` — check `bpy.ops.mpfb.` tab completion
-- Shape key names might differ — check `research/g_r8_*.md`
-- Vertex group names might have `DEF-` prefix
 
 **Verification:**
 ```bash
 PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
-$PY -c "import numpy as np; v=np.load('meshes/template_verts.npy'); print(f'Verts: {v.shape}, range: {v.min():.2f} to {v.max():.2f}')"
-$PY -c "import json; d=json.load(open('web_app/static/viewer3d/template_vert_segmentation.json')); print({k:len(v) for k,v in d.items()})"
+$PY -c "
+from core.texture_factory import get_part_ids
+import numpy as np
+smpl = get_part_ids(6890)
+print(f'SMPL: {smpl.shape if smpl is not None else None}')
+mpfb = get_part_ids(13380)
+print(f'MPFB2: {mpfb.shape}, unique={len(np.unique(mpfb))}')
+assert mpfb is not None and len(mpfb) == 13380
+assert len(np.unique(mpfb)) >= 10, 'Too few unique part IDs'
+print('PASS')
+"
 ```
 
----
-
-## Task S-T2: Wire Viewer to Serve Template Mesh
-
-**What:** Update `controllers.py` to serve the template GLB as default mesh.
-
-**Where to look:** Grep `controllers.py` for `serve_mesh` or `mesh.*glb` to find the serving function.
-
-**Changes needed:**
-1. If no customer-specific mesh exists, serve `meshes/gtd3d_body_template.glb` instead of returning 404
-2. The viewer already tries `gtd3d_body_template.glb` as first candidate (done in body_viewer.js)
-
-**Verification:** Open `http://192.168.100.16:8000/web_app/static/viewer3d/index.html` — should load the template mesh without needing `?model=` parameter.
+**DO NOT:** Change `_get_smpl_part_ids` behavior. Do not read `controllers.py`.
 
 ---
 
-## Task S-T3: Create Runtime Deformation Module
+## Task S-T2: MPFB2 Capture Regions — `core/skin_patch.py`
 
-**What:** `core/body_deform.py` — deform template mesh based on user measurements (24 body measurements from profile).
+**Depends on:** S-T1
 
-**Architecture:**
+**File:** `core/skin_patch.py` (538 lines, OK to read)
+
+**What to do:**
+1. Add `MPFB2_CAPTURE_REGIONS` dict after line 36 (after existing `CAPTURE_REGIONS`):
 ```python
-def deform_template(profile: dict) -> dict:
-    base_verts = np.load('meshes/template_verts.npy')
-    faces = np.load('meshes/template_faces.npy')
-    uvs = np.load('meshes/template_uvs.npy')
-    groups = json.load(open('meshes/template_vertex_groups.json'))
-
-    # For each measurement (chest_circ, waist_circ, hip_circ, etc.):
-    #   1. Find which vertex group corresponds to that measurement
-    #   2. Scale those vertices to match the target circumference
-    #   3. Smooth blending at boundaries
-
-    return {'vertices': deformed, 'faces': faces, 'uvs': uvs}
+MPFB2_CAPTURE_REGIONS = {
+    'forearm':    ['forearms_l', 'forearms_r'],
+    'abdomen':    ['abs', 'obliques'],
+    'chest':      ['pectorals'],
+    'thigh':      ['quads_l', 'quads_r'],
+    'calf':       ['calves_l', 'calves_r'],
+    'upper_arm':  ['biceps_l', 'biceps_r'],
+    'shoulders':  ['deltoids_l', 'deltoids_r'],
+    'back':       ['traps'],
+    'neck':       [],
+    'hands':      [],
+    'feet':       [],
+    'face':       [],
+}
 ```
 
-**Key constraint:** UVs and faces NEVER change. Only vertex positions change.
+2. Update `composite_skin_atlas` (line 440) to accept optional `seg_dict` param:
+   - If `seg_dict` is provided AND `region_name` is in `MPFB2_CAPTURE_REGIONS`: use muscle group vertex indices from `seg_dict`
+   - If `seg_dict` is None: use existing `part_ids` + `CAPTURE_REGIONS` path (backward compatible)
 
-**Depends on:** S-T1 (need the template numpy files first)
+**Verification:**
+```bash
+$PY -c "
+from core.skin_patch import MPFB2_CAPTURE_REGIONS, CAPTURE_REGIONS
+assert set(MPFB2_CAPTURE_REGIONS.keys()) == set(CAPTURE_REGIONS.keys())
+print('Region keys match:', sorted(MPFB2_CAPTURE_REGIONS.keys()))
+print('PASS')
+"
+```
 
----
-
-## Task S-T4: Wire Deformation into Body Model API
-
-**What:** Update `generate_body_model` in `controllers.py` to use `deform_template()` instead of `build_body_mesh()` (SMPL).
-
-**Where:** `controllers.py` ~line 2126, function `generate_body_model`
-
-**Changes:**
-1. Import `from core.body_deform import deform_template`
-2. Replace `build_body_mesh(profile)` call with `deform_template(profile)`
-3. Keep the rest of the pipeline (texture projection, GLB export) the same
-4. The deformed mesh uses template UVs (much better than cylindrical UVs)
+**DO NOT:** Modify `CAPTURE_REGIONS` (SMPL still needs it). Do not touch Image Quilting code.
 
 ---
 
-## Task S-T5: Verify Muscle Highlights on Template Mesh
+## Task S-T3: Wire Dispatcher into controllers.py
 
-**What:** After S-T1, open viewer and test muscle group highlights.
+**Depends on:** S-T1, S-T2
 
-**Steps:**
-1. Load template GLB in viewer
-2. Click each muscle group button
-3. Verify highlights cover correct body regions
-4. If highlight is wrong, check `template_vert_segmentation.json` — the bone→muscle mapping might need adjustment
+**File:** `web_app/controllers.py` — GREP ONLY, read 10-20 lines around each callsite
 
-**The muscle_highlighter.js already tries template segmentation first** (async load with fallback to SMPL segmentation). No code changes needed unless segmentation is wrong.
+**Exact callsites to change (3 locations):**
+
+1. **Lines 2370/2384** (inside `upload_skin_region`):
+   - `from core.texture_factory import _get_smpl_part_ids` → `from core.texture_factory import get_part_ids`
+   - `part_ids = _get_smpl_part_ids()` → `part_ids = get_part_ids(len(uvs))`
+
+2. **Lines 2554/2568** (inside `select_skin_photo`):
+   - Same pattern as above
+
+3. **Lines 3220/3227** (inside `generate_body_model`, SMPL skin texture path):
+   - `from core.texture_factory import _get_smpl_part_ids` → `from core.texture_factory import get_part_ids`
+   - `_part_ids = _get_smpl_part_ids()` → `_part_ids = get_part_ids(len(uvs_for_glb))`
+
+**Verification:**
+```bash
+grep -n '_get_smpl_part_ids' web_app/controllers.py
+# Should return 0 lines
+
+grep -n 'get_part_ids' web_app/controllers.py
+# Should return 3+ lines
+```
+
+**DO NOT:** Read the full file. Do not modify SMPL direct pipeline (lines 3143-3320). Do not change endpoint signatures.
+
+---
+
+## Task S-T4: Fix body_part_ids in body_deform.py
+
+**Depends on:** S-T1
+
+**File:** `core/body_deform.py` (325 lines, OK to read)
+
+**What to do:**
+1. At line 274, replace `np.zeros(len(verts_mm), dtype=np.int32)` with proper part IDs:
+```python
+try:
+    from core.texture_factory import get_part_ids
+    _part_ids = get_part_ids(len(verts_mm))
+except Exception:
+    _part_ids = None
+...
+'body_part_ids': _part_ids if _part_ids is not None else np.zeros(len(verts_mm), dtype=np.int32),
+```
+   Use try/except to avoid circular import issues.
+
+2. Add `'mesh_type': 'mpfb2'` key to return dict.
+
+**Verification:**
+```bash
+$PY -c "
+from core.body_deform import deform_template
+m = deform_template()
+print(f'body_part_ids: {m[\"body_part_ids\"].shape}, unique: {len(set(m[\"body_part_ids\"].tolist()))}')
+assert m['body_part_ids'].max() > 0, 'All zeros — mapping failed'
+print(f'mesh_type: {m.get(\"mesh_type\")}')
+print('PASS')
+"
+```
+
+**DO NOT:** Change deformation logic, boundary smoothing, or coordinate conversion.
+
+---
+
+## Task S-T5: End-to-End Test Script
+
+**Depends on:** S-T1, S-T2, S-T3, S-T4
+
+**Create:** `scripts/test_mpfb2_pipeline.py`
+
+**What it should test:**
+1. `deform_template(profile)` with sample measurements → check verts, faces, UVs, body_part_ids
+2. `generate_roughness_map(uvs, atlas_size=512, vertices=verts)` → check non-None, correct shape
+3. `generate_ao_map(verts, faces, uvs, atlas_size=512)` → check non-None
+4. `export_glb(verts, faces, 'meshes/test_mpfb2_e2e.glb', uvs=uvs)` → check file exists
+5. Print pass/fail for each step, total time
+
+**Verification:** Run the script itself:
+```bash
+$PY scripts/test_mpfb2_pipeline.py
+```
+
+**DO NOT:** Test the SMPL pipeline. Do not start py4web. Do not upload anything.
+
+---
+
+## Task S-T6: Bone-Axis-Aligned Deformation (Phase 2)
+
+**Depends on:** G-R13 research, S-T4
+
+**File:** `core/body_deform.py` (325 lines)
+
+**What to do:**
+1. Replace radial XY scaling (lines 219-256) with per-group PCA-axis scaling:
+   - For each muscle group, compute PCA of its vertex positions
+   - First principal component = bone direction
+   - Scale in the plane perpendicular to the bone axis
+2. Upgrade `_smooth_boundaries` to distance-weighted blend (not binary boundary)
+
+**Verification:**
+```bash
+$PY -c "
+from core.body_deform import deform_template
+import numpy as np
+m = deform_template({'chest_circumference_cm': 120, 'bicep_circumference_cm': 45})
+v = m['vertices']
+assert np.isfinite(v).all(), 'Non-finite vertices!'
+print(f'Height: {v[:,2].max()-v[:,2].min():.0f}mm, Vol: {m[\"volume_cm3\"]:.0f}cm3')
+print('PASS')
+"
+```
+
+**DO NOT:** Change height scaling. Do not change output format. Do not modify UVs.
 
 ---
 
 ## DEPENDENCY GRAPH
 ```
-S-T1 (run Blender) ──→ S-T2 (wire viewer)
-                    ──→ S-T3 (deformation module) ──→ S-T4 (wire API)
-                    ──→ S-T5 (verify highlights)
+S-T1 (part ID adapter) ──┬──> S-T2 (skin_patch regions)
+                          │         │
+                          ├─────────┴──> S-T3 (controllers wiring)
+                          │
+                          └──> S-T4 (body_deform fix)
+                                    │
+S-T1 + S-T2 + S-T3 + S-T4 ────────> S-T5 (e2e test)
+
+G-R13 (research) ──────────────────> S-T6 (bone-axis deform)
 ```
-S-T1 MUST complete before anything else. S-T2, S-T3, S-T5 can run in parallel after S-T1.
+
+**Execution order:** S-T1 → (S-T2 + S-T4 parallel) → S-T3 → S-T5 → S-T6
 
 ---
 
 ## WHAT NOT TO DO
-- Do NOT re-create `blender_create_template.py` — it already exists and is complete
-- Do NOT modify `muscle_highlighter.js` — it already handles template segmentation
-- Do NOT modify `body_viewer.js` — it already prefers template GLB and handles Y-up
-- Do NOT touch the skin texture pipeline (`core/skin_patch.py`) — separate concern
+- Do NOT re-create `blender_create_template.py` or re-run Blender
+- Do NOT modify `muscle_highlighter.js` — already handles template segmentation
+- Do NOT modify `body_viewer.js` — already prefers template GLB
+- Do NOT touch `core/smpl_direct.py` — SMPL direct pipeline is separate
+- Do NOT modify `_get_smpl_part_ids()` function — only add new functions alongside
 - Do NOT run `flutter analyze` or modify Flutter app
-- Do NOT explore `research/` files unless you need to fix a script bug
 - Do NOT add comments, docstrings, or type annotations to existing code you didn't write
+- Do NOT explore `research/` files unless fixing a specific bug
