@@ -1,81 +1,76 @@
-# Gemini Research Tasks — Skin Texture Pipeline Phase 2
+# Gemini Research Tasks — MPFB2 Template Pipeline (2026-03-23)
 
 ## Context
-Per-region skin texture pipeline is working (`core/skin_patch.py`). Image Quilting + Laplacian blending implemented. Need research to improve quality and solve remaining issues.
+We are switching from SMPL (non-commercial license, bad UVs) to MPFB2/MakeHuman (CC0, proper UVs, 13,380 body verts). A Blender script exists at `scripts/blender_create_template.py` but has NOT been run yet. Before running it, we need to verify the mapping data is correct.
+
+## RULES — READ BEFORE STARTING
+1. **Read `CLAUDE.md` FIRST** — it has paths, gotchas, and conventions
+2. **RESEARCH ONLY** — do NOT write code, do NOT run Blender, do NOT modify scripts
+3. **Never read large files whole** — grep for specific sections
+4. **Keep reports under 100 lines** — concise findings, not essays
+5. **Save reports to `research/` directory** with `g_r` prefix
+6. **Do NOT explore `core/`, `web_app/`, or `scripts/` deeply**
+7. **Do NOT re-research topics already in `research/`** — check existing reports first
+
+## Existing Research (DO NOT REDO)
+- `research/g_r5_smpl_segmentation_data.md` — SMPL segmentation (old mesh, superseded)
+- `research/task32_makehuman_segmentation.md` — MakeHuman bone→muscle mapping table
+- `research/g_r6_licensing_paths.md` — licensing comparison
 
 ---
 
-## G-NEXT-1: Canonical SMPL UV Layout — How to Load
-**Priority: HIGH** (blocks S-N2)
+## Task G-R7: MPFB2 Vertex Group Names Verification (HIGH PRIORITY)
 
-### Goal
-Find how to load the official SMPL UV coordinates (not cylindrical fallback) without Meshcapade license.
+**Why:** The Blender script maps bones to muscles but the exact vertex group names might be wrong. If names are wrong, the script will silently produce empty segmentation groups.
 
-### What We Need
-1. Does the `smplx` Python package include UV data? If so, which file and what format?
-2. Does SMPL_NEUTRAL.pkl contain UV data? Check keys: `vt`, `ft`, `uvs`, `texcoords`
-3. If not in smplx, is there a freely available SMPL UV layout file (.obj with vt/vn, or .json)?
-4. Format: per-vertex (6890, 2) or per-face-corner? How to convert to per-vertex?
-5. Provide exact Python code to load canonical UVs from whatever source exists
+**What to research:**
+1. MPFB2 GitHub source: `https://github.com/makehumancommunity/mpfb2`
+2. Find actual vertex group names in `src/mpfb/data/rigs/standard/` — specifically `weights.human.json`
+3. Verify whether MPFB2 uses prefixes like `DEF-` on bone names
+4. The script (line ~170-220) maps: `upper_arm.L` → `biceps_l`, `shoulder.L` → `deltoids_l`, etc.
+5. Check if front/back splitting by vertex normal Z-component works for distinguishing pectorals from traps
 
-### Anti-Fabrication
-- Actually check the smplx package source on GitHub (https://github.com/vchoutas/smplx)
-- Check SMPL pickle file keys — don't guess
-- If no free source exists, say so clearly
+**Output:** `research/g_r7_mpfb2_vertex_groups.md`
+- List of exact bone/vertex-group names from MPFB2 standard rig
+- Corrections needed (if any) to the bone names in the script
+- Whether normal-direction front/back splitting is geometrically valid
 
 ---
 
-## G-NEXT-2: Normal Map from Albedo — Best CPU Algorithm
-**Priority: MEDIUM**
+## Task G-R8: MakeHuman Shape Keys for Athletic Male Body
 
-### Goal
-Find the best algorithm to generate a convincing normal map from a skin albedo texture (no depth sensor, no GPU).
+**Why:** The script uses shape key names `Muscular` and `Male` (line ~80) but these might not exist. Wrong names = default androgynous body.
 
-### What We Need
-1. Compare approaches:
-   - Sobel gradients → tangent-space normal
-   - Photometric stereo (single image, assumed lighting)
-   - Frequency-based height estimation (high-pass filter → normals)
-   - Neural (CycleGAN albedo→normal) — any lightweight ONNX model?
-2. For skin specifically: what frequency range captures pore detail?
-3. Recommended approach with OpenCV/NumPy code (~20 lines)
-4. What normal map strength looks best for skin in Three.js? (normalScale value)
+**What to research:**
+1. MPFB2 source: `src/mpfb/data/targets/` directory structure
+2. Exact shape key names for: muscle definition, body fat, athletic build, male proportions
+3. Whether shape keys are applied via `bpy.ops` or by setting `shape_keys[name].value`
+
+**Output:** `research/g_r8_makehuman_shape_keys.md`
 
 ---
 
-## G-NEXT-3: Skin Tone Extraction from Photo — Robust Method
-**Priority: MEDIUM**
+## Task G-R9: MPFB2 UV Layout Documentation
 
-### Goal
-Find the best algorithm to extract the dominant skin tone from a close-up skin photo, handling:
-- Mixed lighting (warm indoor + cool outdoor)
-- Hair on skin
-- Shadows
-- Camera white balance variation
+**Why:** We need to know if MPFB2's UV layout is single-atlas (one UV island per body) or multi-atlas. This affects texture projection.
 
-### What We Need
-1. Compare: simple LAB median vs k-means clustering vs YCrCb skin detection
-2. Which color space is most robust for skin tone extraction?
-3. How to handle dark skin vs light skin (different detection thresholds?)
-4. Code: function that takes BGR image → returns BGR skin tone color
+**What to research:**
+1. Does MakeHuman base mesh have a single UV map?
+2. Are UVs pre-baked into the mesh or generated by MPFB2 at creation time?
+3. UV island layout — is the body unwrapped as one connected atlas or separate islands per body part?
+
+**Output:** `research/g_r9_mpfb2_uv_layout.md`
 
 ---
 
-## G-NEXT-4: Image Quilting Optimization — Vectorized SSD
-**Priority: LOW**
+## Task G-R10: Runtime Body Deformation Without Blender
 
-### Goal
-The current Image Quilting implementation tests 50 random candidates per patch using a Python loop. Find how to vectorize the SSD computation for 200+ candidates.
+**Why:** Plan Step 5 requires deforming the template mesh at runtime in pure Python (no Blender). Need to know the best approach.
 
-### What We Need
-1. Can we pre-extract all possible patches as a (N, patch_h, patch_w, 3) tensor?
-2. Vectorized SSD against overlap regions using NumPy broadcasting?
-3. Memory estimate for 512×512 source, 64×64 patches, 16px overlap
-4. Any existing Python Image Quilting implementation we can reference? (GitHub links)
+**What to research:**
+1. Given vertex groups (which vertices belong to which body part), how to scale body parts to match target circumferences/lengths
+2. Smooth blending at vertex group boundaries (avoid discontinuities)
+3. Existing Python libraries for mesh deformation (e.g., `trimesh`, `libigl`)
+4. Whether MPFB2's shape key approach can be replicated in numpy (apply shape key deltas to base vertices)
 
----
-
-## Timeline
-- G-NEXT-1: HIGH priority, do first (blocks Sonnet S-N2)
-- G-NEXT-2, G-NEXT-3: MEDIUM, do after G-NEXT-1
-- G-NEXT-4: LOW, do if time permits
+**Output:** `research/g_r10_runtime_deformation.md`

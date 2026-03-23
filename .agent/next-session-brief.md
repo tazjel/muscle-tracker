@@ -1,40 +1,42 @@
-# Next Session Brief — 2026-03-22
+# Next Session Brief — 2026-03-23
 
-## What Was Done This Session
+## What Was Done This Session (Opus)
 
-### Sonnet Upgrade Tasks (S-U1 through S-U9) — ALL COMMITTED
-| Commit | Task | What |
-|--------|------|------|
-| 30fa4ae | S-U1 | LAB color harmonization for multi-view texture |
-| 362008d | S-U2 | SMPL vertex landmarks + hip circumference fix |
-| 723c70b | S-U3 | Three.js muscle group highlighter |
-| dcc1f9c | S-U4 | A2B regressor (measurements → betas) + ONNX |
-| 4437a30 | S-U5+S-U7 | SMPLitex + IntrinsiX RunPod handlers |
-| 7c93ca7 | S-U6 | Heatmap comparison viewer |
-| 7aa4209 | S-U8 | ML body composition from SMPL betas |
-| 20ba34d | S-U9 | CameraHMR RunPod path for shape estimation |
+### MPFB2 Template Pipeline (Plan Steps 1-3 partially done)
+- **`scripts/blender_create_template.py`** — CREATED but NOT YET RUN. Full pipeline script that:
+  - Creates MPFB2 human, removes helpers, keeps body mesh only
+  - Extracts verts/faces/UVs to numpy, vertex groups to JSON
+  - Exports `meshes/gtd3d_body_template.glb` with PBR material
+  - Creates `template_vert_segmentation.json` from bone weights
+- **`web_app/static/viewer3d/template_vert_segmentation.json`** — placeholder created with bone→muscle mapping
+- **`web_app/static/viewer3d/smpl_vert_segmentation.json`** — working SMPL segmentation (current fallback)
 
-### Pipeline Bug Fixes — COMMITTED (03abd06)
-- Mask resize fix (MediaPipe returns different resolution than input image)
-- LAB harmonization wired into smpl_direct.py rasterizer
-- DSINE resize to 1024px max for CPU practicality
-- Read-only vertices array fix from HMR
+### Viewer Improvements (COMMITTED + PUSHED to master)
+- **body_viewer.js**: Auto-detect Z-up vs Y-up GLB (no more sideways meshes), async muscle attach, mobile UI toggle functions, `gtd3d_body_template.glb` as first candidate in placeholder list
+- **muscle_highlighter.js**: Async segmentation loading (tries template first, falls back to SMPL), proper error handling
+- **styles.css**: Full mobile-responsive layout (card hidden by default on mobile, toggle buttons)
+- **index.html**: Mobile toggle buttons for card and muscle panel
+- **device_profiles.json**: Samsung A24 profile added
 
-### Per-Region Skin Texture Pipeline — COMMITTED
-- `core/skin_patch.py` (b47fd81): Image Quilting + Laplacian blending
-- API + viewer UI (9601a63): POST /api/customer/<id>/skin_region/<region>, skin upload panel
+### Research
+- Gemini Phase 6 research tasks (26-32) created and committed
+- Task 32: MakeHuman body vertex segmentation research — complete with bone→muscle mapping table
 
-### Key Discovery
-Full-body photo projection onto mesh is fundamentally broken (seams, gaps, distortion). New approach: per-region close-up skin photos tiled onto SMPL body parts. Pipeline works end-to-end in ~9 seconds.
+## What's NOT Done (Critical Path)
 
-## What's Next
-- **GEMINI_NEXT_TASKS.md** — 4 research tasks (canonical UVs is HIGH priority)
-- **SONNET_NEXT_TASKS.md** — 7 implementation tasks (PBR, canonical UVs, Flutter capture, pipeline wiring)
-- A2B regressor needs retraining with 10,000+ samples (currently 500)
-- Muscle highlighter vertex ranges are approximate — need real Meshcapade data
+### STEP 1 BLOCKER: Run Blender Script
+The template script exists but has NOT been executed. Must run:
+```bash
+"/c/Program Files/Blender Foundation/Blender 5.1/blender.exe" --background --python scripts/blender_create_template.py
+```
+This will produce: `meshes/template_verts.npy`, `template_faces.npy`, `template_uvs.npy`, `template_vertex_groups.json`, `gtd3d_body_template.glb`
+
+### STEP 4: Wire viewer to serve template mesh (controllers.py)
+### STEP 5: Runtime deformation module (core/body_deform.py)
+### STEP 6: Wire export_glb to use template UVs
 
 ## Branch
-`gemini/research-phase5` — all work on this branch
+All work pushed to `master` (was on gemini/research-phase5 earlier, merged)
 
 ## Server
 py4web on port 8000. Must restart after core/*.py changes. Demo user: demo@muscle.com / demo123, customer ID 1.
