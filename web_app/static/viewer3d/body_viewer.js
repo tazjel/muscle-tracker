@@ -88,6 +88,8 @@ let _autoRotate  = false;
 let _gridHelper  = null;
 let _camTransition = null;
 let _timelineTimer = null;
+let _cachedProfile = null;       // Cached body profile for live deformation calls
+let _deformDebounceTimer = null; // Debounce timer for update_deformation endpoint
 
 // ── V12 globals ──────────────────────────────────────────────────────────────
 let _ringGroup      = null;
@@ -845,6 +847,11 @@ function init() {
     if (el) el.addEventListener('input', () => {
       const val = document.getElementById(id + '-val');
       if (val) val.textContent = el.value;
+    });
+    // On slider release: apply client-side preview then schedule server re-deform
+    if (el) el.addEventListener('change', () => {
+      window.applyAdjustment();
+      _scheduleDeformationUpdate();
     });
   });
 
@@ -1694,6 +1701,66 @@ window.toggleLabels = function() {
 // ── Adjustment panel ──────────────────────────────────────────────────────────
 let _currentRegion = null;
 const _regionAdjustments = {};  // region → {width, depth, length}
+
+// ── Live deformation: debounced server re-deform via update_deformation API ───
+
+async function _fetchAndCacheProfile() {
+  if (_cachedProfile) return _cachedProfile;
+  try {
+    const cid = _customerId();
+    const resp = await fetch(`/web_app/api/customer/${cid}/body_profile`,
+      { headers: _authHeaders() });
+    const data = await resp.json();
+    if (data.status === 'success') {
+      _cachedProfile = data.profile || data;
+    }
+  } catch (e) {
+    console.warn('Failed to fetch body profile for deformation:', e);
+  }
+  return _cachedProfile;
+}
+
+function _scheduleDeformationUpdate() {
+  clearTimeout(_deformDebounceTimer);
+  _deformDebounceTimer = setTimeout(_doDeformationUpdate, 500);
+}
+
+async function _doDeformationUpdate() {
+  const profile = await _fetchAndCacheProfile();
+  if (!profile) return;
+
+  // Build partial updates: for each adjusted region, compute new absolute circumference
+  const updates = {};
+  for (const [region, deltas] of Object.entries(_regionAdjustments)) {
+    const field = REGION_TO_FIELD[region];
+    if (!field || deltas.width === 0) continue;
+    const current = parseFloat(profile[field] || 0);
+    // Width delta in scene units (mm) → circumference delta in cm = π * width_mm / 10
+    updates[field] = Math.max(10, current + Math.PI * deltas.width / 10);
+  }
+  if (Object.keys(updates).length === 0) return;
+
+  _setStatus('Updating…');
+  try {
+    const cid = _customerId();
+    const resp = await fetch(`/web_app/api/customer/${cid}/update_deformation`, {
+      method: 'POST',
+      headers: _authHeaders(),
+      body: JSON.stringify(updates),
+    });
+    const data = await resp.json();
+    if (data.status === 'success' && data.glb_url) {
+      _setStatus('');
+      _loadGLB(data.glb_url, null);
+      // Invalidate cached profile so next call gets fresh values
+      _cachedProfile = null;
+    } else {
+      _setStatus('Update failed: ' + (data.message || ''));
+    }
+  } catch (e) {
+    _setStatus('Update error: ' + e.message);
+  }
+}
 
 const REGION_TO_FIELD = {
   chest:    'chest_circumference_cm',

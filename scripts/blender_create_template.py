@@ -12,6 +12,8 @@ Outputs:
   meshes/template_normals.npy        — (N, 3) float32 vertex normals
   meshes/template_joint_landmarks.json — joint cube center positions
   meshes/gtd3d_body_template.glb     — production GLB with PBR skin material
+  meshes/shape_deltas/index.json     — shape key metadata (name, category, baked value)
+  meshes/shape_deltas/*.npy          — per-key vertex deltas (N, 3) float32
   web_app/static/viewer3d/template_vert_segmentation.json — muscle group vertex indices
 """
 import bpy
@@ -160,6 +162,74 @@ bpy.ops.mesh.select_all(action='SELECT')
 bpy.ops.mesh.quads_convert_to_tris(quad_method='BEAUTY', ngon_method='BEAUTY')
 bpy.ops.object.mode_set(mode='OBJECT')
 print(f"  After triangulation: {len(human.data.polygons)} faces")
+
+# ── Step 5b: Export shape key deltas (BEFORE baking) ─────────────────────────
+# G-R15: Extract AFTER helper removal — Blender auto-reindexes shape keys
+# to match the reduced vertex count (13380). Safe to extract here.
+
+print("=== Step 5b: Exporting shape key deltas ===")
+_DELTA_DIR = os.path.join(MESHES_DIR, 'shape_deltas')
+os.makedirs(_DELTA_DIR, exist_ok=True)
+
+# Fitness-relevant key patterns (from G-R8 research)
+_FITNESS_PATTERNS = ('$ma', '$mu', '$fe', '$wg', 'muscle', 'weight', 'male', 'female')
+
+shape_delta_index = {}
+if human.data.shape_keys:
+    key_blocks = human.data.shape_keys.key_blocks
+    basis = key_blocks.get('Basis')
+    n_verts = len(human.data.vertices)
+
+    if basis is not None:
+        basis_co = np.zeros(n_verts * 3, dtype=np.float32)
+        basis.data.foreach_get('co', basis_co)
+        basis_co = basis_co.reshape(n_verts, 3)
+
+        for kb in key_blocks:
+            if kb.name == 'Basis':
+                continue
+            name_lower = kb.name.lower()
+            if not any(p in name_lower for p in _FITNESS_PATTERNS):
+                continue
+
+            # Compute per-vertex delta from Basis
+            key_co = np.zeros(n_verts * 3, dtype=np.float32)
+            kb.data.foreach_get('co', key_co)
+            key_co = key_co.reshape(n_verts, 3)
+            delta = key_co - basis_co
+
+            # Skip near-zero deltas (key not actually affecting this mesh)
+            if np.abs(delta).max() < 1e-5:
+                continue
+
+            # Sanitize name for filename
+            safe_name = kb.name.replace('$', '_').replace('-', '_').replace(' ', '_').strip('_')
+            fname = f'{safe_name}.npy'
+            np.save(os.path.join(_DELTA_DIR, fname), delta)
+
+            # Determine category from name
+            category = 'other'
+            if '$ma' in name_lower or 'male' in name_lower:
+                category = 'gender_male'
+            elif '$fe' in name_lower or 'female' in name_lower:
+                category = 'gender_female'
+            elif '$mu' in name_lower or 'muscle' in name_lower:
+                category = 'muscle'
+            elif '$wg' in name_lower or 'weight' in name_lower:
+                category = 'weight'
+
+            shape_delta_index[kb.name] = {
+                'file': fname,
+                'baked_value': round(kb.value, 4),
+                'category': category,
+            }
+            print(f"  Exported delta: {kb.name} ({category}) baked={kb.value:.3f} max_delta={np.abs(delta).max():.4f}m")
+
+    with open(os.path.join(_DELTA_DIR, 'index.json'), 'w') as f:
+        json.dump(shape_delta_index, f, indent=2)
+    print(f"  Saved {len(shape_delta_index)} shape key deltas to {_DELTA_DIR}")
+else:
+    print("  No shape keys found — skipping delta export")
 
 # ── Step 6: Apply shape keys to bake geometry ──────────────────────────────────
 

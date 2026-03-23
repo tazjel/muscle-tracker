@@ -40,7 +40,23 @@ def main():
                         help='Save debug images')
     parser.add_argument('--verify', action='store_true',
                         help='Run quality verification after export (exit 2 on FAIL)')
+    parser.add_argument('--mesh', default=None,
+                        help='Target mesh GLB (auto-detects SMPL vs MPFB2 by vertex count)')
+    parser.add_argument('--photo', default=None,
+                        help='Single photo path (treated as front view)')
     args = parser.parse_args()
+
+    # Single-photo shortcut: override views + scan-dir
+    if args.photo:
+        photo_abs = os.path.abspath(args.photo)
+        args.scan_dir = os.path.dirname(photo_abs)
+        args.views = ['front']
+        # Symlink/copy photo as front.jpg in scan dir if needed
+        front_path = os.path.join(args.scan_dir, 'front.jpg')
+        if not os.path.exists(front_path) or os.path.abspath(front_path) != photo_abs:
+            import shutil
+            os.makedirs(args.scan_dir, exist_ok=True)
+            shutil.copy2(photo_abs, front_path)
 
     t0 = time.time()
     os.makedirs(DEBUG_DIR, exist_ok=True)
@@ -99,17 +115,41 @@ def main():
 
     # ── Step 3: Build body mesh ─────────────────────────────────────────
     print("\n=== Step 3: Building body mesh ===")
-    from core.smpl_fitting import build_body_mesh
 
-    mesh = build_body_mesh()
-    verts = mesh['vertices']
-    faces = mesh['faces']
-    uvs = mesh.get('uvs')
-    print(f"  {mesh['num_vertices']} verts, {mesh['num_faces']} faces")
+    if args.mesh:
+        # Load from provided GLB; detect mesh type by vertex count
+        import trimesh
+        scene = trimesh.load(args.mesh, force='scene', process=False)
+        geoms = list(scene.geometry.values()) if hasattr(scene, 'geometry') else [scene]
+        tmesh = max(geoms, key=lambda g: len(g.vertices))
+        verts = tmesh.vertices.astype(np.float32)  # (N, 3) in mesh units
+        faces = tmesh.faces.astype(np.uint32)
+        n_verts = len(verts)
+        print(f"  Loaded {args.mesh}: {n_verts} verts, {len(faces)} faces")
 
-    if uvs is None:
-        from core.uv_unwrap import compute_uvs, DEFAULT_ATLAS
-        uvs = compute_uvs(verts, mesh.get('body_part_ids'), DEFAULT_ATLAS)
+        if n_verts == 13380:
+            # MPFB2 path: use precomputed single-atlas UVs
+            print("  Detected: MPFB2 template (13380 verts) — using template_uvs.npy")
+            uvs = np.load(os.path.join(MESHES_DIR, 'template_uvs.npy'))
+        else:
+            # SMPL or unknown: fall back to cylindrical UV unwrap
+            print(f"  Detected: SMPL/unknown ({n_verts} verts) — computing cylindrical UVs")
+            from core.texture_factory import get_part_ids
+            part_ids = get_part_ids(n_verts)
+            from core.uv_unwrap import compute_uvs, DEFAULT_ATLAS
+            uvs = compute_uvs(verts, part_ids, DEFAULT_ATLAS)
+    else:
+        # Default SMPL path (unchanged)
+        from core.smpl_fitting import build_body_mesh
+        mesh = build_body_mesh()
+        verts = mesh['vertices']
+        faces = mesh['faces']
+        uvs = mesh.get('uvs')
+        n_verts = mesh['num_vertices']
+        print(f"  {n_verts} verts, {mesh['num_faces']} faces")
+        if uvs is None:
+            from core.uv_unwrap import compute_uvs, DEFAULT_ATLAS
+            uvs = compute_uvs(verts, mesh.get('body_part_ids'), DEFAULT_ATLAS)
 
     # ── Step 3b: Harmonize view colors (fix seam between front/back) ────
     print(f"\n=== Step 3b: LAB color harmonization (anchor=front) ===")

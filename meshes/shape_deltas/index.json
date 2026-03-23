@@ -1,0 +1,42 @@
+{
+  "$md-$as-$fe-$yn": {
+    "file": "md__as__fe__yn.npy",
+    "baked_value": 0.0,
+    "category": "gender_female"
+  },
+  "$md-$as-$ma-$yn": {
+    "file": "md__as__ma__yn.npy",
+    "baked_value": 0.465,
+    "category": "gender_male"
+  },
+  "$md-$ca-$fe-$yn": {
+    "file": "md__ca__fe__yn.npy",
+    "baked_value": 0.0,
+    "category": "gender_female"
+  },
+  "$md-$ca-$ma-$yn": {
+    "file": "md__ca__ma__yn.npy",
+    "baked_value": 0.465,
+    "category": "gender_male"
+  },
+  "$md-$af-$fe-$yn": {
+    "file": "md__af__fe__yn.npy",
+    "baked_value": 0.0,
+    "category": "gender_female"
+  },
+  "$md-$af-$ma-$yn": {
+    "file": "md__af__ma__yn.npy",
+    "baked_value": 0.465,
+    "category": "gender_male"
+  },
+  "$md-$fe-$yn-$av$mu-$av$wg-$avcup-max$fi": {
+    "file": "md__fe__yn__av_mu__av_wg__avcup_max_fi.npy",
+    "baked_value": 0.2,
+    "category": "gender_female"
+  },
+  "$md-$fe-$yn-$av$mu-$av$wg-maxcup-$av$fi": {
+    "file": "md__fe__yn__av_mu__av_wg_maxcup__av_fi.npy",
+    "baked_value": 0.2,
+    "category": "gender_female"
+  }
+}

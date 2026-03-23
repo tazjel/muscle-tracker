@@ -29,12 +29,17 @@ _DEFAULT = {
     'forearm_circumference_cm': 29,
     'neck_circumference_cm': 35,
     'shoulder_width_cm': 37,
+    # Phenotype shape key factors (0.0–1.0)
+    'muscle_factor': 0.5,
+    'weight_factor': 0.5,
+    'gender_factor': 1.0,   # 1.0 = male, 0.0 = female
 }
 
 # Template mesh reference measurements (computed once from the generated mesh).
 # Will be populated lazily on first call.
 _template_ref = None
 _template_cache = None
+_shape_delta_cache = None
 
 
 def _load_template():
@@ -59,6 +64,52 @@ def _load_template():
         'seg': seg,
     }
     return _template_cache
+
+
+def _load_shape_deltas():
+    """Load and cache shape key delta arrays from meshes/shape_deltas/."""
+    global _shape_delta_cache
+    if _shape_delta_cache is not None:
+        return _shape_delta_cache
+
+    index_path = os.path.join(_MESHES_DIR, 'shape_deltas', 'index.json')
+    if not os.path.exists(index_path):
+        _shape_delta_cache = {}
+        return _shape_delta_cache
+
+    with open(index_path) as f:
+        index = json.load(f)
+
+    result = {}
+    for key_name, info in index.items():
+        npy_path = os.path.join(_MESHES_DIR, 'shape_deltas', info['file'])
+        if not os.path.exists(npy_path):
+            continue
+        category = info.get('category', '')
+        if category == 'gender_male':
+            profile_key = 'gender_factor'
+            invert = False   # target = gender_factor directly
+        elif category == 'gender_female':
+            profile_key = 'gender_factor'
+            invert = True    # target = 1.0 - gender_factor (0=female applies these)
+        elif category == 'muscle':
+            profile_key = 'muscle_factor'
+            invert = False
+        elif category == 'weight':
+            profile_key = 'weight_factor'
+            invert = False
+        else:
+            continue
+        result[key_name] = {
+            'delta': np.load(npy_path),
+            'baked_value': float(info['baked_value']),
+            'profile_key': profile_key,
+            'invert': invert,
+        }
+
+    _shape_delta_cache = result
+    logger.info('Loaded %d shape key deltas', len(result))
+    return result
 
 
 def _cross_section_circumference(verts_2d):
@@ -202,6 +253,19 @@ def deform_template(profile: dict = None) -> dict:
     seg = tmpl['seg']
 
     ref = _compute_template_measurements(verts, seg)
+
+    # ── Step 0: Apply shape key phenotype deltas ──────────────────────────
+    # Apply BEFORE height/circumference scaling so deltas remain in template
+    # coordinate space. Each delta is (N, 3) float32 in meters.
+    shape_deltas = _load_shape_deltas()
+    for key_name, info in shape_deltas.items():
+        factor = p.get(info['profile_key'])
+        if factor is None:
+            continue
+        target = (1.0 - factor) if info['invert'] else factor
+        diff = target - info['baked_value']
+        if abs(diff) > 0.01:
+            verts += info['delta'] * diff
 
     # ── Step 1: Scale height ──────────────────────────────────────────────
     target_h = p['height_cm'] / 100.0  # meters

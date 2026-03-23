@@ -3503,6 +3503,73 @@ def generate_body_model(customer_id):
         return dict(status='error', message='Body model generation failed')
 
 
+# ── Live deformation endpoint ─────────────────────────────────────────────────
+
+@action('api/customer/<customer_id:int>/update_deformation', method=['POST'])
+@action.uses(db, cors)
+def update_deformation(customer_id):
+    """Fast re-deform MPFB2 template from partial profile updates.
+
+    Accepts JSON body with any subset of body measurement fields.
+    Merges with stored profile, runs deform_template(), exports GLB.
+    Returns mesh_id + glb_url for instant viewer reload. Target <2s.
+    """
+    payload, err = _auth_check()
+    if err:
+        return err
+
+    try:
+        import time as _t
+        _t0 = _t.time()
+        partial = request.json or {}
+        if not partial:
+            return dict(status='error', message='No measurements provided')
+
+        # Load stored profile
+        customer = db.customer_profile(customer_id)
+        if not customer:
+            return dict(status='error', message='Customer not found')
+        stored = {f: getattr(customer, f, None) for f in _BODY_PROFILE_FIELDS}
+        merged = {k: v for k, v in stored.items() if v is not None}
+        merged.update({k: v for k, v in partial.items() if k in _BODY_PROFILE_FIELDS})
+
+        # Deform template
+        from core.body_deform import deform_template
+        from core.mesh_reconstruction import export_glb
+        mesh = deform_template(merged)
+
+        os.makedirs('meshes', exist_ok=True)
+        base_name = f'body_{customer_id}_live_{int(_t.time())}'
+        glb_path = os.path.join('meshes', base_name + '.glb')
+        export_glb(mesh['vertices'], mesh['faces'], glb_path, uvs=mesh['uvs'])
+
+        mesh_id = db.mesh_model.insert(
+            customer_id=customer_id,
+            muscle_group='full_body',
+            model_type='body',
+            glb_path=glb_path,
+            volume_cm3=mesh['volume_cm3'],
+            num_vertices=mesh['num_vertices'],
+            num_faces=mesh['num_faces'],
+            notes='pipeline:mpfb2_live',
+        )
+        db.commit()
+
+        elapsed = _t.time() - _t0
+        logger.info('update_deformation customer=%d mesh=%d %.2fs', customer_id, mesh_id, elapsed)
+        return dict(
+            status='success',
+            mesh_id=mesh_id,
+            glb_url=f'/web_app/api/mesh/{mesh_id}.glb',
+            viewer_url=f'/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/{mesh_id}.glb',
+            volume_cm3=mesh['volume_cm3'],
+            elapsed_s=round(elapsed, 2),
+        )
+    except Exception:
+        logger.exception('update_deformation failed for customer %d', customer_id)
+        return dict(status='error', message='Deformation failed')
+
+
 # ── T4.2: Video scan upload + quality gate + frame extraction ─────────────────
 
 @action('api/customer/<customer_id:int>/upload_video_scan', method=['POST'])
