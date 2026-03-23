@@ -363,19 +363,30 @@ export function buildSkinUploadPanel(container, onModelReload) {
   const panel = document.createElement('div');
   panel.id = 'skin-upload-panel';
   panel.style.cssText = `
-    position: absolute; bottom: 12px; left: 12px;
+    position: absolute; bottom: 12px; right: 12px;
     background: rgba(20,20,20,0.88); border-radius: 10px;
     padding: 10px 8px; display: flex; flex-direction: column;
-    gap: 3px; min-width: 180px; max-width: 220px; z-index: 200;
+    gap: 3px; min-width: 150px; max-width: 200px; z-index: 150;
     font-family: sans-serif; font-size: 12px; color: #fff;
     backdrop-filter: blur(6px); user-select: none;
   `;
 
-  // Title
+  // Title with toggle
   const title = document.createElement('div');
-  title.textContent = 'Skin Texture';
-  title.style.cssText = 'font-weight:600; font-size:11px; color:#aaa; margin-bottom:2px; text-align:center;';
+  title.style.cssText = 'font-weight:600; font-size:11px; color:#aaa; margin-bottom:2px; text-align:center; cursor:pointer; user-select:none;';
+  title.innerHTML = 'Skin Texture <span style="font-size:9px;color:#666;">▼</span>';
   panel.appendChild(title);
+
+  // Collapsible body
+  const panelBody = document.createElement('div');
+  panelBody.id = 'skin-upload-body';
+  panelBody.style.cssText = 'display:none;';  // collapsed by default
+  let _skinPanelOpen = false;
+  title.addEventListener('click', () => {
+    _skinPanelOpen = !_skinPanelOpen;
+    panelBody.style.display = _skinPanelOpen ? 'block' : 'none';
+    title.innerHTML = 'Skin Texture <span style="font-size:9px;color:#666;">' + (_skinPanelOpen ? '▲' : '▼') + '</span>';
+  });
 
   // Coverage progress bar
   const REGIONS = ['forearm', 'chest', 'abdomen', 'thigh', 'calf', 'upper_arm', 'shoulders', 'back'];
@@ -394,7 +405,7 @@ export function buildSkinUploadPanel(container, onModelReload) {
   progressBar.appendChild(progressFill);
   progressWrap.appendChild(progressLabel);
   progressWrap.appendChild(progressBar);
-  panel.appendChild(progressWrap);
+  panelBody.appendChild(progressWrap);
 
   function updateProgress() {
     const done = Object.values(regionState).filter(Boolean).length;
@@ -535,7 +546,7 @@ export function buildSkinUploadPanel(container, onModelReload) {
     row.appendChild(uploadBtn);
     row.appendChild(resetBtn);
     row.appendChild(fileInput);
-    panel.appendChild(row);
+    panelBody.appendChild(row);
 
     // Photo gallery row (expandable)
     const galleryRow = document.createElement('div');
@@ -553,11 +564,12 @@ export function buildSkinUploadPanel(container, onModelReload) {
         expandBtn.textContent = '▸ phone';
       }
     };
-    panel.appendChild(expandBtn);
-    panel.appendChild(galleryRow);
+    panelBody.appendChild(expandBtn);
+    panelBody.appendChild(galleryRow);
   }
 
-  panel.appendChild(statusEl);
+  panelBody.appendChild(statusEl);
+  panel.appendChild(panelBody);
 
   // CSS spinner animation
   if (!document.getElementById('skin-panel-spin-css')) {
