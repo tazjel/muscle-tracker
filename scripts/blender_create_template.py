@@ -330,9 +330,10 @@ for vi in range(num_verts):
 
         if best_bone in ('spine03', 'spine04', 'spine05'):
             # Chest area: front=pecs, back=traps
-            if ny > 0.2:
+            # MPFB2 faces -Y, so front normals are ny < 0
+            if ny < -0.2:
                 best_muscle = 'pectorals'
-            elif ny < -0.2:
+            elif ny > 0.2:
                 best_muscle = 'traps'
             else:
                 best_muscle = 'pectorals'
@@ -340,13 +341,13 @@ for vi in range(num_verts):
             # Mid torso: front=abs, side=obliques, back=traps(lower)
             if nx > abs_ny * 0.8:
                 best_muscle = 'obliques'
-            elif ny > 0.1:
+            elif ny < -0.1:
                 best_muscle = 'abs'
             else:
                 best_muscle = 'traps'  # lower back → traps region
         elif best_bone == 'root':
             # Base spine: mostly glutes/lower abs
-            if ny > 0.3:
+            if ny < -0.3:
                 best_muscle = 'abs'
             elif nx > abs_ny * 0.6:
                 best_muscle = 'obliques'

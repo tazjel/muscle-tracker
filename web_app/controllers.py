@@ -1302,6 +1302,19 @@ def serve_mesh_glb(mesh_id):
         return f.read()
 
 
+@action('api/mesh/template.glb', method=['GET'])
+@action.uses(cors)
+def serve_template_glb():
+    """Serve the MPFB2 template GLB (default body before any customisation)."""
+    path = os.path.join('meshes', 'gtd3d_body_template.glb')
+    if not os.path.exists(path):
+        abort(404, 'Template mesh not generated yet')
+    response.headers['Content-Type'] = 'model/gltf-binary'
+    response.headers['Content-Disposition'] = 'inline; filename="gtd3d_body_template.glb"'
+    with open(path, 'rb') as f:
+        return f.read()
+
+
 @action('api/customer/<customer_id:int>/meshes', method=['GET'])
 @action.uses(db, cors)
 def list_meshes(customer_id):
@@ -3308,12 +3321,24 @@ def generate_body_model(customer_id):
 
 
 
-        # ── Fallback: Anny path (no images, or SMPL failed) ─────────────────
-        mesh = build_body_mesh(
-            profile,
-            images=[v['img'] for v in loaded_images.values()] or None,
-            directions=list(loaded_images.keys()) or None,
-        )
+        # ── Fallback 1: MPFB2 template deformation (preferred) ────────────
+        _mpfb2_ok = False
+        try:
+            from core.body_deform import deform_template
+            mesh = deform_template(profile)
+            _mpfb2_ok = True
+            logger.info('MPFB2 template deformation: %d verts', mesh['num_vertices'])
+        except Exception as _mpfb_err:
+            logger.warning('MPFB2 deformation failed (%s) — falling back to Anny', _mpfb_err)
+
+        # ── Fallback 2: Anny path ────────────────────────────────────────────
+        if not _mpfb2_ok:
+            mesh = build_body_mesh(
+                profile,
+                images=[v['img'] for v in loaded_images.values()] or None,
+                directions=list(loaded_images.keys()) or None,
+            )
+
         verts = mesh['vertices']
         faces = mesh['faces']
         _anny_uvs = mesh.get('uvs')
@@ -3365,7 +3390,7 @@ def generate_body_model(customer_id):
                 depth_maps=depth_maps or None,
             )
 
-        # Texture projection (Anny path)
+        # Texture projection (Anny/MPFB2 path)
         texture_image = None
         uvs_for_glb   = _anny_uvs
         normal_map    = None
@@ -3373,7 +3398,8 @@ def generate_body_model(customer_id):
             try:
                 from core.uv_unwrap import compute_uvs, DEFAULT_ATLAS
                 from core.texture_projector import project_texture
-                uvs_for_glb = compute_uvs(verts, mesh['body_part_ids'], DEFAULT_ATLAS)
+                if uvs_for_glb is None:
+                    uvs_for_glb = compute_uvs(verts, mesh['body_part_ids'], DEFAULT_ATLAS)
                 cam_views = []
                 for sv in silhouette_views:
                     img = _cv2.imread(sv['_tmp_path'])
@@ -3447,10 +3473,11 @@ def generate_body_model(customer_id):
             volume_cm3=mesh['volume_cm3'],
             num_vertices=int(len(verts)),
             num_faces=int(len(faces)),
-            notes=f'hash:{profile_hash} pipeline:anny',
+            notes=f'hash:{profile_hash} pipeline:{"mpfb2" if _mpfb2_ok else "anny"}',
         )
         db.commit()
 
+        _pipeline_name = 'mpfb2' if _mpfb2_ok else 'anny'
         logger.info('VIEWER: http://192.168.100.16:8000/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/%s.glb', mesh_id)
         return dict(
             status='success',
@@ -3460,7 +3487,7 @@ def generate_body_model(customer_id):
             volume_cm3=mesh['volume_cm3'],
             num_vertices=int(len(verts)),
             num_faces=int(len(faces)),
-            pipeline='anny',
+            pipeline=_pipeline_name,
             silhouette_views_used=len(silhouette_views),
             depth_maps_used=len(depth_maps),
             hmr_backend=mesh.get('hmr_backend'),

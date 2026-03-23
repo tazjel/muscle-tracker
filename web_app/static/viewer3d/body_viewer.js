@@ -1484,7 +1484,8 @@ function _setStatus(msg) {
 
 // ── Placeholder (no URL) — try static GLBs first ─────────────────────────────
 function _showPlaceholder() {
-  const candidates = ['gtd3d_body_template.glb',
+  const candidates = ['/web_app/api/mesh/template.glb',
+                       'gtd3d_body_template.glb',
                        'demo_pbr.glb', 'photorealistic_body.glb', 'skin_textured.glb',
                        'smpl_direct.glb', 'demo.glb'];
   (async () => {
