@@ -453,7 +453,7 @@ async function _loadRealSkinTexture() {
       roughnessMap:     roughTex || null,
       roughness:        0.42,
       metalness:        0.0,
-      side:             THREE.FrontSide,
+      side:             THREE.DoubleSide,
       color:            0xffffff,
       // Sheen + clearcoat
       sheen:            0.3,
@@ -540,7 +540,7 @@ async function _loadPBRTextures() {
       aoMap:            textures.ao || null,
       aoMapIntensity:   0.6,
       metalness:        0.0,
-      side:             THREE.FrontSide,
+      side:             THREE.DoubleSide,
       color:            0xffffff,
       // Sheen + clearcoat
       sheen:            0.3,
@@ -725,7 +725,7 @@ const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
   roughnessMap:     _createSkinRoughnessMap(),
   roughness:        0.42,
   metalness:        0.0,
-  side:             THREE.FrontSide,
+  side:             THREE.DoubleSide,
   color:            0xffffff,
   // Sheen — warm subsurface glow at grazing angles
   sheen:            0.4,
@@ -1481,7 +1481,7 @@ function _applyDefaultMaterial(object) {
         mat.clearcoat = 0.1;
         mat.clearcoatRoughness = 0.2;
         mat.envMapIntensity = 0.5;
-        mat.side = THREE.FrontSide;
+        mat.side = THREE.DoubleSide;
         if (!mat.normalMap) mat.normalMap = _createSkinNormalMap();
         mat.normalScale = new THREE.Vector2(0.75, 0.75);
         if (mat.roughnessMap) mat.roughnessFactor = 1.0;
