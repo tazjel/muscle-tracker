@@ -918,14 +918,9 @@ function init() {
       const val = document.getElementById(id + '-val');
       if (val) val.textContent = el.value;
     });
-    // On slider release: apply client-side preview then schedule server re-deform
-    if (el) el.addEventListener('change', () => {
-      window.applyAdjustment();
-      _scheduleDeformationUpdate();
-    });
   });
 
-  // Phenotype slider listeners
+  // Phenotype slider listeners — client-side preview only (no server call)
   ['pheno-muscle', 'pheno-weight'].forEach(id => {
     const el = document.getElementById(id);
     if (el) {
@@ -933,7 +928,6 @@ function init() {
         const val = document.getElementById(id + '-val');
         if (val) val.textContent = el.value;
       });
-      el.addEventListener('change', () => _scheduleDeformationUpdate());
     }
   });
   const genderEl = document.getElementById('pheno-gender');
@@ -943,7 +937,6 @@ function init() {
       const label = document.getElementById('pheno-gender-label');
       if (label) label.textContent = v < 33 ? 'Female' : v > 66 ? 'Male' : 'Neutral';
     });
-    genderEl.addEventListener('change', () => _scheduleDeformationUpdate());
   }
 
   // Collapsible panels — click h3 to toggle

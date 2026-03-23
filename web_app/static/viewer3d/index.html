@@ -247,6 +247,51 @@
 
       <!-- Studio tab -->
       <div class="tab-content" data-tab="studio">
+        <!-- Body Composition -->
+        <div style="margin-bottom:8px;border-bottom:1px solid #444;padding-bottom:8px;">
+          <div style="font-size:10px;color:#aaa;margin:4px 0 6px;">Body Composition</div>
+          <label style="display:block;font-size:11px;margin-bottom:4px;">
+            Muscle&nbsp;<input type="range" id="studio-muscle" min="0" max="100" value="50" step="1" style="width:90px;"
+              oninput="document.getElementById('studio-muscle-val').textContent=this.value;document.getElementById('pheno-muscle').value=this.value;document.getElementById('pheno-muscle-val').textContent=this.value">
+            <span id="studio-muscle-val">50</span>
+          </label>
+          <label style="display:block;font-size:11px;margin-bottom:4px;">
+            Body Fat&nbsp;<input type="range" id="studio-fat" min="0" max="100" value="50" step="1" style="width:90px;"
+              oninput="document.getElementById('studio-fat-val').textContent=this.value;document.getElementById('pheno-weight').value=this.value;document.getElementById('pheno-weight-val').textContent=this.value">
+            <span id="studio-fat-val">50</span>
+          </label>
+          <label style="display:block;font-size:11px;margin-bottom:4px;">
+            Body Type&nbsp;<input type="range" id="studio-gender" min="0" max="100" value="100" step="1" style="width:90px;"
+              oninput="document.getElementById('studio-gender-label').textContent=this.value<33?'Female':this.value>66?'Male':'Neutral';document.getElementById('pheno-gender').value=this.value;document.getElementById('pheno-gender-label').textContent=this.value<33?'Female':this.value>66?'Male':'Neutral'">
+            <span id="studio-gender-label">Male</span>
+          </label>
+        </div>
+        <!-- Region Adjustment -->
+        <div style="margin-bottom:8px;border-bottom:1px solid #444;padding-bottom:8px;">
+          <div style="font-size:10px;color:#aaa;margin:4px 0 6px;">Region Adjustment</div>
+          <div id="studio-region-name" style="font-size:11px;color:#8af;margin-bottom:4px;">Select a muscle group →</div>
+          <label style="display:block;font-size:11px;margin-bottom:4px;">
+            Width&nbsp;<input type="range" id="studio-adj-w" min="-30" max="30" value="0" style="width:90px;"
+              oninput="document.getElementById('studio-adj-w-val').textContent=this.value+'mm';document.getElementById('adj-width').value=this.value;document.getElementById('adj-width-val').textContent=this.value">
+            <span id="studio-adj-w-val">0mm</span>
+          </label>
+          <label style="display:block;font-size:11px;margin-bottom:4px;">
+            Depth&nbsp;<input type="range" id="studio-adj-d" min="-30" max="30" value="0" style="width:90px;"
+              oninput="document.getElementById('studio-adj-d-val').textContent=this.value+'mm';document.getElementById('adj-depth').value=this.value;document.getElementById('adj-depth-val').textContent=this.value">
+            <span id="studio-adj-d-val">0mm</span>
+          </label>
+          <label style="display:block;font-size:11px;margin-bottom:4px;">
+            Length&nbsp;<input type="range" id="studio-adj-l" min="-30" max="30" value="0" style="width:90px;"
+              oninput="document.getElementById('studio-adj-l-val').textContent=this.value+'mm';document.getElementById('adj-length').value=this.value;document.getElementById('adj-length-val').textContent=this.value">
+            <span id="studio-adj-l-val">0mm</span>
+          </label>
+          <div style="margin-top:4px;">
+            <button onclick="applyAdjustment()" style="font-size:10px;margin-right:4px;">Apply</button>
+            <button onclick="resetAdjustment()" style="font-size:10px;margin-right:4px;">Reset</button>
+            <button onclick="saveAdjustments()" style="font-size:10px;">Save</button>
+          </div>
+        </div>
+
         <div style="font-size:10px;color:#aaa;margin:4px 0 6px;">Skin Texture Controls</div>
 
         <div style="margin-bottom:8px;">
