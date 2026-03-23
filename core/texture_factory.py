@@ -102,6 +102,83 @@ def _get_smpl_part_ids():
     return None
 
 
+# MPFB2 muscle group → SMPL-equivalent part ID (from G-R11 research)
+_MPFB2_TO_SMPL = {
+    'pectorals': 9, 'traps': 12, 'abs': 3, 'obliques': 3, 'glutes': 0,
+    'quads_l': 1, 'quads_r': 2, 'calves_l': 4, 'calves_r': 5,
+    'biceps_l': 16, 'biceps_r': 17, 'forearms_l': 18, 'forearms_r': 19,
+    'deltoids_l': 13, 'deltoids_r': 14,
+}
+
+_mpfb2_part_ids_cache = None
+
+
+def _get_mpfb2_part_ids():
+    """Load MPFB2 vertex-to-part assignment from template segmentation.
+
+    Returns (13380,) int32 array mapping each vertex to a SMPL-equivalent part ID.
+    Assigned vertices use the muscle group mapping; unassigned use KDTree nearest-neighbor.
+    """
+    global _mpfb2_part_ids_cache
+    if _mpfb2_part_ids_cache is not None:
+        return _mpfb2_part_ids_cache
+
+    seg_path = os.path.join(_PROJECT_ROOT, 'web_app', 'static', 'viewer3d',
+                            'template_vert_segmentation.json')
+    verts_path = os.path.join(_PROJECT_ROOT, 'meshes', 'template_verts.npy')
+
+    if not os.path.exists(seg_path) or not os.path.exists(verts_path):
+        logger.warning("MPFB2 template files not found")
+        return None
+
+    import json
+    with open(seg_path) as f:
+        seg = json.load(f)
+
+    verts = np.load(verts_path)
+    n = len(verts)
+    part_ids = np.full(n, -1, dtype=np.int32)
+
+    # Assign from muscle group mapping
+    assigned_indices = []
+    for group, smpl_id in _MPFB2_TO_SMPL.items():
+        if group in seg:
+            idx = np.array(seg[group], dtype=np.int32)
+            part_ids[idx] = smpl_id
+            assigned_indices.append(idx)
+
+    # Height-based assignment for head/feet (from G-R14)
+    unassigned = np.where(part_ids == -1)[0]
+    z = verts[unassigned, 2]
+    part_ids[unassigned[z > 1.48]] = 15   # head
+    part_ids[unassigned[z < 0.07]] = 7    # feet (left ankle as proxy)
+
+    # KDTree nearest-neighbor for remaining unassigned (transition zones)
+    still_unassigned = np.where(part_ids == -1)[0]
+    if len(still_unassigned) > 0 and len(assigned_indices) > 0:
+        from scipy.spatial import KDTree
+        all_assigned = np.concatenate(assigned_indices)
+        tree = KDTree(verts[all_assigned])
+        _, nearest = tree.query(verts[still_unassigned])
+        part_ids[still_unassigned] = part_ids[all_assigned[nearest]]
+
+    # Any still -1 → default to abdomen (0)
+    part_ids[part_ids == -1] = 0
+
+    _mpfb2_part_ids_cache = part_ids
+    logger.info("MPFB2 part IDs: %d verts, %d unique parts", n, len(np.unique(part_ids)))
+    return part_ids
+
+
+def get_part_ids(n_verts):
+    """Dispatcher: return part IDs for SMPL (6890) or MPFB2 (13380) meshes."""
+    if n_verts == 6890:
+        return _get_smpl_part_ids()
+    if n_verts == 13380:
+        return _get_mpfb2_part_ids()
+    return None
+
+
 def generate_roughness_map(uvs, atlas_size=2048, part_ids=None, vertices=None):
     """
     Generate anatomical roughness map from SMPL body-part assignments.
@@ -118,10 +195,10 @@ def generate_roughness_map(uvs, atlas_size=2048, part_ids=None, vertices=None):
     roughness_map = np.full((atlas_size, atlas_size), 0.55, dtype=np.float32)
 
     if part_ids is None:
-        part_ids = _get_smpl_part_ids()
+        part_ids = get_part_ids(len(uvs))
 
     if part_ids is not None and len(part_ids) == len(uvs):
-        # Per-vertex roughness based on SMPL part assignment
+        # Per-vertex roughness based on body part assignment
         vert_roughness = np.full(len(uvs), 0.55, dtype=np.float32)
         for part_id, region_name in _SMPL_PART_MAP.items():
             mask = part_ids == part_id
@@ -280,7 +357,7 @@ def generate_anatomical_overlay(uvs, atlas_size=2048, part_ids=None, vertices=No
     overlay = np.full((atlas_size, atlas_size, 3), 128, dtype=np.uint8)
 
     if part_ids is None:
-        part_ids = _get_smpl_part_ids()
+        part_ids = get_part_ids(len(uvs))
 
     if part_ids is None or len(part_ids) != len(uvs):
         return overlay

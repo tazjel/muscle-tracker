@@ -267,14 +267,21 @@ def deform_template(profile: dict = None) -> dict:
     # Volume via divergence theorem
     volume_cm3 = _mesh_volume_cm3(verts_mm, faces)
 
+    try:
+        from core.texture_factory import get_part_ids
+        _part_ids = get_part_ids(len(verts_mm))
+    except Exception:
+        _part_ids = None
+
     return {
         'vertices': verts_mm,
         'faces': faces.astype(np.uint32),
         'uvs': uvs,
-        'body_part_ids': np.zeros(len(verts_mm), dtype=np.int32),
+        'body_part_ids': _part_ids if _part_ids is not None else np.zeros(len(verts_mm), dtype=np.int32),
         'volume_cm3': volume_cm3,
         'num_vertices': len(verts_mm),
         'num_faces': len(faces),
+        'mesh_type': 'mpfb2',
     }
 
 

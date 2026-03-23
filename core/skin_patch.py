@@ -35,6 +35,22 @@ CAPTURE_REGIONS = {
     'back':       [6, 9, 3],        # spine (shared with chest/abdomen)
 }
 
+# MPFB2 muscle group mapping (same region keys, muscle group name lists)
+MPFB2_CAPTURE_REGIONS = {
+    'forearm':    ['forearms_l', 'forearms_r'],
+    'abdomen':    ['abs', 'obliques'],
+    'chest':      ['pectorals'],
+    'thigh':      ['quads_l', 'quads_r'],
+    'calf':       ['calves_l', 'calves_r'],
+    'upper_arm':  ['biceps_l', 'biceps_r'],
+    'shoulders':  ['deltoids_l', 'deltoids_r'],
+    'back':       ['traps'],
+    'neck':       [],
+    'hands':      [],
+    'feet':       [],
+    'face':       [],
+}
+
 # Minimum 5 regions for 90%+ perceptual coverage (Gemini G-T3)
 MINIMUM_REGIONS = ['forearm', 'abdomen', 'chest', 'thigh', 'calf']
 
@@ -438,7 +454,7 @@ def generate_skin_normal_map(albedo_bgr, strength=10.0):
 # ═══════════════════════════════════════════════════════════════════════
 
 def composite_skin_atlas(uvs, part_ids, faces, region_textures,
-                         atlas_size=2048, default_tone=None):
+                         atlas_size=2048, default_tone=None, seg_dict=None):
     """
     Composite per-region tileable skin textures into a full UV atlas.
 
@@ -449,6 +465,8 @@ def composite_skin_atlas(uvs, part_ids, faces, region_textures,
         region_textures: dict {region_name: (H,W,3) uint8 BGR tileable texture}
         atlas_size: output atlas size
         default_tone: BGR skin tone for uncovered regions (auto-extracted if None)
+        seg_dict: optional dict {group_name: [vertex indices]} for MPFB2 mesh.
+                  When provided, uses MPFB2_CAPTURE_REGIONS instead of SMPL part IDs.
 
     Returns:
         (atlas_size, atlas_size, 3) uint8 BGR — composited UV atlas
@@ -472,16 +490,22 @@ def composite_skin_atlas(uvs, part_ids, faces, region_textures,
     v_px = np.clip(((1 - uvs[:, 1]) * (atlas_size - 1)).astype(int), 0, atlas_size - 1)
 
     for region_name, tile_img in region_textures.items():
-        if region_name not in CAPTURE_REGIONS:
-            logger.warning("Unknown region: %s", region_name)
-            continue
-
-        smpl_parts = CAPTURE_REGIONS[region_name]
-
         # Create vertex mask for this region
         vert_mask = np.zeros(len(uvs), dtype=bool)
-        for pid in smpl_parts:
-            vert_mask |= (part_ids == pid)
+
+        if seg_dict is not None and region_name in MPFB2_CAPTURE_REGIONS:
+            # MPFB2 path: use muscle group vertex indices directly
+            for grp in MPFB2_CAPTURE_REGIONS[region_name]:
+                if grp in seg_dict:
+                    idx = np.array(seg_dict[grp], dtype=np.int32)
+                    vert_mask[idx] = True
+        elif region_name in CAPTURE_REGIONS:
+            # SMPL path: use part ID integer matching
+            for pid in CAPTURE_REGIONS[region_name]:
+                vert_mask |= (part_ids == pid)
+        else:
+            logger.warning("Unknown region: %s", region_name)
+            continue
 
         # Rasterize region mask into UV space using triangle fill
         region_mask = np.zeros((atlas_size, atlas_size), dtype=np.float32)

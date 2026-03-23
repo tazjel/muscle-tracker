@@ -2367,7 +2367,7 @@ def upload_skin_region(customer_id, region):
 
     # Composite into full atlas
     try:
-        from core.texture_factory import _get_smpl_part_ids
+        from core.texture_factory import get_part_ids
         import pickle as _pkl_sr
         pkl_path = os.path.join(os.path.dirname(__file__), '..', '..', 'runpod', 'SMPL_NEUTRAL.pkl')
         with open(pkl_path, 'rb') as f:
@@ -2381,7 +2381,7 @@ def upload_skin_region(customer_id, region):
         if uvs is None:
             uvs = cylindrical_uvs(verts)
 
-        part_ids = _get_smpl_part_ids()
+        part_ids = get_part_ids(len(uvs))
 
         atlas = composite_skin_atlas(uvs, part_ids, faces, region_textures, atlas_size=2048)
         atlas_path = os.path.join(skin_dir, 'skin_atlas.png')
@@ -2551,7 +2551,7 @@ def select_skin_photo(customer_id, region):
 
     latest_mesh = None
     try:
-        from core.texture_factory import _get_smpl_part_ids
+        from core.texture_factory import get_part_ids
         import pickle as _pkl_sel
         pkl_path = os.path.join(os.path.dirname(__file__), '..', '..', 'runpod', 'SMPL_NEUTRAL.pkl')
         with open(pkl_path, 'rb') as f:
@@ -2565,7 +2565,7 @@ def select_skin_photo(customer_id, region):
         if uvs is None:
             uvs = cylindrical_uvs(verts)
 
-        part_ids = _get_smpl_part_ids()
+        part_ids = get_part_ids(len(uvs))
         atlas = composite_skin_atlas(uvs, part_ids, faces, region_textures, atlas_size=2048)
         atlas_path = os.path.join(skin_dir, 'skin_atlas.png')
         _cv2_sel.imwrite(atlas_path, atlas)
@@ -3217,14 +3217,14 @@ def generate_body_model(customer_id):
             if os.path.isdir(_skin_dir) and uvs_for_glb is not None:
                 try:
                     from core.skin_patch import CAPTURE_REGIONS, composite_skin_atlas, generate_skin_normal_map
-                    from core.texture_factory import _get_smpl_part_ids
+                    from core.texture_factory import get_part_ids
                     _region_textures = {}
                     for _rname in CAPTURE_REGIONS:
                         _tp = os.path.join(_skin_dir, f'tile_{_rname}.png')
                         if os.path.exists(_tp):
                             _region_textures[_rname] = _cv2.imread(_tp)
                     if _region_textures:
-                        _part_ids = _get_smpl_part_ids()
+                        _part_ids = get_part_ids(len(uvs_for_glb))
                         _skin_atlas = composite_skin_atlas(
                             uvs_for_glb, _part_ids, faces, _region_textures, atlas_size=2048)
                         texture_image = _skin_atlas
