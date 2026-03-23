@@ -826,7 +826,7 @@ function init() {
 
   // Camera
   camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 5000);
-  camera.position.set(0, 150, 400);
+  camera.position.set(0, 120, 17);
 
   // Renderer
   renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -844,7 +844,7 @@ function init() {
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping    = true;
   controls.dampingFactor    = 0.08;
-  controls.minDistance      = 200;
+  controls.minDistance      = 5;
   controls.maxDistance      = 3000;
 
   controls.target.set(0, 80, 0);  // roughly mid-torso height
