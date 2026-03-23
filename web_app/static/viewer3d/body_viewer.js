@@ -455,12 +455,6 @@ async function _loadRealSkinTexture() {
       metalness:        0.0,
       side:             THREE.FrontSide,
       color:            0xffffff,
-      // Subsurface scattering
-      transmission:     0.0,
-      thickness:        2.0,
-      attenuationDistance: 1.5,
-      attenuationColor: new THREE.Color(0.95, 0.55, 0.35),
-      ior:              1.4,
       // Sheen + clearcoat
       sheen:            0.3,
       sheenRoughness:   0.45,
@@ -479,10 +473,6 @@ async function _loadRealSkinTexture() {
       metalness: 0.0,
       specularIntensity: 0.35,
       specularColor: new THREE.Color(1.0, 1.0, 1.0),
-      // SSS
-      transmission: 0.0, thickness: 2.0,
-      attenuationDistance: 1.5, attenuationColor: new THREE.Color(0.95, 0.55, 0.35),
-      ior: 1.4,
       // Sheen + clearcoat
       sheen: 0.3, sheenRoughness: 0.45,
       sheenColor: new THREE.Color(0xddaa88),
@@ -552,12 +542,6 @@ async function _loadPBRTextures() {
       metalness:        0.0,
       side:             THREE.FrontSide,
       color:            0xffffff,
-      // Subsurface scattering
-      transmission:     0.0,
-      thickness:        2.0,
-      attenuationDistance: 1.5,
-      attenuationColor: new THREE.Color(0.95, 0.55, 0.35),
-      ior:              1.4,
       // Sheen + clearcoat
       sheen:            0.3,
       sheenRoughness:   0.45,
@@ -743,12 +727,6 @@ const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
   metalness:        0.0,
   side:             THREE.FrontSide,
   color:            0xffffff,
-  // Subsurface scattering — light penetrates skin, scatters red/warm
-  transmission:     0.0,
-  thickness:        2.5,
-  attenuationDistance: 1.2,
-  attenuationColor: new THREE.Color(0.95, 0.55, 0.35),  // blood/hemoglobin tint
-  ior:              1.4,  // skin index of refraction
   // Sheen — warm subsurface glow at grazing angles
   sheen:            0.4,
   sheenRoughness:   0.45,
@@ -1495,11 +1473,6 @@ function _applyDefaultMaterial(object) {
         }
         // Skin SSS properties for photorealistic rendering
         mat.roughness = mat.roughnessMap ? 1.0 : 0.42;
-        mat.transmission = 0.0;
-        mat.thickness = 2.0;
-        mat.attenuationDistance = 1.5;
-        mat.attenuationColor = new THREE.Color(0.95, 0.55, 0.35);
-        mat.ior = 1.4;
         mat.specularIntensity = 0.35;
         mat.specularColor = new THREE.Color(1.0, 1.0, 1.0);
         mat.sheen = 0.3;
