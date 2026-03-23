@@ -65,6 +65,88 @@ if human.data.shape_keys:
             kb.value = min(kb.value + 0.2, 1.0)
         print(f"  Shape key: {kb.name} = {kb.value:.3f}")
 
+# ── Step 2b: Extract muscle/weight deltas via MPFB2 TargetService ─────────────
+# G-R18: MPFB2 uses .target files, not shape keys, for muscle/weight.
+# Must extract BEFORE helper removal (step 4) because TargetService needs the
+# full MPFB2 mesh. We record body-vertex indices and slice the delta afterward.
+
+print("=== Step 2b: Extracting muscle/weight macro deltas ===")
+_macro_deltas = {}  # will hold {'muscle': (N_body, 3), 'weight': (N_body, 3)}
+
+try:
+    from mpfb.services.targetservice import TargetService
+
+    # Find body vertex indices in the full mesh
+    body_vg_idx_pre = None
+    for vg in human.vertex_groups:
+        if vg.name == 'body':
+            body_vg_idx_pre = vg.index
+            break
+
+    if body_vg_idx_pre is not None:
+        body_vert_indices = []
+        for v in human.data.vertices:
+            for g in v.groups:
+                if g.group == body_vg_idx_pre and g.weight > 0.5:
+                    body_vert_indices.append(v.index)
+                    break
+        body_vert_indices = sorted(body_vert_indices)
+        print(f"  Body vertices in full mesh: {len(body_vert_indices)}")
+
+        def _read_body_verts():
+            """Read current vertex positions for body-only vertices."""
+            all_co = np.zeros(len(human.data.vertices) * 3, dtype=np.float32)
+            human.data.vertices.foreach_get('co', all_co)
+            all_co = all_co.reshape(-1, 3)
+            return all_co[body_vert_indices].copy()
+
+        for macro_name in ('muscle', 'weight'):
+            try:
+                # Read baseline (current state from Step 2, macro ~0.5)
+                v_base = _read_body_verts()
+
+                # Set extreme
+                TargetService.set_macro_detail(human, macro_name, 1.0)
+                bpy.context.view_layer.update()
+                v_max = _read_body_verts()
+
+                # Reset to baseline
+                TargetService.set_macro_detail(human, macro_name, 0.5)
+                bpy.context.view_layer.update()
+
+                delta = v_max - v_base
+                max_d = np.abs(delta).max()
+                print(f"  {macro_name}: max_delta={max_d:.4f}m, body_verts={delta.shape[0]}")
+                if max_d > 1e-5:
+                    _macro_deltas[macro_name] = delta
+                else:
+                    print(f"  {macro_name}: delta too small, skipping")
+            except Exception as e:
+                print(f"  {macro_name}: TargetService failed: {e}")
+                # Try alternative API
+                try:
+                    TargetService.set_macro_value(human, macro_name, 1.0)
+                    bpy.context.view_layer.update()
+                    v_max = _read_body_verts()
+                    TargetService.set_macro_value(human, macro_name, 0.5)
+                    bpy.context.view_layer.update()
+                    v_base2 = _read_body_verts()
+                    delta = v_max - v_base2
+                    max_d = np.abs(delta).max()
+                    print(f"  {macro_name} (alt API): max_delta={max_d:.4f}m")
+                    if max_d > 1e-5:
+                        _macro_deltas[macro_name] = delta
+                except Exception as e2:
+                    print(f"  {macro_name} alt API also failed: {e2}")
+    else:
+        print("  WARNING: 'body' vertex group not found, skipping macro deltas")
+except ImportError:
+    print("  WARNING: MPFB2 TargetService not available, skipping macro deltas")
+except Exception as e:
+    print(f"  WARNING: Macro delta extraction failed: {e}")
+
+print(f"  Macro deltas extracted: {list(_macro_deltas.keys())}")
+
 # ── Step 3: Extract joint landmarks BEFORE removing helpers ────────────────────
 
 print("=== Step 3: Extracting joint landmarks ===")
@@ -225,11 +307,42 @@ if human.data.shape_keys:
             }
             print(f"  Exported delta: {kb.name} ({category}) baked={kb.value:.3f} max_delta={np.abs(delta).max():.4f}m")
 
+    # Append muscle/weight macro deltas from Step 2b
+    for macro_name, delta in _macro_deltas.items():
+        # Verify vertex count matches post-helper-removal mesh
+        if delta.shape[0] == n_verts:
+            fname = f'{macro_name}_delta.npy'
+            np.save(os.path.join(_DELTA_DIR, fname), delta)
+            shape_delta_index[f'{macro_name}_macro'] = {
+                'file': fname,
+                'baked_value': 0.5,
+                'category': macro_name,
+            }
+            print(f"  Saved macro delta: {macro_name} ({delta.shape[0]}, 3) max={np.abs(delta).max():.4f}m")
+        else:
+            print(f"  WARNING: {macro_name} delta has {delta.shape[0]} verts, expected {n_verts} — skipping")
+
     with open(os.path.join(_DELTA_DIR, 'index.json'), 'w') as f:
         json.dump(shape_delta_index, f, indent=2)
     print(f"  Saved {len(shape_delta_index)} shape key deltas to {_DELTA_DIR}")
 else:
-    print("  No shape keys found — skipping delta export")
+    # Still save macro deltas even if no shape keys
+    if _macro_deltas:
+        n_verts = len(human.data.vertices)
+        for macro_name, delta in _macro_deltas.items():
+            if delta.shape[0] == n_verts:
+                fname = f'{macro_name}_delta.npy'
+                np.save(os.path.join(_DELTA_DIR, fname), delta)
+                shape_delta_index[f'{macro_name}_macro'] = {
+                    'file': fname,
+                    'baked_value': 0.5,
+                    'category': macro_name,
+                }
+        with open(os.path.join(_DELTA_DIR, 'index.json'), 'w') as f:
+            json.dump(shape_delta_index, f, indent=2)
+        print(f"  Saved {len(shape_delta_index)} macro deltas (no shape keys)")
+    else:
+        print("  No shape keys or macro deltas found")
 
 # ── Step 6: Apply shape keys to bake geometry ──────────────────────────────────
 

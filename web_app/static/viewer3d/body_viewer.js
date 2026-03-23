@@ -855,6 +855,27 @@ function init() {
     });
   });
 
+  // Phenotype slider listeners
+  ['pheno-muscle', 'pheno-weight'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('input', () => {
+        const val = document.getElementById(id + '-val');
+        if (val) val.textContent = el.value;
+      });
+      el.addEventListener('change', () => _scheduleDeformationUpdate());
+    }
+  });
+  const genderEl = document.getElementById('pheno-gender');
+  if (genderEl) {
+    genderEl.addEventListener('input', () => {
+      const v = parseInt(genderEl.value);
+      const label = document.getElementById('pheno-gender-label');
+      if (label) label.textContent = v < 33 ? 'Female' : v > 66 ? 'Male' : 'Neutral';
+    });
+    genderEl.addEventListener('change', () => _scheduleDeformationUpdate());
+  }
+
   // Collapsible panels — click h3 to toggle
   document.querySelectorAll('.collapsible > h3').forEach(h3 => {
     h3.addEventListener('click', () => h3.parentElement.classList.toggle('collapsed'));
@@ -1738,6 +1759,14 @@ async function _doDeformationUpdate() {
     // Width delta in scene units (mm) → circumference delta in cm = π * width_mm / 10
     updates[field] = Math.max(10, current + Math.PI * deltas.width / 10);
   }
+  // Add phenotype factors (slider 0-100 → factor 0.0-1.0)
+  const muscleEl = document.getElementById('pheno-muscle');
+  const weightEl = document.getElementById('pheno-weight');
+  const genderSlider = document.getElementById('pheno-gender');
+  if (muscleEl) updates.muscle_factor = parseInt(muscleEl.value) / 100;
+  if (weightEl) updates.weight_factor = parseInt(weightEl.value) / 100;
+  if (genderSlider) updates.gender_factor = parseInt(genderSlider.value) / 100;
+
   if (Object.keys(updates).length === 0) return;
 
   _setStatus('Updating…');

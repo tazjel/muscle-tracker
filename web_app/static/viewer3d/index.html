@@ -147,6 +147,22 @@
           <h3 style="margin:0 0 6px;font-size:13px;">Body Measurements</h3>
           <div id="body-stats-content" style="font-size:11px;line-height:1.8;"></div>
         </div>
+        <!-- Phenotype (body composition) sliders -->
+        <div id="phenotype-controls" style="margin-top:10px;border-top:1px solid #444;padding-top:8px;">
+          <h3 style="margin:0 0 6px;font-size:13px;">Body Composition</h3>
+          <label style="display:block;font-size:11px;margin-bottom:4px;">
+            Muscle&nbsp;<input type="range" id="pheno-muscle" min="0" max="100" value="50" step="1" style="width:90px;">
+            <span id="pheno-muscle-val">50</span>
+          </label>
+          <label style="display:block;font-size:11px;margin-bottom:4px;">
+            Body Fat&nbsp;<input type="range" id="pheno-weight" min="0" max="100" value="50" step="1" style="width:90px;">
+            <span id="pheno-weight-val">50</span>
+          </label>
+          <label style="display:block;font-size:11px;margin-bottom:6px;">
+            Body Type&nbsp;<input type="range" id="pheno-gender" min="0" max="100" value="100" step="1" style="width:90px;">
+            <span id="pheno-gender-label">Male</span>
+          </label>
+        </div>
         <!-- Body region adjustment panel -->
         <div id="adjust-panel" style="display:none;margin-top:10px;border-top:1px solid #444;padding-top:8px;">
           <h3 id="adjust-region" style="margin:0 0 6px;font-size:13px;">Region</h3>

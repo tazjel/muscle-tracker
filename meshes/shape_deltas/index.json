@@ -38,5 +38,15 @@
     "file": "md__fe__yn__av_mu__av_wg_maxcup__av_fi.npy",
     "baked_value": 0.2,
     "category": "gender_female"
+  },
+  "macro_muscle": {
+    "file": "macro_muscle.npy",
+    "baked_value": 0.5,
+    "category": "muscle"
+  },
+  "macro_weight": {
+    "file": "macro_weight.npy",
+    "baked_value": 0.5,
+    "category": "weight"
   }
 }
