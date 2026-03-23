@@ -54,6 +54,7 @@ import json
 import os
 import sys
 import time
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 
@@ -977,7 +978,7 @@ def cmd_verify(args):
         try:
             pw, browser, context = _launch_browser()
             base_url = args.base_url.rstrip("/")
-            url = f"{base_url}/web_app/static/viewer3d/index.html?model={model_name}"
+            url = f"{base_url}/web_app/static/viewer3d/index.html?model=meshes/{model_name}"
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
             _wait_for_page_ready(page, "canvas", 20)
@@ -1009,6 +1010,191 @@ def cmd_verify(args):
             result["render"] = {"error": str(e)[:200]}
 
     print(json.dumps(result, indent=2))
+
+
+def cmd_skin_check(args):
+    """
+    Render GLB in browser + analyze if output looks like human skin.
+    Captures 4 angles, runs skin tone analysis on each, aggregates verdict.
+
+    Usage:
+        $PY scripts/agent_browser.py skin-check demo_pbr.glb
+        $PY scripts/agent_browser.py skin-check meshes/skin_densepose.glb --base-url http://localhost:8000
+    """
+    glb_path = args.glb_path
+    if not os.path.isabs(glb_path):
+        glb_path = str(PROJECT_ROOT / glb_path)
+
+    if not os.path.exists(glb_path):
+        print(json.dumps({"error": f"GLB not found: {glb_path}"}))
+        sys.exit(2)
+        return
+
+    # Copy GLB to static dir so viewer can load it
+    model_name = os.path.basename(glb_path)
+    static_meshes = PROJECT_ROOT / "web_app" / "static" / "viewer3d" / "meshes"
+    static_meshes.mkdir(parents=True, exist_ok=True)
+    dst = static_meshes / model_name
+    if str(Path(glb_path).resolve()) != str(dst.resolve()):
+        import shutil
+        shutil.copy2(glb_path, dst)
+
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from core.glb_inspector import analyze_skin_tone, detect_plastic_skin
+
+    pw, browser, context = _launch_browser()
+
+    try:
+        base_url = args.base_url.rstrip("/")
+        url = f"{base_url}/web_app/static/viewer3d/index.html?model=meshes/{model_name}"
+        page = context.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        _wait_for_page_ready(page, "canvas", args.timeout)
+
+        # Switch to skin mode for SSS material evaluation
+        page.evaluate("() => { if (window.setViewMode) window.setViewMode('skin'); }")
+        page.wait_for_timeout(500)
+
+        # Hide all UI overlays so only the 3D canvas is captured
+        page.evaluate("""() => {
+            document.querySelectorAll('.card, #muscle-panel, #skin-upload-panel, .heatmap-legend, #card-toggle, #mesh-info, #status')
+                .forEach(el => { if (el) el.style.display = 'none'; });
+        }""")
+        page.wait_for_timeout(300)
+
+        angles = [int(a) for a in args.angles.split(",")]
+        views = []
+        screenshots = []
+
+        for angle in angles:
+            # Orbit camera to angle
+            page.evaluate(f"""() => {{
+                if (window.controls || window.viewer?.controls) {{
+                    const ctrl = window.controls || window.viewer.controls;
+                    const rad = {angle} * Math.PI / 180;
+                    if (ctrl.object) {{
+                        const dist = ctrl.object.position.length();
+                        ctrl.object.position.x = dist * Math.sin(rad);
+                        ctrl.object.position.z = dist * Math.cos(rad);
+                        ctrl.object.lookAt(ctrl.target || new THREE.Vector3());
+                        ctrl.update();
+                    }}
+                }}
+            }}""")
+            page.wait_for_timeout(800)
+
+            shot_path = str(CAPTURES_DIR / f"skin_check_{_timestamp()}_{angle}deg.png")
+            page.screenshot(path=shot_path)
+            screenshots.append(shot_path)
+
+            # Analyze skin tone + plastic detection
+            skin_result = analyze_skin_tone(shot_path)
+            skin_result["angle"] = angle
+            plastic = detect_plastic_skin(shot_path)
+            skin_result["plastic_score"] = plastic.get("plastic_score", 0)
+            skin_result["edge_warmth"] = plastic.get("edge_warmth", 0)
+            skin_result["issues"].extend(plastic.get("issues", []))
+            views.append(skin_result)
+
+        # Cross-view consistency
+        hue_pcts = [v.get("skin_hue_pct", 0) for v in views if "skin_hue_pct" in v]
+        sat_meds = [v.get("sat_median", 0) for v in views if "sat_median" in v]
+
+        cross_view = {}
+        cross_issues = []
+        if len(hue_pcts) >= 2:
+            hue_std = float(np.std(hue_pcts))
+            cross_view["hue_std"] = round(hue_std, 1)
+            cross_view["consistent"] = hue_std <= 15
+            if hue_std > 15:
+                cross_issues.append(
+                    f"VIEW_INCONSISTENT: skin hue varies too much across views (std={hue_std:.1f})")
+        if len(sat_meds) >= 2:
+            sat_range = max(sat_meds) - min(sat_meds)
+            cross_view["sat_range"] = round(sat_range, 1)
+            if sat_range > 30:
+                cross_issues.append(
+                    f"VIEW_SAT_SHIFT: saturation varies {sat_range:.0f} across views (>30)")
+
+        # Aggregate all issues
+        all_issues = list(cross_issues)
+        for v in views:
+            for iss in v.get("issues", []):
+                all_issues.append(f"{v.get('angle', '?')}deg: {iss}")
+
+        # Score: weighted combination
+        avg_hue = np.mean(hue_pcts) if hue_pcts else 0
+        avg_sat = np.mean(sat_meds) if sat_meds else 0
+        avg_lab_a = np.mean([v.get("lab_a_mean", 128) for v in views])
+        avg_spec = np.mean([v.get("specular_pct", 0) for v in views])
+        hue_std_val = cross_view.get("hue_std", 0)
+
+        score_hue = min(100, avg_hue) * 0.4
+        score_sat = max(0, 100 - abs(avg_sat - 70) * 1.5) * 0.2
+        score_temp = min(100, max(0, (avg_lab_a - 120) * 10)) * 0.2
+        score_consist = max(0, 100 - hue_std_val * 5) * 0.1
+        score_spec = max(0, 100 - avg_spec * 12) * 0.1
+        score = round(score_hue + score_sat + score_temp + score_consist + score_spec)
+        score = max(0, min(100, score))
+
+        # Verdict
+        fail_codes = {"NON_SKIN_HUE", "DESATURATED", "TOO_DARK", "COOL_CAST", "RENDER_BLANK"}
+        has_fail = any(
+            any(code in iss for code in fail_codes)
+            for v in views for iss in v.get("issues", [])
+        )
+
+        if has_fail or score < 45:
+            verdict = "FAIL"
+        elif score < 70:
+            verdict = "WARN"
+        else:
+            verdict = "PASS"
+
+        # Build suggestion
+        suggestion = ""
+        if "NON_SKIN_HUE" in str(all_issues):
+            suggestion = "Most body pixels are outside human skin hue range — check material color or texture."
+        elif "DESATURATED" in str(all_issues):
+            suggestion = "Body looks gray — check lighting, material color, or missing texture."
+        elif "COOL_CAST" in str(all_issues):
+            suggestion = "Skin has green/blue cast — check light color or material tint."
+        elif "TOO_SHINY" in str(all_issues):
+            suggestion = "Excessive specular highlights — reduce clearcoat or increase roughness."
+        elif "LOW_SKIN_HUE" in str(all_issues):
+            suggestion = "Marginal skin tone — check texture coverage on flagged views."
+        elif verdict == "PASS":
+            suggestion = "Skin appearance looks good."
+
+        output = {
+            "verdict": verdict,
+            "score": score,
+            "views": [{
+                "angle": v.get("angle"),
+                "skin_hue_pct": v.get("skin_hue_pct"),
+                "sat_median": v.get("sat_median"),
+                "color_temp": v.get("color_temp"),
+                "specular_pct": v.get("specular_pct"),
+                "fitzpatrick_type": v.get("fitzpatrick_type"),
+                "plastic_score": v.get("plastic_score"),
+                "edge_warmth": v.get("edge_warmth"),
+                "issues": v.get("issues", []),
+            } for v in views],
+            "cross_view": cross_view,
+            "issues": all_issues,
+            "suggestion": suggestion,
+            "screenshots": screenshots,
+        }
+
+        print(json.dumps(output, indent=2))
+        sys.exit(0 if verdict != "FAIL" else 2)
+
+    except Exception as e:
+        print(json.dumps({"error": str(e)[:300]}))
+        sys.exit(2)
+    finally:
+        browser.close()
+        pw.stop()
 
 
 def main():
@@ -1129,6 +1315,14 @@ def main():
     p.add_argument("--render", action="store_true", help="Also render in browser")
     p.add_argument("--base-url", default="http://192.168.100.16:8000", help="Server base URL")
     p.set_defaults(func=cmd_verify)
+
+    # -- skin-check --
+    p = sub.add_parser("skin-check", help="Render GLB + check if output looks like human skin")
+    p.add_argument("glb_path", help="Path to GLB file or model name")
+    p.add_argument("--angles", default="0,90,180,270", help="Rotation angles (comma-separated)")
+    p.add_argument("--base-url", default="http://192.168.100.16:8000", help="Server base URL")
+    p.add_argument("--timeout", type=int, default=20, help="Page load timeout seconds")
+    p.set_defaults(func=cmd_skin_check)
 
     args = parser.parse_args()
     args.func(args)

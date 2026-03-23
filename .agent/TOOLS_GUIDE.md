@@ -24,6 +24,7 @@ GTD="python C:/Users/MiEXCITE/Desktop/GTDdebug/gtddebug.py"
 | Full browser audit (screenshot+console+scene) | `agent_browser.py audit` | ~5s |
 | Text-only page inspection (saves tokens) | `agent_browser.py describe` | ~3s |
 | Pass/fail assertions (pure JSON) | `agent_browser.py assert` | ~3s |
+| **Check if 3D body looks like real skin** | **`agent_browser.py skin-check`** | **~12s** |
 | Check video quality before 3D recon | `quality_gate.py` | ~5s |
 | Save a visual baseline | `$GTD aiart-save-baseline` | ~2s |
 | Regression test against baseline | `$GTD aiart-batch-audit` | ~10s |
@@ -189,6 +190,16 @@ $PY scripts/agent_browser.py describe http://localhost:8000/web_app/static/viewe
 # Thorough: full audit
 $PY scripts/agent_browser.py audit http://localhost:8000/web_app/static/viewer3d/index.html?model=/api/mesh/1.glb
 ```
+
+### After Modifying Skin Material / Procedural Skin Code
+```bash
+$PY scripts/agent_browser.py skin-check demo_pbr.glb
+# PASS → done, do not re-run for marginal improvements
+# WARN → read issues[] for guidance, fix if actionable
+# FAIL → read issues[] for specific problem (too shiny, blue cast, gray, etc.)
+```
+**Issue codes:** `NON_SKIN_HUE`, `DESATURATED`, `COOL_CAST`, `TOO_SHINY`, `LOW_SKIN_HUE`, `ZONE_COLOR_SHIFT`, `VIEW_INCONSISTENT`
+**Output:** JSON with `verdict`, `score` (0-100), per-view metrics, `suggestion`
 
 ### After Modifying Flutter App (companion_app/)
 ```bash

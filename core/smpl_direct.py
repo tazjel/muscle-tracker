@@ -16,8 +16,13 @@ logger = logging.getLogger('smpl_direct')
 # Camera defaults matching the dual-capture rig
 DEFAULT_DIST_MM = 2300.0
 DEFAULT_CAM_HEIGHT_MM = 650.0
-DEFAULT_FOCAL_MM = 4.0
-DEFAULT_SENSOR_W_MM = 6.4
+# Smartphone equiv ~26mm on crop sensor → physical focal = 26mm / (crop_factor ~7.6)
+# Samsung A24: sensor ~1/2.76" (6.4mm diag), iPhone: ~1/1.7" (9.5mm diag)
+# Using 26mm equiv / 7.6 ≈ 3.4mm physical, but for UV projection what matters is FOV:
+# FOV = 2 * atan(sensor_w / (2 * focal)) ≈ 80° for typical smartphone
+# focal_px = focal_mm / sensor_w_mm * img_w  →  3.4 / 4.8 * 4160 ≈ 2946px
+DEFAULT_FOCAL_MM = 3.4
+DEFAULT_SENSOR_W_MM = 4.8  # horizontal sensor width (not diagonal)
 ATLAS_SIZE = 2048
 
 SMPL_PKL = os.path.expanduser('~/.cache/4DHumans/data/smpl/SMPL_NEUTRAL.pkl')
@@ -46,8 +51,13 @@ def segment_body(img_bgr):
         result = remove(pil_img, only_mask=True)
         mask = np.array(result)
         mask = (mask > 128).astype(np.uint8) * 255
-        kernel = np.ones((21, 21), np.uint8)
-        mask = cv2.dilate(mask, kernel, iterations=1)
+        # Morphological cleanup: close gaps then open noise, then gentle dilate
+        close_k = np.ones((9, 9), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_k, iterations=1)
+        open_k = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_k, iterations=1)
+        dilate_k = np.ones((7, 7), np.uint8)
+        mask = cv2.dilate(mask, dilate_k, iterations=1)
         return mask
     except Exception as e:
         logger.warning("rembg segmentation failed: %s, using full image", e)
@@ -139,6 +149,12 @@ def rasterize_texture(verts, faces, uvs, photo_data, body_masks,
         if mask is not None and mask.shape[:2] != img_raw.shape[:2]:
             mask = cv2.resize(mask, (img_raw.shape[1], img_raw.shape[0]),
                               interpolation=cv2.INTER_NEAREST)
+        # Feathered mask: soft edges prevent hard seams at body boundary
+        if mask is not None:
+            dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+            feather_mask = np.clip(dist / 20.0, 0.0, 1.0).astype(np.float32)
+        else:
+            feather_mask = np.ones(img_raw.shape[:2], dtype=np.float32)
 
         # Gentle CLAHE — preserve skin color, even out brightness
         lab = cv2.cvtColor(img_raw, cv2.COLOR_BGR2LAB)
@@ -146,6 +162,17 @@ def rasterize_texture(verts, faces, uvs, photo_data, body_masks,
         clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(16, 16))
         l = clahe.apply(l)
         img = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+
+        # Skin-color gate: reject non-skin pixels (background, clothing)
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        # Skin hue: 0-25 and 165-180 (OpenCV scale), sat 20-200, val 40-255
+        skin1 = cv2.inRange(hsv, (0, 20, 40), (25, 200, 255))
+        skin2 = cv2.inRange(hsv, (165, 20, 40), (180, 200, 255))
+        skin_mask = cv2.bitwise_or(skin1, skin2)
+        # Dilate skin mask slightly so edges are included
+        skin_mask = cv2.dilate(skin_mask, np.ones((11, 11), np.uint8), iterations=1)
+        # Combine with body mask — only keep pixels that are both body AND skin-colored
+        feather_mask = feather_mask * (skin_mask.astype(np.float32) / 255.0)
 
         h_img, w_img = img.shape[:2]
         cam_pos, cam_fwd, cam_right, cam_up = get_camera(direction, dist_mm, cam_h_mm)
@@ -199,16 +226,23 @@ def rasterize_texture(verts, faces, uvs, photo_data, body_masks,
                     depth = rel @ cam_fwd
                     if depth < 10.0:
                         continue
-                    px = int((rel @ cam_right) / depth * focal_px + w_img / 2)
-                    py = int(-(rel @ cam_up) / depth * focal_px + h_img / 2)
+                    px_f = (rel @ cam_right) / depth * focal_px + w_img / 2
+                    py_f = -(rel @ cam_up) / depth * focal_px + h_img / 2
 
-                    if 0 <= px < w_img and 0 <= py < h_img and mask[py, px] > 0:
-                        color = img[py, px]
+                    if 1 <= px_f < w_img - 1 and 1 <= py_f < h_img - 1:
+                        # Feathered mask weight at this pixel
+                        px_i, py_i = int(px_f), int(py_f)
+                        fmask_w = feather_mask[py_i, px_i]
+                        if fmask_w < 0.05:
+                            continue
+                        # Bilinear interpolation for sub-pixel accuracy
+                        color = cv2.getRectSubPix(img, (1, 1), (px_f, py_f)).squeeze()
+                        blend_w = fw * fmask_w
                         w_old = weight[ty, tx]
-                        w_new = w_old + fw
+                        w_new = w_old + blend_w
                         texture[ty, tx] = (
                             (texture[ty, tx].astype(np.float32) * w_old +
-                             color.astype(np.float32) * fw) / (w_new + 1e-8)
+                             color.astype(np.float32) * blend_w) / (w_new + 1e-8)
                         ).astype(np.uint8)
                         weight[ty, tx] = w_new
                         dir_texels += 1
@@ -231,7 +265,7 @@ def delight_texture(texture, weight):
     lab = cv2.cvtColor(texture, cv2.COLOR_BGR2LAB).astype(np.float32)
     L = lab[:, :, 0]
 
-    sigma = atlas_size // 4 | 1
+    sigma = atlas_size // 8 | 1  # Smaller kernel preserves mid-tone skin detail
     L_log = np.log1p(L)
     L_blur = cv2.GaussianBlur(L_log, (sigma, sigma), 0)
     L_highpass = L_log - L_blur
@@ -241,8 +275,8 @@ def delight_texture(texture, weight):
     L_new_norm = (L_new - L_new.min()) / (L_new.max() - L_new.min() + 1e-6)
     L_new = L_new_norm * (L_max - L_min) + L_min
 
-    # 35% delighted + 65% original — gentle correction
-    lab[:, :, 0] = np.where(covered, L_new * 0.35 + L * 0.65, L)
+    # 15% delighted + 85% original — preserve skin detail and natural lighting
+    lab[:, :, 0] = np.where(covered, L_new * 0.15 + L * 0.85, L)
 
     # Slight desaturation of colored light tints
     ab_center = 128.0

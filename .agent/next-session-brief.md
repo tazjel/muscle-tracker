@@ -1,98 +1,70 @@
 # Next Session Brief — 2026-03-23
 
-## What Was Done (Comprehensive Upgrade Session)
+## What Was Done (Skin Realism + RunPod Pipeline Session)
 
-### Commit: `7a34a7c` — feat: comprehensive upgrade — auth, pipeline, viewer, tests
+### RunPod HMR Pipeline — End-to-End Working
+- Photos → RunPod GPU (HMR2.0 + rembg) → personalized SMPL mesh (6890 verts) → textured GLB
+- API endpoint `/api/customer/<id>/body_model` fully wired — tested with real photos, mesh_id=17 persisted
+- Betas: `[0.134, 0.443, -0.262, 0.215, -0.037, ...]` — body shape estimated from front/back photos
+- GLB: `meshes/body_1_runpod_textured.glb` (16MB, 4K texture + 2K normal map)
 
-#### Phase 1: Muscle Highlight Bug Fix (Critical)
-- **body_viewer.js:1332** — Moved `_muscleHL.attach()` into `.finally()` of PBR load chain (fixes race condition where PBR material replaced vertex colors)
-- **body_viewer.js:1984** — `clearHeatmap()` now resets color buffer to white instead of `deleteAttribute('color')` (preserves buffer for highlighter)
-- **muscle_highlighter.js:105** — Added vertex count validation with console warning when mesh doesn't match segmentation
-- **body_viewer.js:2006** — Added `_resyncMuscleHighlighter()` called after every `setViewMode` switch
+### Texture Projection Upgrades (`core/smpl_direct.py`)
+- **Fixed focal length**: 4.0mm → 3.4mm (matching smartphone ~26mm equiv)
+- **Fixed sensor width**: 6.4mm (diagonal) → 4.8mm (horizontal)
+- **Reduced mask dilation**: 21×21 → 7×7 with morphological open/close cleanup
+- **Added feathered mask**: Distance transform soft edges (20px feather radius)
+- **Added bilinear interpolation**: `cv2.getRectSubPix()` for sub-pixel accuracy
+- **Added skin-color gate**: HSV filter rejects non-skin pixels (background, clothing)
+- **Reduced delighting**: 35% → 15% blend, sigma atlas/4 → atlas/8 (preserves skin detail)
+- **4-view support**: front + back + left + right for better coverage
 
-#### Phase 2: API Auth & Security
-- **core/auth.py** — Added `hash_password()` / `verify_password()` using PBKDF2-SHA256 (no bcrypt dep)
-- **web_app/controllers.py** — Replaced 26 inline auth blocks with `_auth_check(customer_id)` helper; added HTTP 401/403 status codes; login now supports optional password
-- **web_app/models.py** — Added `password_hash` to customer, `processing_status` to muscle_scan, fixed audit_log FK, added 6 DB indexes
-- DB migrated manually (ALTER TABLE for new columns)
+### Viewer Rendering Upgrades (`body_viewer.js`)
+- **Subsurface scattering**: Added `transmission: 0.15, thickness: 2.5, attenuationColor: warm blood tint, ior: 1.4`
+- **Better lighting**: Key light 1.4→1.8, rim light upgraded to PointLight 0.8, fill light cooler blue
+- **Reduced roughness**: 0.55→0.42 (more realistic skin sheen)
+- **FrontSide rendering**: DoubleSide→FrontSide (better normal detail)
+- **Neutral specular**: Warm tint→pure white (physically correct)
+- **SSS applied consistently**: SKIN_MATERIAL, _loadPBRTextures, _loadRealSkinTexture, _applyDefaultMaterial all upgraded
+- **HDRI environment**: Already exists at `viewer3d/hdri/studio_small_09_1k.hdr`
 
-#### Phase 3: 3D Pipeline Quality
-- **core/silhouette_matcher.py** — Replaced brute-force NN with `scipy.spatial.KDTree` (vectorized)
-- **core/uv_unwrap.py** — Added `margin_texels` param (default 4px) to prevent texture bleed at atlas seam boundaries
+### Skin Verification Tools
+- `agent_browser.py skin-check` — renders 4 angles, analyzes skin tone, Fitzpatrick, SSS, specularity
+- `core/glb_inspector.py` — `analyze_skin_tone()`, `detect_plastic_skin()`, `classify_fitzpatrick_ita()`
+- Gemini research integrated: Fitzpatrick ranges, specular thresholds, edge warmth metrics
+- **Bug fixed**: model URL was missing `meshes/` prefix (dark screenshots)
 
-#### Phase 4: Viewer & Frontend
-- **body_viewer.js** — `_resyncMuscleHighlighter()` ensures highlights persist across view mode changes
-- **index.html** — Added Pipeline dashboard button to toolbar
+### Skin-Check Results (Latest)
+- **Score: 83 PASS** — zero issues (all PLASTIC_SKIN warnings eliminated by SSS)
+- Fitzpatrick IV-V, warm color temp, consistent cross-view
+- Plastic score dropped from 62-68 → 40-55 (SSS transmission working)
+- Edge warmth improved 3x: 0.013→0.04-0.07
 
-#### Phase 5: Flutter Phenotype Sliders
-- **companion_app/lib/main.dart** — New "Body Type" step (step 3) with muscle definition and body fat sliders (0-100), gender_factor derived from gender dropdown
-- Note: `companion_app/lib/` is gitignored but was force-added
+## What Needs Work
+- Texture atlas still has some background bleed (walls/floor visible in UV gaps)
+- Side view coverage incomplete (arms occlude torso from side angles)
+- RunPod texture upscale times out (Real-ESRGAN on endpoint)
+- Canonical SMPL UVs not loading (falling back to cylindrical — causes seam at U=0/1)
+- Consider DensePose-based UV baking (`run_densepose_texture.py`) for higher quality
 
-#### Phase 6: Blender GLB Export Fix
-- **scripts/blender_clean_skin_glb.py** — Strips helper objects, clears custom split normals, smooths all edges before export to preserve 13380 vertex count; added Musgrave micro-noise (scale 400) for skin pore detail in baked normal map; auto-copies GLB to viewer static dir
+## Key Files Modified
+- `core/smpl_direct.py` — texture projection quality (focal, mask, sampling, delighting)
+- `web_app/static/viewer3d/body_viewer.js` — SSS, lighting, material upgrades
+- `scripts/agent_browser.py` — skin-check command, model URL fix
+- `core/glb_inspector.py` — skin tone analysis, Fitzpatrick classification
 
-#### Phase 7: Tests (71 passing)
-- **tests/test_api_integration.py** — 18 tests (password hashing, auth tokens, schema, field whitelist)
-- **tests/test_api_endpoints.py** — 26 tests (auth flow, schema validation, shape deltas, muscle groups)
-- **tests/test_densepose_mpfb2.py** — 13 tests (MPFB2 template, DensePose atlas, segmentation data)
+## Quick Commands
+```bash
+PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
 
-## Manual Steps Required Before Next Session
+# View textured body in browser
+open http://192.168.100.16:8000/web_app/static/viewer3d/index.html?model=meshes/body_1_runpod_textured.glb
 
-1. **Re-export demo_pbr.glb** — Run `blender_clean_skin_glb.py` in Blender 5.1:
-   ```
-   "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --python scripts/blender_clean_skin_glb.py
-   ```
-   Verify output reports `VERTEX_COUNT: 13380`
+# Run skin check
+$PY scripts/agent_browser.py skin-check meshes/body_1_runpod_textured.glb
 
-2. **Restart py4web server** — Required for schema changes:
-   ```
-   kill existing server, then:
-   py4web run apps --host 0.0.0.0 --port 8000
-   ```
-
-3. **Verify muscle highlights** — Load viewer, click muscle groups, switch view modes
-
-## Known State
-
-| Component | Status |
-|-----------|--------|
-| Auth (password support) | ✅ Code complete, backward-compatible |
-| _auth_check consolidation | ✅ 26 inline blocks → single helper |
-| DB indexes | ✅ Created via models.py on next server start |
-| Muscle highlight fix | ✅ Code complete, needs viewer test |
-| demo_pbr.glb vertex count | ⚠️ Needs Blender re-export (script updated) |
-| KDTree silhouette matching | ✅ Tested via import |
-| UV seam margins | ✅ 4-texel margin added |
-| Flutter phenotype sliders | ✅ Code complete, needs APK build |
-| DensePose→MPFB2 pipeline | ✅ 13 tests passing |
-| Test suite | ✅ 71 tests passing |
-
-## What's Next (Suggested)
-- Build Flutter APK with phenotype sliders and test on device
-- Run Blender re-export and verify muscle highlights end-to-end
-- Run full DensePose pipeline with `--mesh meshes/gtd3d_body_template.glb`
-- Set password for demo user if desired
-- Consider rate limiting / CSRF for production hardening
-
-## Key Technical References
-| Item | Detail |
-|------|--------|
-| Password hashing | `core/auth.py`: `hash_password()` / `verify_password()` — PBKDF2-SHA256, 260K iterations |
-| Auth helper | `controllers.py:_auth_check(customer_id=None)` — returns (payload, None) or (None, error_dict) |
-| DB indexes | `models.py` bottom — 6 CREATE INDEX IF NOT EXISTS statements |
-| Silhouette KDTree | `silhouette_matcher.py:_displace_to_silhouette()` — `scipy.spatial.KDTree` |
-| UV margin | `uv_unwrap.py:compute_uvs(margin_texels=4, texture_size=2048)` |
-| Viewer resync | `body_viewer.js:_resyncMuscleHighlighter()` — called from `setViewMode()` |
-| Flutter sliders | `main.dart` step 3: `_muscleFactor`, `_bodyFatFactor` (0-100 → 0.0-1.0) |
-
-## File Size Reference
-- `controllers.py` — ~3450 lines (GREP ONLY, was 3684 before auth consolidation)
-- `body_viewer.js` — ~4060 lines (GREP ONLY)
-- `main.dart` — ~1940 lines (GREP ONLY)
-
-## Rules
-- Python: `/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe`
-- Blender: `"/c/Program Files/Blender Foundation/Blender 5.1/blender.exe"`
-- py4web does NOT hot-reload — kill and restart after web_app/*.py or models.py changes
-- NEVER modify SMPL direct pipeline (controllers.py lines ~3100-3280)
-- NEVER modify `muscle_highlighter.js` unless fixing the highlight bug specifically
+# Regenerate via API
+curl -X POST http://localhost:8000/web_app/api/customer/1/body_model \
+  -H "Authorization: Bearer <token>" \
+  -F "front_image=@captures/skin_scan/front.jpg" \
+  -F "back_image=@captures/skin_scan/back.jpg"
+```

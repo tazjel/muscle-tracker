@@ -8,8 +8,113 @@ Usage:
     result = score_glb("meshes/skin_densepose.glb")
     print(result['verdict'])  # PASS / WARN / FAIL
 """
+import math
 import numpy as np
 import cv2
+
+
+# Fitzpatrick skin type ranges — HSV on OpenCV scale (H:0-180, S/V:0-255),
+# LAB a*/b* on standard CIELAB scale (add 128 for OpenCV's 0-255 encoding).
+# Source: Chardon et al. 1991 (ITA formula), Fitzpatrick 1988.
+FITZPATRICK_RANGES = {
+    "I":   {"h_min": 5, "h_max": 24, "s_min": 20, "s_max": 100, "v_min": 180, "v_max": 255,
+            "lab_a_min": 138, "lab_a_max": 146, "lab_b_min": 140, "lab_b_max": 148},
+    "II":  {"h_min": 4, "h_max": 15, "s_min": 70, "s_max": 115, "v_min": 170, "v_max": 210,
+            "lab_a_min": 140, "lab_a_max": 148, "lab_b_min": 142, "lab_b_max": 150},
+    "III": {"h_min": 5, "h_max": 12, "s_min": 85, "s_max": 135, "v_min": 150, "v_max": 200,
+            "lab_a_min": 142, "lab_a_max": 150, "lab_b_min": 144, "lab_b_max": 152},
+    "IV":  {"h_min": 5, "h_max": 12, "s_min": 100, "s_max": 155, "v_min": 135, "v_max": 180,
+            "lab_a_min": 144, "lab_a_max": 152, "lab_b_min": 146, "lab_b_max": 154},
+    "V":   {"h_min": 4, "h_max": 15, "s_min": 105, "s_max": 165, "v_min": 110, "v_max": 150,
+            "lab_a_min": 142, "lab_a_max": 150, "lab_b_min": 144, "lab_b_max": 152},
+    "VI":  {"h_min": 0, "h_max": 15, "s_min": 100, "s_max": 255, "v_min": 25, "v_max": 120,
+            "lab_a_min": 138, "lab_a_max": 146, "lab_b_min": 140, "lab_b_max": 148},
+}
+
+# Specular thresholds — refined from Gemini research (Weyrich et al. 2006)
+SPECULAR_THRESHOLDS = {
+    "max_pct": 7.0,
+    "max_highlight_size_px": 20,
+    "min_highlight_blur_sigma": 2.0,
+}
+
+
+def classify_fitzpatrick_ita(L_star, b_star):
+    """Classify skin type via Individual Typology Angle (ITA°).
+    L_star and b_star in standard CIELAB scale (L*: 0-100, b*: approx -128 to 127).
+    For OpenCV LAB: L_star = L_opencv * 100/255, b_star = b_opencv - 128.
+    """
+    if abs(b_star) < 0.01:
+        b_star = 0.01
+    ita = math.atan2(L_star - 50, b_star) * (180 / math.pi)
+    if ita > 55:
+        return "I"
+    elif ita > 41:
+        return "II"
+    elif ita > 28:
+        return "III"
+    elif ita > 10:
+        return "IV"
+    elif ita > -30:
+        return "V"
+    else:
+        return "VI"
+
+
+def detect_plastic_skin(screenshot_path):
+    """
+    Detect absence of subsurface scattering ("plastic skin") via edge warmth ratio.
+    At shadow boundaries, real skin shows a spike in redness (LAB a*) relative to
+    luminance change. Plastic materials lack this.
+
+    Returns dict with plastic_score (0-100, high = plastic), edge_warmth ratio, issues.
+    """
+    img = cv2.imread(screenshot_path)
+    if img is None:
+        return {"error": "unreadable", "path": screenshot_path}
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    body_mask = gray > 30
+
+    if body_mask.mean() < 0.015:
+        return {"plastic_score": 0, "edge_warmth": 0, "issues": []}
+
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    L_ch = lab[:, :, 0].astype(np.float64)
+    a_ch = lab[:, :, 1].astype(np.float64)
+
+    # Gradients of luminance and redness
+    grad_L = cv2.Sobel(L_ch, cv2.CV_64F, 1, 1, ksize=3)
+    grad_a = cv2.Sobel(a_ch, cv2.CV_64F, 1, 1, ksize=3)
+
+    # Shadow boundary mask: high luminance gradient on body
+    edge_mask = (np.abs(grad_L) > 30) & body_mask
+    edge_count = edge_mask.sum()
+
+    if edge_count < 100:
+        return {"plastic_score": 0, "edge_warmth": 0, "issues": ["insufficient edges"]}
+
+    # Ratio: redness change vs brightness change at shadow edges
+    mean_grad_a = float(np.abs(grad_a)[edge_mask].mean())
+    mean_grad_L = float(np.abs(grad_L)[edge_mask].mean())
+    edge_warmth = mean_grad_a / (mean_grad_L + 1e-6)
+
+    # Score: >1.2 = strong SSS (photo), >0.3 = acceptable (WebGL render), <0.15 = plastic
+    # Note: headless WebGL renders produce much lower edge warmth than photos because
+    # Three.js sheen is a screenspace approximation, not true subsurface scattering.
+    # Threshold tuned for WebGL renders: 0.15 instead of 1.0.
+    plastic_score = min(100, max(0, (0.15 - edge_warmth) * 500))
+
+    issues = []
+    if plastic_score > 60:
+        issues.append(f"PLASTIC_SKIN: edge warmth ratio={edge_warmth:.3f} (<0.15) — lacks subsurface scattering")
+
+    return {
+        "plastic_score": round(plastic_score, 1),
+        "edge_warmth": round(edge_warmth, 3),
+        "is_plastic": plastic_score > 60,
+        "issues": issues,
+    }
 
 
 def extract_textures(glb_path):
@@ -334,6 +439,147 @@ def analyze_render_screenshot(screenshot_path):
     result["edge_density"] = round(edge_density, 3)
     if edge_density < 0.01:
         result["issues"].append("RENDER_NO_DETAIL: body surface has no visible texture detail")
+
+    return result
+
+
+def analyze_skin_tone(screenshot_path):
+    """
+    Analyze a rendered screenshot for human skin appearance.
+
+    Checks HSV color distribution, LAB color temperature, specular highlights,
+    and vertical zone consistency on the body pixels.
+
+    Returns dict with metrics and issue codes.
+    """
+    img = cv2.imread(screenshot_path)
+    if img is None:
+        return {"error": "unreadable", "path": screenshot_path}
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Isolate body from dark background (#0a0a2e)
+    body_mask = gray > 30
+    body_pct = float(body_mask.mean() * 100)
+
+    result = {
+        "path": screenshot_path,
+        "body_visible_pct": round(body_pct, 1),
+        "issues": [],
+    }
+
+    if body_pct < 1.5:
+        result["issues"].append("RENDER_BLANK: no body visible in render")
+        return result
+
+    # HSV analysis on body pixels
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    body_hsv = hsv[body_mask]  # (N, 3)
+    h_vals = body_hsv[:, 0].astype(np.float64)  # OpenCV H: 0-180
+    s_vals = body_hsv[:, 1].astype(np.float64)
+    v_vals = body_hsv[:, 2].astype(np.float64)
+
+    # Skin hue percentage: H in [0-25] or [165-180] (OpenCV scale)
+    skin_hue_mask = (h_vals <= 25) | (h_vals >= 165)
+    skin_hue_pct = float(skin_hue_mask.mean() * 100)
+    result["skin_hue_pct"] = round(skin_hue_pct, 1)
+
+    if skin_hue_pct < 40:
+        result["issues"].append(
+            f"NON_SKIN_HUE: only {skin_hue_pct:.0f}% of body pixels in skin hue range (<40%)")
+    elif skin_hue_pct < 60:
+        result["issues"].append(
+            f"LOW_SKIN_HUE: {skin_hue_pct:.0f}% of body pixels in skin hue range (marginal)")
+
+    # Saturation distribution
+    sat_median = float(np.median(s_vals))
+    sat_std = float(np.std(s_vals))
+    result["sat_median"] = round(sat_median, 1)
+    result["sat_std"] = round(sat_std, 1)
+
+    if sat_median < 15:
+        result["issues"].append(
+            f"DESATURATED: median saturation={sat_median:.0f} (<15) — body looks gray")
+    elif sat_median > 200:
+        result["issues"].append(
+            f"OVERSATURATED: median saturation={sat_median:.0f} (>200) — unnaturally vivid")
+    if sat_std < 5:
+        result["issues"].append(
+            "FLAT_SATURATION: no natural color variation across body surface")
+
+    # Value (brightness) distribution
+    val_median = float(np.median(v_vals))
+    val_q25 = float(np.percentile(v_vals, 25))
+    val_q75 = float(np.percentile(v_vals, 75))
+    val_iqr = val_q75 - val_q25
+    result["val_median"] = round(val_median, 1)
+    result["val_iqr"] = round(val_iqr, 1)
+
+    if val_median < 40:
+        result["issues"].append(
+            f"TOO_DARK: median brightness={val_median:.0f} (<40)")
+    elif val_median > 240:
+        result["issues"].append(
+            f"TOO_BRIGHT: median brightness={val_median:.0f} (>240)")
+
+    # LAB color temperature
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    body_lab = lab[body_mask]
+    lab_a_mean = float(body_lab[:, 1].mean())
+    lab_b_mean = float(body_lab[:, 2].mean())
+    result["lab_a_mean"] = round(lab_a_mean, 1)
+    result["lab_b_mean"] = round(lab_b_mean, 1)
+
+    if lab_a_mean >= 133:
+        result["color_temp"] = "warm"
+    elif lab_a_mean >= 125:
+        result["color_temp"] = "neutral"
+    else:
+        result["color_temp"] = "cool"
+        result["issues"].append(
+            f"COOL_CAST: LAB a*={lab_a_mean:.1f} (<125) — skin has green/blue cast")
+
+    # Fitzpatrick classification via ITA°
+    L_star = float(body_lab[:, 0].mean()) * 100.0 / 255.0  # OpenCV L → standard L*
+    b_star = float(body_lab[:, 2].mean()) - 128.0           # OpenCV b → standard b*
+    fitz_type = classify_fitzpatrick_ita(L_star, b_star)
+    result["fitzpatrick_type"] = fitz_type
+
+    # Specular highlight detection: very bright + low saturation
+    specular_mask = (v_vals > 240) & (s_vals < 30)
+    specular_pct = float(specular_mask.mean() * 100)
+    result["specular_pct"] = round(specular_pct, 1)
+
+    if specular_pct > SPECULAR_THRESHOLDS["max_pct"]:
+        result["issues"].append(
+            f"TOO_SHINY: {specular_pct:.1f}% specular pixels (>{SPECULAR_THRESHOLDS['max_pct']}%) — reduce clearcoat or roughness")
+
+    # Vertical zone consistency: divide body bbox into 3 horizontal thirds
+    rows_with_body = np.where(body_mask.any(axis=1))[0]
+    if len(rows_with_body) > 30:
+        top_row, bot_row = rows_with_body[0], rows_with_body[-1]
+        third = (bot_row - top_row) // 3
+        zone_hues = []
+        for z in range(3):
+            r0 = top_row + z * third
+            r1 = r0 + third
+            zone_mask = body_mask[r0:r1, :]
+            if zone_mask.sum() > 50:
+                zone_h = hsv[r0:r1, :, 0][zone_mask].astype(np.float64)
+                zone_hues.append(float(np.median(zone_h)))
+        if len(zone_hues) >= 2:
+            # Circular hue distance (OpenCV H: 0-180, wraps around)
+            # Skin hues cluster near 0° AND 175° — both valid, must use circular diff
+            max_circ_diff = 0.0
+            for i in range(len(zone_hues)):
+                for j in range(i + 1, len(zone_hues)):
+                    diff = abs(zone_hues[i] - zone_hues[j])
+                    circ_diff = min(diff, 180 - diff)  # circular distance on 0-180 range
+                    max_circ_diff = max(max_circ_diff, circ_diff)
+            result["zone_hue_spread"] = round(max_circ_diff, 1)
+            if max_circ_diff > 10:
+                result["issues"].append(
+                    f"ZONE_COLOR_SHIFT: hue varies {max_circ_diff:.0f} units across body zones (>10)")
 
     return result
 
