@@ -1,83 +1,83 @@
-# Gemini Research Tasks — Phase 3: Phenotype, DensePose, Sliders (2026-03-23)
-
-## Context
-Phases 1-2 complete: MPFB2 template (13,380 verts), bone-axis deformation, texture dispatcher, e2e test passing. Phase 3 adds runtime shape key morphing, DensePose texture on MPFB2, and live deformation via viewer sliders. These 3 research tasks unblock Sonnet's implementation.
+# Gemini Research Tasks — Phase 4: Muscle/Weight Macros, DensePose Regen, Slider UX (2026-03-23)
 
 ## RULES — READ BEFORE STARTING
-1. **Read `CLAUDE.md` FIRST** — paths, gotchas, conventions
-2. **RESEARCH ONLY** — do NOT write code, do NOT run Blender, do NOT run Python
-3. **Reports under 100 lines** — concise findings, save to `research/` with `g_r` prefix
-4. **Do NOT re-research:** g_r7-g_r14 (all completed and committed)
-5. **Do NOT read:** `controllers.py` (3600+), `body_viewer.js` (4000+), `main.dart` (2500+)
+1. Read `CLAUDE.md` FIRST
+2. RESEARCH ONLY — do NOT write code, do NOT run Blender, do NOT run Python
+3. Reports under 100 lines, save to `research/` with `g_r` prefix
+4. Do NOT re-research: g_r7–g_r17 (all completed; g_r16 is being REPLACED by G-R19)
+5. Do NOT read `controllers.py` (3571 lines), `body_viewer.js` (4000+), or `main.dart` (2500+)
 6. Reference existing research where applicable
+7. All 3 tasks can run IN PARALLEL — no dependencies between them
 
 ## Existing Research (DO NOT REDO)
-- g_r7: MPFB2 vertex groups — g_r8: shape keys ($ma/$mu patterns) — g_r9: UV layout (single atlas)
-- g_r10: deformation (NumPy) — g_r11: MPFB2→SMPL region map — g_r12: shape key deltas
-- g_r13: bone-axis PCA — g_r14: unassigned verts (KDTree strategy)
+- g_r7: vertex groups | g_r8: shape keys | g_r9: UV layout | g_r10: deformation
+- g_r11: region map | g_r12: deltas | g_r13: bone-axis PCA | g_r14: unassigned verts
+- g_r15: extraction order | g_r16: CORRUPTED (replaced by G-R19) | g_r17: slider architecture
 
 ---
 
-## Task G-R15: Shape Key Delta Extraction Order (HIGH PRIORITY — DO FIRST)
+## Task G-R18: MPFB2 Muscle/Weight Macro System (HIGHEST PRIORITY)
 
-**Why:** The Blender script removes 5,778 helper vertices (eyes, hair, etc.) BEFORE baking shape keys. Shape keys reference ALL 19,158 vertices. If we extract deltas before vertex removal, indices won't match the 13,380-body mesh. Need the correct order.
+**Why:** The Blender template export extracted 8 shape key deltas — ALL are gender keys (`$ma`, `$fe`). The filter includes `$mu`/`$wg`/`muscle`/`weight` patterns but found ZERO keys with delta > 1e-5. muscle_factor and weight_factor have NO effect on the mesh. We need to understand how MPFB2 actually produces muscular/heavy bodies.
 
 **What to research:**
-1. In Blender Python, when vertices are deleted from a mesh (`bmesh.ops.delete`), do shape key vertex arrays auto-shrink to match?
-2. Or do shape key `data[i].co` indices become stale after vertex deletion?
-3. What is the correct order:
-   - (a) Remove helpers → extract deltas (shape keys auto-reindexed to 13,380 verts)
-   - (b) Extract deltas for all 19,158 → remove helpers → re-index deltas manually
-4. Does `bpy.ops.object.shape_key_remove(all=True, apply_mix=True)` preserve the mesh if called AFTER extraction?
-5. Reference `research/g_r12_shape_key_deltas.md` for extraction snippet
+1. Does MPFB2 use `.target` files (sparse vertex deltas) for muscle/weight instead of standard Blender shape keys? If so, where are they stored in the MPFB2 add-on directory?
+2. What is the MPFB2 Python API for setting muscle/weight? (e.g., `HumanService.setMuscle(human, value)` or `BodyService` calls)
+3. After calling the MPFB2 API to set muscle=1.0 and weight=0.3, do the resulting changes appear as shape keys? Or are vertex positions modified through a different mechanism (bone transforms, modifiers, direct mesh manipulation)?
+4. What is the correct Blender script sequence to: (a) create human, (b) set muscle=1.0, (c) read the resulting vertex positions, (d) compute delta from muscle=0.5 baseline?
+5. Are muscle/weight targets additive to gender targets, or are they separate independent macros?
+6. Reference `research/g_r8_shape_keys.md` and `research/g_r12_shape_key_deltas.md` for context on what keys exist
 
-**Output:** `research/g_r15_shape_key_extraction_order.md`
-- Which order is correct (a or b)
-- Blender Python snippet for safe extraction (DO NOT RUN)
-- Any edge cases (shape keys with drivers, relative vs absolute)
+**Key detail:** The current Blender script Step 2 (lines 51-66) sets `$ma` keys to +0.3 and `$mu`/muscle keys to +0.2, but these `$mu` keys may not exist as standard shape keys. The MPFB2 add-on ZIP is at `scripts/add-on-mpfb-v2.0.14.zip` — check its Python source for the macro API.
+
+**If MPFB2 does NOT use shape keys for muscle/weight:** Describe the alternative mechanism and how Sonnet can extract per-vertex deltas by creating two meshes (one at muscle=0, one at muscle=1) and computing the difference.
+
+**Output:** `research/g_r18_mpfb2_muscle_weight_macros.md`
 
 ---
 
-## Task G-R16: DensePose IUV-to-MPFB2 UV Transfer (HIGH PRIORITY)
+## Task G-R19: Regenerate G-R16 — DensePose IUV-to-MPFB2 UV Transfer
 
-**Why:** DensePose outputs IUV maps in SMPL's UV parameterization (24 body parts, each with own UV space). Need to know if/how this maps to MPFB2's single-atlas UV layout.
+**Why:** The original G-R16 file (`research/g_r16_densepose_mpfb2_transfer.md`) has encoding corruption — binary garbage from line 5 onward. This research is REQUIRED for Sonnet task S-T19 (DensePose→MPFB2 end-to-end test).
 
 **What to research:**
-1. DensePose IUV format: I = body part index (1-24), U/V = surface coordinates within that part. Are U/V normalized [0,1]?
-2. Is DensePose UV space tied to SMPL mesh topology, or is it a continuous body surface parameterization?
-3. Transfer approach: DensePose (I, U, V) → SMPL 3D surface point → KDTree nearest MPFB2 vertex → MPFB2 UV
-4. Does this require a precomputed SMPL→MPFB2 correspondence map? Or can KDTree on 3D positions work?
-5. Any open-source tools for cross-topology texture transfer via DensePose? (e.g., DensePose Transfer, Tex2Shape)
+1. DensePose IUV structure: I = body part index (1-24), U/V = continuous surface coordinates (0-1) within each part. Explain exactly what U and V represent geometrically.
+2. Transfer algorithm for MPFB2:
+   - For each DensePose IUV pixel: (I, U, V) → 3D surface point on SMPL reference mesh
+   - Find nearest vertex on MPFB2 mesh (KDTree nearest-neighbor in 3D space)
+   - Use that MPFB2 vertex's UV coordinate to place the pixel color in the texture atlas
+3. How does `texture_factory.get_part_ids(13380)` output map to DensePose's 24 part indices? (Reference `research/g_r11_mpfb2_smpl_region_map.md` for the mapping table)
+4. Edge cases: vertices with no DensePose coverage (hands, feet, top of head), seam handling at part boundaries, fallback for unmapped regions
+5. Pre-conditions for end-to-end test: RunPod DensePose endpoint status, photo requirements (front/back minimum), expected output format
 
-**Output:** `research/g_r16_densepose_mpfb2_transfer.md`
-- Transfer algorithm (step by step)
-- Whether a precomputed correspondence table is needed
-- Estimated quality (lossy? seams?)
+**Context:** `scripts/run_densepose_texture.py` already auto-detects MPFB2 by vertex count (13380) and loads `template_uvs.npy`. The `bake_from_photos_nn()` in `core/texture_bake.py` does KDTree NN matching. The question is whether the SMPL→MPFB2 UV transfer works correctly or needs modifications.
+
+**Output:** `research/g_r19_densepose_mpfb2_transfer_v2.md`
 
 ---
 
-## Task G-R17: Viewer Slider Architecture
+## Task G-R20: Phenotype Slider UX Patterns
 
-**Why:** Sonnet needs to wire viewer sliders to a new server endpoint. Need the current event model without reading 4000 lines of JS.
+**Why:** The viewer needs gender/muscle/weight sliders but no UI design exists. Sonnet needs guidance on labels, ranges, and layout.
 
 **What to research:**
-1. Grep `body_viewer.js` for lines 1785-1813 ONLY — what HTML elements are the sliders? (`input[type=range]`?)
-2. What events do they fire? (`input`, `change`, custom?)
-3. Do they currently POST to any API, or only modify Three.js BufferGeometry locally?
-4. What measurement keys do sliders use? (e.g., `chest_width` maps to which profile field?)
-5. Is there a debounce/throttle utility already in the viewer JS?
-6. How does the viewer know which customer_id to use? (URL param? global var?)
+1. What slider labels and ranges do body-composition / fitness apps use? Examples:
+   - "Muscle Definition" 0-100 vs "Lean Mass %" vs "Muscularity"
+   - "Body Fat" 5-50% vs "Weight" 0-100 vs "Body Composition"
+   - Gender: binary toggle vs continuous slider 0-100 (F↔M)
+2. Should phenotype controls be global (sidebar, always visible) or contextual (per-region)?
+3. For server round-trip with 500ms debounce (~1s re-deform), what UX patterns work? Loading indicators, progressive preview?
+4. The viewer has tabs: Adjust, Analyze, Studio, Scene. Width/Depth/Length sliders are in Adjust tab inside `#adjust-panel`. Where should phenotype sliders go? (Suggest: above per-region adjustments, always visible in Adjust tab)
 
-**Output:** `research/g_r17_viewer_slider_architecture.md` — under 60 lines
-- Slider element type + event model
-- Key→measurement mapping table
-- Customer ID source
-- Whether any API calls exist
+**Output:** `research/g_r20_phenotype_slider_ux.md` (<80 lines)
 
 ---
 
-## DEPENDENCY INFO
-- **G-R15 blocks S-T7** (shape key delta export)
-- **G-R16 blocks S-T9** (DensePose MPFB2 integration)
-- **G-R17 blocks S-T11** (viewer slider wiring)
-- All 3 can run in parallel — no interdependencies
+## DEPENDENCY GRAPH
+```
+G-R18 (muscle/weight macros)  ──→ blocks Sonnet S-T16 (Blender delta export)
+G-R19 (DensePose regen)       ──→ blocks Sonnet S-T19 (DensePose e2e test)
+G-R20 (slider UX)             ──→ blocks Sonnet S-T18 (viewer sliders)
+```
+
+All 3 Gemini tasks are independent — run them in parallel.
