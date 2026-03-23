@@ -309,6 +309,8 @@ export function buildMusclePanel(highlighter, container) {
           btn.style.borderColor = 'rgba(255,100,70,0.6)';
           btn.style.color = '#ff9070';
           activeBtn = btn;
+          // Connect to region adjustment system
+          if (window.selectMuscleRegion) window.selectMuscleRegion(key);
         }
       };
       panel.appendChild(btn);

@@ -1403,6 +1403,8 @@ function _loadGLB(url, onLoaded) {
       if (_ringsVisible) _buildRings();
       _resetVisModes();
       _ghostRich = {};
+      // Backup original vertex positions for non-destructive adjust
+      _backupOriginalPositions(bodyMesh);
       _hideProgress();
       if (onLoaded) onLoaded();
       // Try to load PBR textures first, fall back to real skin texture,
@@ -1804,6 +1806,68 @@ window.toggleLabels = function() {
 // ── Adjustment panel ──────────────────────────────────────────────────────────
 let _currentRegion = null;
 const _regionAdjustments = {};  // region → {width, depth, length}
+const _origPositions = new WeakMap(); // child mesh → Float32Array backup
+
+function _backupOriginalPositions(root) {
+  if (!root) return;
+  let count = 0;
+  root.traverse(child => {
+    if (!child.isMesh || !child.geometry) return;
+    const pos = child.geometry.attributes.position;
+    if (pos) {
+      _origPositions.set(child, new Float32Array(pos.array));
+      count++;
+    }
+  });
+  console.log(`[Adjust] Backed up ${count} mesh positions`);
+}
+
+// Expose debug state for agent_browser.py
+window._adjustDebug = () => {
+  // Sample vertex positions: 5 from start + 5 from mid-body (hip zone)
+  const verts = [], hipVerts = [];
+  if (bodyMesh) bodyMesh.traverse(c => {
+    if (c.isMesh && c.geometry?.attributes?.position && verts.length === 0) {
+      const p = c.geometry.attributes.position;
+      // Find body height range
+      let minY = Infinity, maxY = -Infinity;
+      for (let i = 0; i < p.count; i++) { const y = p.getY(i); if (y < minY) minY = y; if (y > maxY) maxY = y; }
+      const h = maxY - minY;
+      const hipMin = minY + 0.40 * h, hipMax = minY + 0.55 * h;
+      for (let i = 0; i < Math.min(5, p.count); i++)
+        verts.push([+p.getX(i).toFixed(3), +p.getY(i).toFixed(3), +p.getZ(i).toFixed(3)]);
+      // Collect hip verts
+      for (let i = 0; i < p.count && hipVerts.length < 5; i++) {
+        const y = p.getY(i);
+        if (y >= hipMin && y <= hipMax) hipVerts.push([+p.getX(i).toFixed(4), +p.getY(i).toFixed(4), +p.getZ(i).toFixed(4), i]);
+      }
+    }
+  });
+  return {
+    currentRegion: _currentRegion,
+    hasBodyMesh: !!bodyMesh,
+    regionAdjustments: { ..._regionAdjustments },
+    origBackupCount: (() => { let c = 0; if (bodyMesh) bodyMesh.traverse(ch => { if (ch.isMesh && _origPositions.has(ch)) c++; }); return c; })(),
+    sampleVerts: verts,
+    hipVerts: hipVerts,
+  };
+};
+
+function _restoreOriginalPositions(root) {
+  if (!root) return;
+  let restored = 0, missed = 0;
+  root.traverse(child => {
+    if (!child.isMesh || !child.geometry) return;
+    const orig = _origPositions.get(child);
+    if (!orig) { missed++; return; }
+    const pos = child.geometry.attributes.position;
+    pos.array.set(orig);
+    pos.needsUpdate = true;
+    child.geometry.computeBoundingBox();
+    restored++;
+  });
+  console.log(`[Adjust] Restored ${restored} meshes, ${missed} missed`);
+}
 
 // ── Live deformation: debounced server re-deform via update_deformation API ───
 
@@ -1829,48 +1893,10 @@ function _scheduleDeformationUpdate() {
 }
 
 async function _doDeformationUpdate() {
-  const profile = await _fetchAndCacheProfile();
-  if (!profile) return;
-
-  // Build partial updates: for each adjusted region, compute new absolute circumference
-  const updates = {};
-  for (const [region, deltas] of Object.entries(_regionAdjustments)) {
-    const field = REGION_TO_FIELD[region];
-    if (!field || deltas.width === 0) continue;
-    const current = parseFloat(profile[field] || 0);
-    // Width delta in scene units (mm) → circumference delta in cm = π * width_mm / 10
-    updates[field] = Math.max(10, current + Math.PI * deltas.width / 10);
-  }
-  // Add phenotype factors (slider 0-100 → factor 0.0-1.0)
-  const muscleEl = document.getElementById('pheno-muscle');
-  const weightEl = document.getElementById('pheno-weight');
-  const genderSlider = document.getElementById('pheno-gender');
-  if (muscleEl) updates.muscle_factor = parseInt(muscleEl.value) / 100;
-  if (weightEl) updates.weight_factor = parseInt(weightEl.value) / 100;
-  if (genderSlider) updates.gender_factor = parseInt(genderSlider.value) / 100;
-
-  if (Object.keys(updates).length === 0) return;
-
-  _setStatus('Updating…');
-  try {
-    const cid = _customerId();
-    const resp = await fetch(`/web_app/api/customer/${cid}/update_deformation`, {
-      method: 'POST',
-      headers: _authHeaders(),
-      body: JSON.stringify(updates),
-    });
-    const data = await resp.json();
-    if (data.status === 'success' && data.glb_url) {
-      _setStatus('');
-      _loadGLB(data.glb_url, null);
-      // Invalidate cached profile so next call gets fresh values
-      _cachedProfile = null;
-    } else {
-      _setStatus('Update failed: ' + (data.message || ''));
-    }
-  } catch (e) {
-    _setStatus('Update error: ' + e.message);
-  }
+  // Disabled: deform_template produces malformed meshes.
+  // Adjustments are preview-only (client-side vertex edits).
+  // Use saveAdjustments() to persist measurement deltas to the profile.
+  return;
 }
 
 const REGION_TO_FIELD = {
@@ -1885,30 +1911,81 @@ const REGION_TO_FIELD = {
   shoulder: 'shoulder_width_cm',
 };
 
+// Map muscle group keys → body region for adjustment
+const MUSCLE_TO_REGION = {
+  pectorals: 'chest', traps: 'neck', abs: 'waist', obliques: 'waist',
+  glutes: 'hip', quads_l: 'thigh', quads_r: 'thigh',
+  calves_l: 'calf', calves_r: 'calf',
+  biceps_l: 'arm', biceps_r: 'arm',
+  forearms_l: 'arm', forearms_r: 'arm',
+  deltoids_l: 'shoulder', deltoids_r: 'shoulder',
+};
+
+// Expose for debugging
+window._getRegionZRange = function(region) { return _getRegionZRange(region); };
+window._getBodyMesh = () => bodyMesh;
+
+// Called by muscle group panel buttons
+window.selectMuscleRegion = function(muscleKey) {
+  const region = MUSCLE_TO_REGION[muscleKey];
+  if (region) _openAdjustPanel(region);
+};
+
 function _openAdjustPanel(region) {
   _currentRegion = region;
   const panel = document.getElementById('adjust-panel');
+  // Update Studio tab region label
+  const studioLabel = document.getElementById('studio-region-name');
+  if (studioLabel) studioLabel.textContent = region.charAt(0).toUpperCase() + region.slice(1);
   if (!panel) return;
   document.getElementById('adjust-region').textContent =
     region.charAt(0).toUpperCase() + region.slice(1);
-  // Restore saved slider values
+  // Restore saved slider values (both Scene and Studio panels)
   const saved = _regionAdjustments[region] || { width: 0, depth: 0, length: 0 };
+  const dimMap = { width: 'w', depth: 'd', length: 'l' };
   ['width', 'depth', 'length'].forEach(dim => {
     const slider = document.getElementById('adj-' + dim);
     const val    = document.getElementById('adj-' + dim + '-val');
     if (slider) slider.value = saved[dim];
     if (val)    val.textContent = saved[dim];
+    // Sync Studio tab sliders
+    const studioSlider = document.getElementById('studio-adj-' + dimMap[dim]);
+    const studioVal    = document.getElementById('studio-adj-' + dimMap[dim] + '-val');
+    if (studioSlider) studioSlider.value = saved[dim];
+    if (studioVal)    studioVal.textContent = saved[dim] + 'mm';
   });
   panel.style.display = 'block';
 }
 
 function _getRegionZRange(region) {
-  // Returns [minY, maxY] in scene units — body spans 0 to ~targetH
-  // These ratios match getBodyRegion() thresholds
+  // Returns [min, max] in RAW GEOMETRY coordinates (the axis that represents height).
+  // The mesh may be Z-up (raw) or Y-up (GLB). We detect which axis is tallest.
   if (!bodyMesh) return [0, 300];
-  const box = new THREE.Box3().setFromObject(bodyMesh);
-  const h = box.max.y - box.min.y;
-  const base = box.min.y;
+  let minH = Infinity, maxH = -Infinity;
+  let heightAxis = 2; // default Z (for Z-up meshes rotated to Y-up by _centerAndScale)
+  bodyMesh.traverse(child => {
+    if (!child.isMesh || !child.geometry?.attributes?.position) return;
+    const pos = child.geometry.attributes.position;
+    // Detect height axis from geometry bounding box (tallest raw axis)
+    if (heightAxis === 2) {
+      let ranges = [0, 0, 0];
+      for (let a = 0; a < 3; a++) {
+        let mn = Infinity, mx = -Infinity;
+        for (let i = 0; i < pos.count; i++) {
+          const v = a === 0 ? pos.getX(i) : a === 1 ? pos.getY(i) : pos.getZ(i);
+          if (v < mn) mn = v; if (v > mx) mx = v;
+        }
+        ranges[a] = mx - mn;
+      }
+      heightAxis = ranges[2] > ranges[1] ? 2 : 1; // Z-up or Y-up
+    }
+    for (let i = 0; i < pos.count; i++) {
+      const v = heightAxis === 2 ? pos.getZ(i) : pos.getY(i);
+      if (v < minH) minH = v;
+      if (v > maxH) maxH = v;
+    }
+  });
+  const h = maxH - minH;
   const RANGES = {
     ankle:    [0.00, 0.08], calf:   [0.08, 0.18], knee:   [0.18, 0.28],
     thigh:    [0.28, 0.40], hip:    [0.40, 0.50], waist:  [0.50, 0.58],
@@ -1916,7 +1993,7 @@ function _getRegionZRange(region) {
     head:     [0.90, 1.00], arm:    [0.55, 1.00], leg:    [0.00, 0.40],
   };
   const r = RANGES[region] || [0, 1];
-  return [base + r[0] * h, base + r[1] * h];
+  return [minH + r[0] * h, minH + r[1] * h, heightAxis];
 }
 
 window.applyAdjustment = function() {
@@ -1926,37 +2003,75 @@ window.applyAdjustment = function() {
   const lDelta = parseFloat(document.getElementById('adj-length')?.value || 0);
   _regionAdjustments[_currentRegion] = { width: wDelta, depth: dDelta, length: lDelta };
 
-  const [yMin, yMax] = _getRegionZRange(_currentRegion);
-  bodyMesh.traverse(child => {
-    if (!child.isMesh || !child.geometry) return;
-    const pos = child.geometry.attributes.position;
-    if (!pos) return;
-    for (let i = 0; i < pos.count; i++) {
-      const y = pos.getY(i);
-      if (y < yMin || y > yMax) continue;
-      const x = pos.getX(i);
-      const z = pos.getZ(i);
-      const dist = Math.sqrt(x * x + z * z);
-      if (dist > 0) {
-        pos.setX(i, x * (1 + wDelta / (dist + 1)));
-        pos.setZ(i, z * (1 + dDelta / (dist + 1)));
+  // Restore original positions first, then re-apply ALL region adjustments
+  _restoreOriginalPositions(bodyMesh);
+
+  for (const [region, deltas] of Object.entries(_regionAdjustments)) {
+    if (deltas.width === 0 && deltas.depth === 0 && deltas.length === 0) continue;
+    const [hMin, hMax, hAxis] = _getRegionZRange(region);
+    let _modCount = 0, _totalCount = 0;
+    console.log(`[Adjust] Applying ${region}: w=${deltas.width} d=${deltas.depth} l=${deltas.length} hAxis=${hAxis} range=[${hMin.toFixed(3)}, ${hMax.toFixed(3)}]`);
+    bodyMesh.traverse(child => {
+      if (!child.isMesh || !child.geometry) return;
+      const pos = child.geometry.attributes.position;
+      if (!pos) return;
+      _totalCount += pos.count;
+      for (let i = 0; i < pos.count; i++) {
+        // Get height value along the correct axis
+        const hVal = hAxis === 2 ? pos.getZ(i) : pos.getY(i);
+        if (hVal < hMin || hVal > hMax) continue;
+        _modCount++;
+        // Scale the two non-height axes (width + depth)
+        // Slider is ±30 (meant as mm). Geometry is in meters. Convert: mm/1000 = meters.
+        const wScale = deltas.width / 1000;  // mm → meters
+        const dScale = deltas.depth / 1000;
+        const lScale = deltas.length / 1000;
+        const x = pos.getX(i);
+        const crossVal = hAxis === 2 ? pos.getY(i) : pos.getZ(i);
+        // Additive offset scaled by normalized distance from center
+        const dist = Math.sqrt(x * x + crossVal * crossVal);
+        if (dist > 0.001) {
+          const nx = x / dist, nc = crossVal / dist;
+          pos.setX(i, x + nx * wScale);
+          if (hAxis === 2)
+            pos.setY(i, crossVal + nc * dScale);
+          else
+            pos.setZ(i, crossVal + nc * dScale);
+        }
+        // Length: additive along height axis
+        if (hMax > hMin) {
+          const lOff = lScale * (hVal - hMin) / (hMax - hMin);
+          if (hAxis === 2) pos.setZ(i, hVal + lOff);
+          else pos.setY(i, hVal + lOff);
+        }
       }
-      if (yMax > yMin) {
-        pos.setY(i, y + lDelta * (y - yMin) / (yMax - yMin));
-      }
-    }
-    pos.needsUpdate = true;
-    child.geometry.computeBoundingBox();
-  });
+      pos.needsUpdate = true;
+      child.geometry.computeBoundingBox();
+    });
+    console.log(`[Adjust] Modified ${_modCount}/${_totalCount} verts in ${region}`);
+  }
 };
 
 window.resetAdjustment = function() {
+  // Reset all sliders (Scene + Studio tabs)
   ['adj-width', 'adj-depth', 'adj-length'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = 0;
     const vEl = document.getElementById(id + '-val');
     if (vEl) vEl.textContent = 0;
   });
+  const dimMap = { width: 'w', depth: 'd', length: 'l' };
+  ['width', 'depth', 'length'].forEach(dim => {
+    const s = document.getElementById('studio-adj-' + dimMap[dim]);
+    const v = document.getElementById('studio-adj-' + dimMap[dim] + '-val');
+    if (s) s.value = 0;
+    if (v) v.textContent = '0mm';
+  });
+
+  // Clear ALL region adjustments and fully restore original mesh
+  for (const key of Object.keys(_regionAdjustments)) delete _regionAdjustments[key];
+  _restoreOriginalPositions(bodyMesh);
+  console.log('[Adjust] Reset: all adjustments cleared, mesh restored');
 };
 
 window.saveAdjustments = async function() {
@@ -1991,7 +2106,7 @@ window.saveAdjustments = async function() {
       updates[field] = Math.max(0, current + delta);
     }
 
-    // 3. POST absolute values back
+    // 3. POST absolute values to profile only (no mesh regeneration)
     const postResp = await fetch(`/web_app/api/customer/${cid}/body_profile`, {
       method: 'POST',
       headers: _authHeaders(),
@@ -2002,22 +2117,9 @@ window.saveAdjustments = async function() {
       _setStatus('Save failed: ' + (result.message || '')); return;
     }
 
-    _setStatus('Saved — regenerating mesh…');
-
-    // 4. Regenerate mesh with updated profile
-    const meshResp = await fetch(`/web_app/api/customer/${cid}/body_model`, {
-      method: 'POST',
-      headers: _authHeaders(),
-      body: JSON.stringify({}),
-    });
-    const meshResult = await meshResp.json();
-    if (meshResult.glb_url) {
-      const params = new URLSearchParams(window.location.search);
-      params.set('model', meshResult.glb_url);
-      window.location.search = params.toString();
-    } else {
-      _setStatus('Mesh regeneration failed');
-    }
+    _setStatus('Profile saved');
+    // Clear adjustments since they're now saved to profile
+    for (const key of Object.keys(_regionAdjustments)) delete _regionAdjustments[key];
   } catch (e) {
     _setStatus('Save failed: ' + e.message);
   }
