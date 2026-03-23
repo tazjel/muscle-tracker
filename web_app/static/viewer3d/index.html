@@ -264,7 +264,7 @@
           <div style="display:flex;align-items:center;gap:4px;">
             <input type="range" id="studio-tile-x" min="5" max="120" step="1" value="22"
               style="flex:1;"
-              oninput="setSkinTiling(+this.value,+document.getElementById('studio-tile-y').value);document.getElementById('studio-xy-val').textContent=this.value+'×'+document.getElementById('studio-tile-y').value">
+              oninput="setFineTuneX(+this.value);document.getElementById('studio-xy-val').textContent=this.value+'×'+document.getElementById('studio-tile-y').value">
             <span style="font-size:9px;color:#666;min-width:10px;">X</span>
           </div>
         </div>
@@ -273,7 +273,7 @@
           <div style="display:flex;align-items:center;gap:4px;">
             <input type="range" id="studio-tile-y" min="5" max="120" step="1" value="57"
               style="flex:1;"
-              oninput="setSkinTiling(+document.getElementById('studio-tile-x').value,+this.value);document.getElementById('studio-xy-val').textContent=document.getElementById('studio-tile-x').value+'×'+this.value">
+              oninput="setFineTuneY(+this.value);document.getElementById('studio-xy-val').textContent=document.getElementById('studio-tile-x').value+'×'+this.value">
             <span id="studio-xy-val" style="font-size:9px;color:#666;min-width:28px;">22×57</span>
           </div>
         </div>

@@ -656,26 +656,31 @@ function setSkinTiling(tilesX, tilesY) {
 }
 window.setSkinTiling = setSkinTiling;
 
-// Studio: uniform texture scale (multiplier on base tiling)
-let _studioBaseX = 22, _studioBaseY = 57;
+// Studio: uniform texture scale — independent from Fine-tune X/Y
+let _studioScale = 1.0;
 function setTextureScale(scale) {
-  const tx = _studioBaseX * scale;
-  const ty = _studioBaseY * scale;
+  _studioScale = scale;
+  _applySkinTiling();
+}
+// Fine-tune X/Y set their own tiling — independent from Scale
+let _fineTuneX = 22, _fineTuneY = 57;
+function setFineTuneX(val) {
+  _fineTuneX = val;
+  _applySkinTiling();
+}
+function setFineTuneY(val) {
+  _fineTuneY = val;
+  _applySkinTiling();
+}
+// Combined: final tiling = fineTune × scale
+function _applySkinTiling() {
+  const tx = _fineTuneX * _studioScale;
+  const ty = _fineTuneY * _studioScale;
   setSkinTiling(tx, ty);
-  // Sync fine-tune sliders if they exist
-  const sx = document.getElementById('studio-tile-x');
-  const sy = document.getElementById('studio-tile-y');
-  if (sx) sx.value = tx;
-  if (sy) sy.value = ty;
-  const xyLabel = document.getElementById('studio-xy-val');
-  if (xyLabel) xyLabel.textContent = tx + '×' + ty;
-  // Auto-switch to skin view if not already
-  const skinBtn = document.getElementById('btn-skin');
-  if (skinBtn && !skinBtn.classList.contains('active')) {
-    window.setViewMode('skin');
-  }
 }
 window.setTextureScale = setTextureScale;
+window.setFineTuneX = setFineTuneX;
+window.setFineTuneY = setFineTuneY;
 
 function setTextureOffset(ox, oy) {
   if (!SKIN_MATERIAL.map) return;
@@ -687,7 +692,7 @@ function setTextureOffset(ox, oy) {
 window.setTextureOffset = setTextureOffset;
 
 function resetStudioDefaults() {
-  _studioBaseX = 22; _studioBaseY = 57;
+  _studioScale = 1.0; _fineTuneX = 22; _fineTuneY = 57;
   setSkinTiling(22, 57);
   setTextureOffset(0, 0);
   // Reset all sliders
