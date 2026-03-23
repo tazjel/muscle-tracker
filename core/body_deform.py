@@ -257,8 +257,14 @@ def deform_template(profile: dict = None) -> dict:
     # ── Step 0: Apply shape key phenotype deltas ──────────────────────────
     # Apply BEFORE height/circumference scaling so deltas remain in template
     # coordinate space. Each delta is (N, 3) float32 in meters.
+    # NOTE: Only apply muscle/weight deltas. Gender/ethnicity keys (gender_male,
+    # gender_female) are mutually-exclusive ethnicity variants that compound
+    # when applied together, producing malformed meshes.
     shape_deltas = _load_shape_deltas()
+    _SAFE_CATEGORIES = ('muscle', 'weight')
     for key_name, info in shape_deltas.items():
+        if info.get('category', '') not in _SAFE_CATEGORIES:
+            continue
         factor = p.get(info['profile_key'])
         if factor is None:
             continue
@@ -279,64 +285,14 @@ def deform_template(profile: dict = None) -> dict:
         h_scale = 1.0
         xy_scale_from_height = 1.0
 
-    # ── Step 2: Per-region bone-axis-aligned scaling ────────────────────
-    # For each muscle group, find the bone axis via PCA, then scale
-    # perpendicular to it (preserves length, changes circumference).
-    # Apply height-based proportional scaling first.
+    # ── Step 2: Proportional XY scaling ──────────────────────────────────
+    # Apply height-proportional scaling to XY to maintain proportions.
+    # NOTE: Per-region PCA bone-axis scaling is disabled because the vertex
+    # segmentation (template_vert_segmentation.json) is for SMPL (6890 verts)
+    # not the MPFB2 template (13380 verts). Using wrong indices creates spikes.
+    # The muscle/weight shape deltas from Step 0 handle body composition.
     verts[:, 0] *= xy_scale_from_height
     verts[:, 1] *= xy_scale_from_height
-
-    scale_xy = np.ones(len(verts), dtype=np.float32)
-
-    for profile_key, region in _PROFILE_TO_REGION.items():
-        target_circ_cm = p.get(profile_key)
-        if target_circ_cm is None or target_circ_cm <= 0:
-            continue
-
-        target_circ_m = target_circ_cm / 100.0
-        ref_circ_m = ref.get(f'{region}_circ_m', 0)
-        if ref_circ_m <= 0.01:
-            continue
-
-        adjusted_ref = ref_circ_m * xy_scale_from_height
-        if adjusted_ref <= 0.01:
-            continue
-
-        ratio = target_circ_m / adjusted_ref
-        ratio = max(0.5, min(2.0, ratio))
-
-        groups = _REGION_GROUPS.get(region, [])
-        for grp in groups:
-            if grp not in seg:
-                continue
-            idx = seg[grp]
-            scale_xy[idx] = ratio
-            grp_verts = verts[idx]
-
-            # PCA: find bone axis (first principal component)
-            center = grp_verts.mean(axis=0)
-            centered = grp_verts - center
-            try:
-                _, _, vh = np.linalg.svd(centered, full_matrices=False)
-                bone_axis = vh[0]  # dominant direction
-                bone_axis /= np.linalg.norm(bone_axis) + 1e-8
-            except np.linalg.LinAlgError:
-                # Fallback: scale XY radially
-                verts[idx, 0] *= ratio
-                verts[idx, 1] *= ratio
-                continue
-
-            # Project each vertex onto bone axis and perpendicular plane
-            offsets = grp_verts - center
-            along_bone = (offsets @ bone_axis).reshape(-1, 1) * bone_axis
-            perp = offsets - along_bone
-
-            # Scale only the perpendicular component
-            scaled_offsets = along_bone + perp * ratio
-            verts[idx] = center + scaled_offsets
-
-    # ── Step 3: Smooth boundaries ─────────────────────────────────────────
-    _smooth_boundaries(verts, faces, scale_xy, iterations=5)
 
     # ── Convert to mm (pipeline convention) ───────────────────────────────
     verts_mm = (verts * 1000.0).astype(np.float32)

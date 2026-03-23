@@ -2106,7 +2106,7 @@ window.saveAdjustments = async function() {
       updates[field] = Math.max(0, current + delta);
     }
 
-    // 3. POST absolute values to profile only (no mesh regeneration)
+    // 3. POST absolute values to profile
     const postResp = await fetch(`/web_app/api/customer/${cid}/body_profile`, {
       method: 'POST',
       headers: _authHeaders(),
@@ -2117,9 +2117,23 @@ window.saveAdjustments = async function() {
       _setStatus('Save failed: ' + (result.message || '')); return;
     }
 
-    _setStatus('Profile saved');
-    // Clear adjustments since they're now saved to profile
-    for (const key of Object.keys(_regionAdjustments)) delete _regionAdjustments[key];
+    _setStatus('Saved — regenerating mesh…');
+
+    // 4. Regenerate mesh with updated profile
+    const meshResp = await fetch(`/web_app/api/customer/${cid}/body_model`, {
+      method: 'POST',
+      headers: _authHeaders(),
+      body: JSON.stringify({}),
+    });
+    const meshResult = await meshResp.json();
+    if (meshResult.glb_url) {
+      // Clear adjustments and reload with new mesh
+      for (const key of Object.keys(_regionAdjustments)) delete _regionAdjustments[key];
+      _loadGLB(meshResult.glb_url, null);
+      _setStatus('');
+    } else {
+      _setStatus('Mesh regeneration failed');
+    }
   } catch (e) {
     _setStatus('Save failed: ' + e.message);
   }
