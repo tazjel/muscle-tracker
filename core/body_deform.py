@@ -215,8 +215,13 @@ def deform_template(profile: dict = None) -> dict:
         h_scale = 1.0
         xy_scale_from_height = 1.0
 
-    # ── Step 2: Per-region radial scaling ─────────────────────────────────
-    # Build a per-vertex scale factor (starts at 1.0)
+    # ── Step 2: Per-region bone-axis-aligned scaling ────────────────────
+    # For each muscle group, find the bone axis via PCA, then scale
+    # perpendicular to it (preserves length, changes circumference).
+    # Apply height-based proportional scaling first.
+    verts[:, 0] *= xy_scale_from_height
+    verts[:, 1] *= xy_scale_from_height
+
     scale_xy = np.ones(len(verts), dtype=np.float32)
 
     for profile_key, region in _PROFILE_TO_REGION.items():
@@ -229,37 +234,45 @@ def deform_template(profile: dict = None) -> dict:
         if ref_circ_m <= 0.01:
             continue
 
-        # Adjust ref circumference for height scaling
         adjusted_ref = ref_circ_m * xy_scale_from_height
         if adjusted_ref <= 0.01:
             continue
 
         ratio = target_circ_m / adjusted_ref
-
-        # Clamp to reasonable range (0.5x to 2.0x)
         ratio = max(0.5, min(2.0, ratio))
 
         groups = _REGION_GROUPS.get(region, [])
         for grp in groups:
-            if grp in seg:
-                idx = seg[grp]
-                scale_xy[idx] = ratio
+            if grp not in seg:
+                continue
+            idx = seg[grp]
+            scale_xy[idx] = ratio
+            grp_verts = verts[idx]
 
-    # ── Step 3: Apply radial scaling ──────────────────────────────────────
-    # Scale X and Y relative to the body's center axis (X=0, Y=0)
-    # First apply the height-based proportional scaling
-    verts[:, 0] *= xy_scale_from_height
-    verts[:, 1] *= xy_scale_from_height
+            # PCA: find bone axis (first principal component)
+            center = grp_verts.mean(axis=0)
+            centered = grp_verts - center
+            try:
+                _, _, vh = np.linalg.svd(centered, full_matrices=False)
+                bone_axis = vh[0]  # dominant direction
+                bone_axis /= np.linalg.norm(bone_axis) + 1e-8
+            except np.linalg.LinAlgError:
+                # Fallback: scale XY radially
+                verts[idx, 0] *= ratio
+                verts[idx, 1] *= ratio
+                continue
 
-    # Then apply per-region scaling
-    verts[:, 0] *= scale_xy
-    verts[:, 1] *= scale_xy
+            # Project each vertex onto bone axis and perpendicular plane
+            offsets = grp_verts - center
+            along_bone = (offsets @ bone_axis).reshape(-1, 1) * bone_axis
+            perp = offsets - along_bone
 
-    # ── Step 4: Smooth boundaries ─────────────────────────────────────────
-    # Laplacian smoothing pass on vertices near region boundaries to prevent
-    # discontinuities. Only smooth vertices that have neighbors with different
-    # scale factors.
-    _smooth_boundaries(verts, faces, scale_xy, iterations=3)
+            # Scale only the perpendicular component
+            scaled_offsets = along_bone + perp * ratio
+            verts[idx] = center + scaled_offsets
+
+    # ── Step 3: Smooth boundaries ─────────────────────────────────────────
+    _smooth_boundaries(verts, faces, scale_xy, iterations=5)
 
     # ── Convert to mm (pipeline convention) ───────────────────────────────
     verts_mm = (verts * 1000.0).astype(np.float32)
@@ -285,9 +298,11 @@ def deform_template(profile: dict = None) -> dict:
     }
 
 
-def _smooth_boundaries(verts, faces, scale_factors, iterations=3, strength=0.5):
-    """Laplacian smoothing on boundary vertices (where scale_factors differ)."""
-    # Build adjacency: for each vertex, list of neighbor vertices
+def _smooth_boundaries(verts, faces, scale_factors, iterations=5, strength=0.4):
+    """Distance-weighted Laplacian smoothing on boundary vertices.
+
+    Extends 2 rings out from scale-factor boundaries for gradual blending.
+    """
     n = len(verts)
     adj = [[] for _ in range(n)]
     for f in faces:
@@ -296,7 +311,7 @@ def _smooth_boundaries(verts, faces, scale_factors, iterations=3, strength=0.5):
             adj[a].append(b)
             adj[b].append(a)
 
-    # Find boundary vertices: vertices where neighbors have different scale
+    # Find direct boundary vertices (1-ring)
     boundary = set()
     for i in range(n):
         si = scale_factors[i]
@@ -309,16 +324,26 @@ def _smooth_boundaries(verts, faces, scale_factors, iterations=3, strength=0.5):
     if not boundary:
         return
 
-    boundary_list = list(boundary)
-    logger.debug('Smoothing %d boundary vertices', len(boundary_list))
+    # Extend to 2-ring for smoother falloff
+    extended = set(boundary)
+    for v in list(boundary):
+        for nb in adj[v]:
+            extended.add(nb)
 
+    boundary_list = list(extended)
+    logger.debug('Smoothing %d boundary vertices (2-ring)', len(boundary_list))
+
+    # Distance from boundary center → reduced strength for outer ring
+    core = boundary
     for _ in range(iterations):
         new_pos = verts.copy()
         for i in boundary_list:
             neighbors = adj[i]
-            if neighbors:
-                avg = verts[neighbors].mean(axis=0)
-                new_pos[i] = verts[i] * (1 - strength) + avg * strength
+            if not neighbors:
+                continue
+            avg = verts[neighbors].mean(axis=0)
+            s = strength if i in core else strength * 0.5
+            new_pos[i] = verts[i] * (1 - s) + avg * s
         verts[boundary_list] = new_pos[boundary_list]
 
 
