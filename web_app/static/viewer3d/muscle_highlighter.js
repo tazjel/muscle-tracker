@@ -54,10 +54,10 @@ const MUSCLE_LABELS = {
   forearms_r: 'Forearms (R)',
 };
 
-// Highlight color (RGB 0-1): bright saturated red-orange (HDR, visible over texture)
-const HIGHLIGHT_COLOR = { r: 3.0, g: 0.4, b: 0.15 };
-// Dimmed color for non-highlighted areas (darkens texture to create contrast)
-const DEFAULT_COLOR   = { r: 0.2, g: 0.2, b: 0.25 };
+// Highlight color (RGB 0-1): warm glow that tints without destroying texture
+const HIGHLIGHT_COLOR = { r: 1.4, g: 0.85, b: 0.7 };
+// Dimmed color for non-highlighted areas (subtle desaturation, not aggressive darkening)
+const DEFAULT_COLOR   = { r: 0.7, g: 0.7, b: 0.75 };
 // Normal color when no highlighting is active
 const NEUTRAL_COLOR   = { r: 1.0, g: 1.0, b: 1.0 };
 

@@ -5,7 +5,8 @@ from datetime import datetime
 
 # Database setup — SQLite for dev, swappable to Cloud SQL for production
 db_path = os.path.join(os.path.dirname(__file__), '..', 'database.db')
-db = DAL('sqlite://' + os.path.abspath(db_path), folder=os.path.dirname(__file__))
+db = DAL('sqlite://' + os.path.abspath(db_path), folder=os.path.dirname(__file__),
+         fake_migrate_all=True)
 
 MUSCLE_GROUPS = [
     "bicep", "tricep", "quadricep", "hamstring", "calf",
