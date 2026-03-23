@@ -354,6 +354,30 @@
   <!-- Hover tooltip -->
   <div id="hover-tooltip" style="position:fixed;display:none;background:rgba(0,0,0,0.8);color:#e0e0e0;padding:4px 10px;border-radius:4px;font-size:12px;pointer-events:none;z-index:100;border:1px solid #4a9eff;white-space:nowrap;"></div>
 
+  <!-- Mobile card toggle button -->
+  <button class="card-toggle" id="card-toggle" onclick="toggleCard()">
+    ☰ Controls
+  </button>
+
+  <!-- Mobile bottom action bar -->
+  <div class="mobile-bar" id="mobile-bar">
+    <button onclick="setCameraPreset('front')">
+      <span class="bar-icon">👤</span>Front
+    </button>
+    <button onclick="setCameraPreset('back')">
+      <span class="bar-icon">🔄</span>Back
+    </button>
+    <button onclick="toggleMusclePanel()">
+      <span class="bar-icon">💪</span>Muscles
+    </button>
+    <button onclick="takeScreenshot()">
+      <span class="bar-icon">📷</span>Capture
+    </button>
+    <button onclick="toggleCard()">
+      <span class="bar-icon">⚙️</span>More
+    </button>
+  </div>
+
   <!-- Canvas -->
   <div id="canvas-container"></div>
 

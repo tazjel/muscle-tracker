@@ -1300,9 +1300,9 @@ function _loadGLB(url, onLoaded) {
       _ghostRich = {};
       _hideProgress();
       if (onLoaded) onLoaded();
-      // Attach muscle highlighter to the newly loaded mesh
+      // Attach muscle highlighter to the newly loaded mesh (async — loads segmentation JSON)
       _muscleHL.detach();
-      _muscleHL.attach(bodyMesh);
+      _muscleHL.attach(bodyMesh).catch(e => console.warn('[MuscleHighlighter] load failed:', e));
       // Try to load PBR textures first, fall back to real skin texture
       _loadPBRTextures().catch(() => _loadRealSkinTexture());
     },
@@ -1400,8 +1400,15 @@ function _applyDefaultMaterial(object) {
 }
 
 function _centerAndScale(object) {
-  // Our mesh is exported Z-up (height = Z); rotate to Y-up for Three.js
-  object.rotation.x = -Math.PI / 2;
+  // Check if mesh is Z-up (height = Z > Y) — rotate to Y-up for Three.js
+  // GLB files are already Y-up by spec, so skip rotation for those
+  const preBox = new THREE.Box3().setFromObject(object);
+  const preSize = new THREE.Vector3();
+  preBox.getSize(preSize);
+  if (preSize.z > preSize.y * 1.2) {
+    // Z-up mesh (OBJ, old SMPL exports) — rotate to Y-up
+    object.rotation.x = -Math.PI / 2;
+  }
 
   const box = new THREE.Box3().setFromObject(object);
   const size = new THREE.Vector3();
@@ -1434,7 +1441,12 @@ function _centerAndScale(object) {
 
 function _centerOnly(object) {
   // Same as _centerAndScale but does NOT move the camera
-  object.rotation.x = -Math.PI / 2;
+  const preBox = new THREE.Box3().setFromObject(object);
+  const preSize = new THREE.Vector3();
+  preBox.getSize(preSize);
+  if (preSize.z > preSize.y * 1.2) {
+    object.rotation.x = -Math.PI / 2;
+  }
   const box = new THREE.Box3().setFromObject(object);
   const size = new THREE.Vector3();
   box.getSize(size);
@@ -1472,7 +1484,8 @@ function _setStatus(msg) {
 
 // ── Placeholder (no URL) — try static GLBs first ─────────────────────────────
 function _showPlaceholder() {
-  const candidates = ['demo_pbr.glb', 'photorealistic_body.glb', 'skin_textured.glb',
+  const candidates = ['gtd3d_body_template.glb',
+                       'demo_pbr.glb', 'photorealistic_body.glb', 'skin_textured.glb',
                        'smpl_direct.glb', 'demo.glb'];
   (async () => {
     for (const name of candidates) {
@@ -3869,3 +3882,25 @@ buildSkinUploadPanel(_panelContainer, (newGlbUrl) => {
   // Reload model when skin texture is updated
   if (typeof loadModel === 'function') loadModel(newGlbUrl);
 });
+
+// ── Mobile UI helpers ─────────────────────────────────────────────────────────
+
+window.toggleCard = function() {
+  const card = document.querySelector('.card');
+  if (!card) return;
+  // On mobile: toggle 'expanded' class (card hidden by default via CSS)
+  // On desktop: toggle 'collapsed' class (card visible by default)
+  if (window.innerWidth <= 768) {
+    card.classList.toggle('expanded');
+  } else {
+    card.classList.toggle('collapsed');
+  }
+};
+
+window.toggleMusclePanel = function() {
+  const panel = document.getElementById('muscle-panel');
+  if (!panel) return;
+  panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+};
+
+// Mobile panels are hidden by CSS @media rules — toggled via bottom bar buttons

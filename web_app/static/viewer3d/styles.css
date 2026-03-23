@@ -1572,21 +1572,184 @@ input[type="range"]::-moz-range-thumb {
     opacity: 0.6;
 }
 
-@media (max-width: 480px) {
+/* ── Mobile bottom action bar ───────────────────────────────────────────────── */
+.mobile-bar {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 300;
+    background: rgba(15, 15, 30, 0.95);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid rgba(74, 158, 255, 0.3);
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+    gap: 4px;
+    justify-content: space-around;
+}
+.mobile-bar button {
+    flex: 1;
+    background: rgba(74, 158, 255, 0.1);
+    color: #8ab4ff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    min-height: 48px;
+}
+.mobile-bar button .bar-icon {
+    font-size: 1.2rem;
+}
+.mobile-bar button.active {
+    background: rgba(74, 158, 255, 0.3);
+    color: #fff;
+}
+
+/* ── Card toggle for mobile ─────────────────────────────────────────────────── */
+.card-toggle {
+    display: none;
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 250;
+    background: rgba(15, 15, 30, 0.9);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(74, 158, 255, 0.4);
+    border-radius: 12px;
+    padding: 10px 14px;
+    color: #4a9eff;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+/* ── Upgraded muscle panel ──────────────────────────────────────────────────── */
+#muscle-panel {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.15) transparent;
+}
+#muscle-panel button {
+    min-height: 36px;
+    font-size: 13px;
+    border-radius: 8px;
+    transition: all 0.15s ease;
+}
+
+/* ── Mobile responsive ──────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .mobile-bar {
+        display: flex;
+    }
+    #canvas-container {
+        height: calc(100vh - 64px);
+    }
     #ui-overlay {
-        top: 10px;
-        left: 10px;
-        right: 10px;
+        top: 0;
+        left: 0;
+        right: 0;
+        pointer-events: none;
     }
     .card {
-        padding: 10px;
+        border-radius: 0 0 12px 12px;
+        padding: 12px;
+        max-height: 55vh;
+        border-top: none;
+        background: rgba(15, 15, 30, 0.95);
+        backdrop-filter: blur(12px);
+        display: none;  /* auto-collapsed on mobile — open via "More" button */
+    }
+    .card.expanded {
+        display: block;
+    }
+    .card-toggle {
+        display: block;
+    }
+    .card-toggle.hidden {
+        display: none;
+    }
+    /* Hide skin upload panel on mobile by default */
+    #skin-upload-panel {
+        display: none !important;
+    }
+    /* Hide muscle panel on mobile by default — open via bottom bar */
+    #muscle-panel {
+        display: none;
+    }
+    h2 {
+        font-size: 1rem;
+        margin-bottom: 6px;
+    }
+    .view-mode-btn {
+        padding: 8px 6px;
+        font-size: 0.8rem;
+        border-radius: 6px;
+        min-height: 36px;
+    }
+    .tab-btn {
+        padding: 8px 4px;
+        font-size: 0.78rem;
+        min-height: 36px;
+    }
+    .controls {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+    .controls button {
+        flex: 1 1 45%;
+        padding: 10px 8px;
+        font-size: 0.78rem;
+        border-radius: 6px;
     }
     .heatmap-legend {
-        bottom: 10px;
+        bottom: 70px;
         right: 10px;
         left: 10px;
     }
     .heatmap-gradient {
         width: 100%;
+    }
+    #muscle-panel {
+        top: auto !important;
+        bottom: 70px !important;
+        right: 8px !important;
+        max-height: 45vh;
+        overflow-y: auto;
+    }
+    #skin-upload-panel {
+        bottom: 70px !important;
+    }
+    .measurement-summary {
+        bottom: 70px;
+    }
+    /* Larger touch targets for measurement pins */
+    .measurement-pin {
+        width: 20px;
+        height: 20px;
+        border-width: 3px;
+    }
+}
+
+@media (max-width: 480px) {
+    .card {
+        padding: 10px;
+        max-height: 50vh;
+    }
+    .controls button {
+        flex: 1 1 100%;
+    }
+    #muscle-panel {
+        min-width: 110px !important;
+    }
+    #muscle-panel button {
+        font-size: 11px;
+        padding: 6px;
     }
 }

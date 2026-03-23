@@ -12,6 +12,18 @@
       "platform": "android",
       "notes": "Primary dev phone"
     },
+    "a15": {
+      "name": "Samsung A15",
+      "serial": "RZ8X101C5LT",
+      "wifi_ip": "192.168.100.6",
+      "adb_port": 40169,
+      "sdk": 35,
+      "screen": "1080x2340",
+      "install_flags": ["-r"],
+      "quirks": [],
+      "platform": "android",
+      "notes": "Manual testing phone (SAMAH's A15), WiFi debug enabled"
+    },
     "matpad": {
       "name": "Huawei MatePad Pro",
       "serial": null,
