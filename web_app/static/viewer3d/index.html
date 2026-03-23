@@ -93,11 +93,11 @@
              onclick="event.preventDefault();document.getElementById('skin-upload').click()">Upload skin photo</a>
         </div>
         <div id="skin-tiling" style="display:none;font-size:10px;margin-top:2px;">
-          Tile X:<input type="range" id="skin-tile-x" min="5" max="120" step="1" value="18" style="width:55px;"
+          Tile X:<input type="range" id="skin-tile-x" min="5" max="120" step="1" value="22" style="width:55px;"
             oninput="setSkinTiling(+this.value,+document.getElementById('skin-tile-y').value);document.getElementById('skin-tile-label').textContent=this.value+'×'+document.getElementById('skin-tile-y').value">
-          Y:<input type="range" id="skin-tile-y" min="5" max="120" step="1" value="34" style="width:55px;"
+          Y:<input type="range" id="skin-tile-y" min="5" max="120" step="1" value="57" style="width:55px;"
             oninput="setSkinTiling(+document.getElementById('skin-tile-x').value,+this.value);document.getElementById('skin-tile-label').textContent=document.getElementById('skin-tile-x').value+'×'+this.value">
-          <span id="skin-tile-label" style="color:#4a9eff;">18×34</span>
+          <span id="skin-tile-label" style="color:#4a9eff;">22×57</span>
         </div>
       </div>
 
@@ -140,7 +140,7 @@
           </label>
           <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;margin-left:8px;">
             Skin Detail
-            <input type="range" id="rng-pore-detail" min="0" max="100" value="18"
+            <input type="range" id="rng-pore-detail" min="0" max="100" value="22"
                    style="width:60px;" onchange="setPoreNormalStrength(this.value/100)">
           </label>
         </div>
@@ -262,7 +262,7 @@
         <div style="margin-bottom:6px;">
           <label style="font-size:10px;color:#888;">Fine-tune X</label>
           <div style="display:flex;align-items:center;gap:4px;">
-            <input type="range" id="studio-tile-x" min="5" max="120" step="1" value="18"
+            <input type="range" id="studio-tile-x" min="5" max="120" step="1" value="22"
               style="flex:1;"
               oninput="setSkinTiling(+this.value,+document.getElementById('studio-tile-y').value);document.getElementById('studio-xy-val').textContent=this.value+'×'+document.getElementById('studio-tile-y').value">
             <span style="font-size:9px;color:#666;min-width:10px;">X</span>
@@ -271,10 +271,10 @@
         <div style="margin-bottom:8px;">
           <label style="font-size:10px;color:#888;">Fine-tune Y</label>
           <div style="display:flex;align-items:center;gap:4px;">
-            <input type="range" id="studio-tile-y" min="5" max="120" step="1" value="34"
+            <input type="range" id="studio-tile-y" min="5" max="120" step="1" value="57"
               style="flex:1;"
               oninput="setSkinTiling(+document.getElementById('studio-tile-x').value,+this.value);document.getElementById('studio-xy-val').textContent=document.getElementById('studio-tile-x').value+'×'+this.value">
-            <span id="studio-xy-val" style="font-size:9px;color:#666;min-width:28px;">18×34</span>
+            <span id="studio-xy-val" style="font-size:9px;color:#666;min-width:28px;">22×57</span>
           </div>
         </div>
 
