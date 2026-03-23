@@ -417,7 +417,7 @@ async function _loadRealSkinTexture() {
     albedo.colorSpace = THREE.SRGBColorSpace;
     // ~3cm micro patch: start at realistic scale (high tiling).
     // User adjusts slider down to enlarge and see detail.
-    albedo.repeat.set(55, 55);
+    albedo.repeat.set(30, 55);
     // Slight random offset to break grid alignment across UV seams
     albedo.offset.set(0.13, 0.07);
     // Anisotropic filtering for sharp detail at oblique angles
@@ -429,7 +429,7 @@ async function _loadRealSkinTexture() {
         loader.load(baseUrl + '/normal', resolve, undefined, reject);
       });
       normalTex.wrapS = normalTex.wrapT = THREE.RepeatWrapping;
-      normalTex.repeat.set(55, 55);
+      normalTex.repeat.set(30, 55);
       normalTex.offset.set(0.13, 0.07);
       normalTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     } catch (e) { /* use procedural fallback */ }
@@ -440,7 +440,7 @@ async function _loadRealSkinTexture() {
         loader.load(baseUrl + '/roughness', resolve, undefined, reject);
       });
       roughTex.wrapS = roughTex.wrapT = THREE.RepeatWrapping;
-      roughTex.repeat.set(55, 55);
+      roughTex.repeat.set(30, 55);
       roughTex.offset.set(0.13, 0.07);
       roughTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     } catch (e) { /* use procedural fallback */ }
@@ -657,7 +657,7 @@ function setSkinTiling(tilesX, tilesY) {
 window.setSkinTiling = setSkinTiling;
 
 // Studio: uniform texture scale (multiplier on base tiling)
-let _studioBaseX = 55, _studioBaseY = 55;
+let _studioBaseX = 30, _studioBaseY = 55;
 function setTextureScale(scale) {
   const tx = _studioBaseX * scale;
   const ty = _studioBaseY * scale;
@@ -711,13 +711,13 @@ window.resetStudioDefaults = resetStudioDefaults;
 // Load real skin photo texture (tiled)
 const _skinPhotoTex = new THREE.TextureLoader().load('./skin_photo.jpg', (tex) => {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(55, 55);
+  tex.repeat.set(30, 55);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   if (SKIN_MATERIAL) { SKIN_MATERIAL.map = tex; SKIN_MATERIAL.needsUpdate = true; }
 });
 _skinPhotoTex.wrapS = _skinPhotoTex.wrapT = THREE.RepeatWrapping;
-_skinPhotoTex.repeat.set(1.4, 1.4);
+_skinPhotoTex.repeat.set(30, 55);
 _skinPhotoTex.colorSpace = THREE.SRGBColorSpace;
 
 const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
