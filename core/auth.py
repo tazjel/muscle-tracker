@@ -3,6 +3,7 @@ import os
 import time
 import logging
 import secrets
+import hashlib
 import jwt
 
 logger = logging.getLogger(__name__)
@@ -56,3 +57,25 @@ def verify_token(token):
     except jwt.InvalidTokenError as e:
         logger.warning("JWT invalid: %s", e)
         return None
+
+
+def hash_password(password):
+    """Hash a password using PBKDF2-SHA256 (stdlib, no extra deps)."""
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 260000)
+    return f"pbkdf2:sha256:260000${salt}${h.hex()}"
+
+
+def verify_password(password, stored_hash):
+    """Verify a password against a stored PBKDF2 hash. Returns True/False."""
+    if not stored_hash or not password:
+        return False
+    try:
+        parts = stored_hash.split('$')
+        if len(parts) != 3:
+            return False
+        header, salt, expected_hex = parts
+        h = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 260000)
+        return secrets.compare_digest(h.hex(), expected_hex)
+    except Exception:
+        return False

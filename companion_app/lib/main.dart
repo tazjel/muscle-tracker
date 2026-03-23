@@ -205,11 +205,14 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   final _hipCtrl      = TextEditingController();
   final _thighCtrl    = TextEditingController();
   final _calfCtrl     = TextEditingController();
-  // Step 3 — device setup
+  // Step 3 — body type (phenotype)
+  double _muscleFactor = 50.0;   // 0-100, maps to 0.0-1.0
+  double _bodyFatFactor = 50.0;  // 0-100, maps to 0.0-1.0
+  // Step 4 — device setup
   final _camHeightCtrl  = TextEditingController(text: '65');
   final _camDistCtrl    = TextEditingController(text: '100');
 
-  static const _steps = ['Essentials', 'Upper Body', 'Lower Body', 'Device Setup'];
+  static const _steps = ['Essentials', 'Upper Body', 'Lower Body', 'Body Type', 'Device Setup'];
 
   @override
   void dispose() {
@@ -241,6 +244,9 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       add('calf_circumference_cm',  _parse(_calfCtrl));
       profile['skin_tone_hex'] = 'C4956A'; // default light-brown
       profile['gender'] = _gender;
+      profile['muscle_factor'] = _muscleFactor / 100.0;  // 0-100 → 0.0-1.0
+      profile['weight_factor'] = _bodyFatFactor / 100.0;
+      profile['gender_factor'] = _gender == 'Male' ? 1.0 : (_gender == 'Female' ? 0.0 : 0.5);
 
       await http.post(
         Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_profile'),
@@ -273,6 +279,25 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     } finally {
       setState(() { _submitting = false; });
     }
+  }
+
+  Widget _sliderField(String label, double value, String minLabel, String maxLabel, ValueChanged<double> onChanged) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Text(label, style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14)),
+        Text('${value.round()}%', style: const TextStyle(color: Color(0xFF009688), fontSize: 16, fontWeight: FontWeight.bold)),
+      ]),
+      const SizedBox(height: 4),
+      Row(children: [
+        Text(minLabel, style: const TextStyle(color: Colors.white38, fontSize: 11)),
+        Expanded(child: Slider(
+          value: value, min: 0, max: 100, divisions: 20,
+          activeColor: const Color(0xFF009688),
+          onChanged: onChanged,
+        )),
+        Text(maxLabel, style: const TextStyle(color: Colors.white38, fontSize: 11)),
+      ]),
+    ]);
   }
 
   Widget _field(String label, TextEditingController ctrl, String unit, {String? hint}) {
@@ -372,6 +397,16 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
                   _field('Calf', _calfCtrl, 'cm'),
                 ],
                 if (_step == 3) ...[
+                  const Text('Describe your body type.\nThis fine-tunes your 3D model.',
+                      textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
+                  const SizedBox(height: 20),
+                  _sliderField('Muscle Definition', _muscleFactor, 'Low', 'High',
+                      (v) => setState(() => _muscleFactor = v)),
+                  const SizedBox(height: 16),
+                  _sliderField('Body Fat', _bodyFatFactor, 'Lean', 'Heavy',
+                      (v) => setState(() => _bodyFatFactor = v)),
+                ],
+                if (_step == 4) ...[
                   const Text('Tell us how your devices are set up.\nThis calibrates the camera distance.',
                       textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
                   const SizedBox(height: 12),

@@ -1328,11 +1328,15 @@ function _loadGLB(url, onLoaded) {
       _ghostRich = {};
       _hideProgress();
       if (onLoaded) onLoaded();
-      // Attach muscle highlighter to the newly loaded mesh (async — loads segmentation JSON)
+      // Try to load PBR textures first, fall back to real skin texture,
+      // then attach muscle highlighter AFTER material is settled (prevents race condition
+      // where PBR material replacement wipes vertex colors set by the highlighter)
       _muscleHL.detach();
-      _muscleHL.attach(bodyMesh).catch(e => console.warn('[MuscleHighlighter] load failed:', e));
-      // Try to load PBR textures first, fall back to real skin texture
-      _loadPBRTextures().catch(() => _loadRealSkinTexture());
+      _loadPBRTextures()
+        .catch(() => _loadRealSkinTexture())
+        .finally(() => {
+          _muscleHL.attach(bodyMesh).catch(e => console.warn('[MuscleHighlighter] load failed:', e));
+        });
     },
     (xhr) => {
       if (xhr.total > 0) _showProgress(Math.round(xhr.loaded / xhr.total * 100));
@@ -1982,9 +1986,28 @@ function clearHeatmap() {
   if (bodyMesh) {
     bodyMesh.traverse(child => {
       if (child.isMesh && child.geometry) {
-        child.geometry.deleteAttribute('color');
+        const colorAttr = child.geometry.attributes.color;
+        if (colorAttr) {
+          // Reset to white instead of deleting — preserves the buffer for muscle highlighter
+          const arr = colorAttr.array;
+          for (let i = 0; i < arr.length; i++) arr[i] = 1.0;
+          colorAttr.needsUpdate = true;
+          // Disable vertexColors on material so white has no visual effect
+          if (child.material && child.material.vertexColors) {
+            child.material.vertexColors = false;
+            child.material.needsUpdate = true;
+          }
+        }
       }
     });
+  }
+}
+
+/** Re-sync muscle highlighter after material changes (call after any view mode switch). */
+function _resyncMuscleHighlighter() {
+  if (_muscleHL && _muscleHL.activeGroup) {
+    _muscleHL._ensureVertexColors();
+    _muscleHL.highlight(_muscleHL.activeGroup);
   }
 }
 
@@ -2041,6 +2064,8 @@ window.setViewMode = function(mode) {
     const tilingCtrl = document.getElementById('skin-tiling');
     if (tilingCtrl) tilingCtrl.style.display = 'none';
   }
+  // Re-sync muscle highlighter after material change (preserves active highlight)
+  _resyncMuscleHighlighter();
 };
 
 window.toggleWireframe = function() { window.setViewMode('wireframe'); };

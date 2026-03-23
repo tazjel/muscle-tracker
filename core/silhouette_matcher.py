@@ -15,6 +15,7 @@ All units: mm.
 """
 
 import numpy as np
+from scipy.spatial import KDTree
 import logging
 
 logger = logging.getLogger(__name__)
@@ -254,19 +255,18 @@ def _displace_to_silhouette(verts: np.ndarray, proj2d: np.ndarray,
         return verts
 
     contour = contour_mm.astype(np.float64)
+    tree = KDTree(contour)
 
-    for vi in boundary_idxs:
-        px, py = proj2d[vi]
-        # Nearest silhouette point (brute-force: K is typically < 2000)
-        diffs = contour - np.array([px, py])
-        dists = (diffs[:, 0] ** 2 + diffs[:, 1] ** 2)
-        nearest_idx = int(np.argmin(dists))
-        nearest = contour[nearest_idx]
+    # Vectorized nearest-neighbor lookup for all boundary vertices at once
+    boundary_proj = proj2d[boundary_idxs]
+    _, nearest_idxs = tree.query(boundary_proj)
+    nearest_pts = contour[nearest_idxs]
 
-        dx_img = (nearest[0] - px) * step
-        dy_img = (nearest[1] - py) * step
+    dx_img = (nearest_pts[:, 0] - boundary_proj[:, 0]) * step
+    dy_img = (nearest_pts[:, 1] - boundary_proj[:, 1]) * step
 
-        delta3d = _unproject_delta(dx_img, dy_img, direction)
+    for i, vi in enumerate(boundary_idxs):
+        delta3d = _unproject_delta(dx_img[i], dy_img[i], direction)
         verts[vi] += delta3d
 
     return verts

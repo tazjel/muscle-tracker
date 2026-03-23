@@ -30,7 +30,9 @@ DEFAULT_ATLAS = {
 
 
 def compute_uvs(vertices: np.ndarray, body_part_ids: np.ndarray,
-                atlas_layout: dict = None) -> np.ndarray:
+                atlas_layout: dict = None,
+                margin_texels: int = 4,
+                texture_size: int = 2048) -> np.ndarray:
     """
     Compute UV coordinates for each vertex using cylindrical projection
     per body part, mapped into the atlas layout regions.
@@ -42,12 +44,17 @@ def compute_uvs(vertices: np.ndarray, body_part_ids: np.ndarray,
                           3=right_leg, 4=left_leg
         atlas_layout:  dict mapping part_id → (u_min, v_min, u_max, v_max)
                        Defaults to DEFAULT_ATLAS if None.
+        margin_texels: texel margin to inset UV islands (prevents seam bleed)
+        texture_size:  texture resolution for margin calculation
 
     Returns:
         uvs: (N, 2) float32 array — UV coordinates in [0, 1]
     """
     if atlas_layout is None:
         atlas_layout = DEFAULT_ATLAS
+
+    # Inset margin in UV space to prevent texture bleed at atlas boundaries
+    margin = margin_texels / texture_size
 
     uvs = np.zeros((len(vertices), 2), dtype=np.float32)
 
@@ -56,6 +63,12 @@ def compute_uvs(vertices: np.ndarray, body_part_ids: np.ndarray,
         if not np.any(mask):
             continue
         part_verts = vertices[mask]
+
+        # Inset the region bounds by margin to prevent seam bleed
+        u_min_m = u_min + margin
+        u_max_m = u_max - margin
+        v_min_m = v_min + margin
+        v_max_m = v_max - margin
 
         # Cylindrical projection from the part's horizontal centre
         cx = part_verts[:, 0].mean()
@@ -70,7 +83,7 @@ def compute_uvs(vertices: np.ndarray, body_part_ids: np.ndarray,
         else:
             v_local = np.full(len(part_verts), 0.5, dtype=np.float32)
 
-        uvs[mask, 0] = u_min + u_local * (u_max - u_min)
-        uvs[mask, 1] = v_min + v_local * (v_max - v_min)
+        uvs[mask, 0] = u_min_m + u_local * (u_max_m - u_min_m)
+        uvs[mask, 1] = v_min_m + v_local * (v_max_m - v_min_m)
 
     return uvs

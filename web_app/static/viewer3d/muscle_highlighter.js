@@ -107,6 +107,14 @@ export class MuscleHighlighter {
       return;
     }
 
+    // Validate vertex count against segmentation data
+    const maxIdx = Object.values(MUSCLE_GROUPS).reduce((mx, arr) => Math.max(mx, ...arr), 0);
+    if (this._vertexCount <= maxIdx) {
+      console.warn(`[MuscleHighlighter] Vertex count mismatch: mesh has ${this._vertexCount} verts but segmentation references index ${maxIdx}. Highlights may be incorrect.`);
+    } else {
+      console.log(`[MuscleHighlighter] Attached to mesh with ${this._vertexCount} vertices (segmentation max index: ${maxIdx})`);
+    }
+
     // Add vertex color attribute (default white)
     const colors = new Float32Array(this._vertexCount * 3).fill(1.0);
     this._colorAttr = new THREE.BufferAttribute(colors, 3);

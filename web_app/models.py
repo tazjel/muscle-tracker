@@ -18,6 +18,7 @@ VOLUME_MODELS = ["elliptical_cylinder", "prismatoid"]
 db.define_table('customer',
     Field('name', 'string', length=128, requires=IS_NOT_EMPTY()),
     Field('email', 'string', length=256, unique=True, requires=IS_EMAIL()),
+    Field('password_hash', 'string', length=256),  # PBKDF2 hash; None = dev-mode (email-only login)
     Field('date_of_birth', 'date'),
     Field('gender', 'string', length=16),
     Field('height_cm', 'double'),
@@ -62,6 +63,7 @@ db.define_table('customer',
 db.define_table('muscle_scan',
     Field('customer_id', 'reference customer', requires=IS_NOT_EMPTY()),
     Field('scan_date', 'datetime', default=lambda: datetime.now()),
+    Field('processing_status', 'string', length=32, default='pending'),  # pending | processing | complete | failed
     Field('muscle_group', 'string', length=32,
           requires=IS_IN_SET(MUSCLE_GROUPS, zero=None)),
     Field('side', 'string', length=8,
@@ -127,7 +129,7 @@ db.define_table('health_log',
 
 # 5. AUDIT LOGS
 db.define_table('audit_log',
-    Field('customer_id', 'integer'),
+    Field('customer_id', 'reference customer'),
     Field('action', 'string', length=64),   # e.g. 'upload_scan', 'view_report'
     Field('resource_id', 'string', length=64),  # scan_id or other resource
     Field('ip_address', 'string', length=45),
@@ -218,5 +220,19 @@ db.define_table('room_texture',
     Field('image_path', 'string', length=512),
     Field('created_on', 'datetime', default=lambda: datetime.now()),
 )
+
+# --- Indexes for query performance ---
+for sql in [
+    'CREATE INDEX IF NOT EXISTS idx_muscle_scan_customer ON muscle_scan(customer_id)',
+    'CREATE INDEX IF NOT EXISTS idx_muscle_scan_customer_group ON muscle_scan(customer_id, muscle_group)',
+    'CREATE INDEX IF NOT EXISTS idx_mesh_model_customer ON mesh_model(customer_id)',
+    'CREATE INDEX IF NOT EXISTS idx_health_log_customer ON health_log(customer_id)',
+    'CREATE INDEX IF NOT EXISTS idx_body_comp_customer ON body_composition_log(customer_id)',
+    'CREATE INDEX IF NOT EXISTS idx_audit_log_customer ON audit_log(customer_id)',
+]:
+    try:
+        db.executesql(sql)
+    except Exception:
+        pass  # Index may already exist or table not yet created
 
 db.commit()
