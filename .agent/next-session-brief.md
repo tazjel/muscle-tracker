@@ -1,49 +1,69 @@
-# Next Session Brief — 2026-03-23
+# Next Session Brief — 2026-03-24
 
 ## What Was Done This Session
 
-### Viewer Fixes
-- **Z/Shift+Z zoom** — keyboard zoom in/out (10% per press)
-- **Skin panel moved** — bottom-right, collapsed by default, no longer blocks studio sliders
-- **Body bending/transparency fixed** — removed ALL SSS transmission properties (transmission, thickness, attenuationDistance, attenuationColor, ior) that caused glass-like refraction
-- **DoubleSide rendering restored** — reverted FrontSide back to DoubleSide so body doesn't break when orbiting
-- **Muscle group segmentation fixed** — old JSON was for MPFB2 (13380 verts), regenerated for SMPL (6890 verts) from actual vertex positions. Muscle groups now highlight correct body regions.
+### Beast Mesh Fix (3 commits)
+1. **Client-side viewer fix** (`body_viewer.js`):
+   - Backup original vertex positions on GLB load, restore before each apply (no more cumulative deformation)
+   - Auto-detect Z-up vs Y-up geometry (was hardcoded to Y, but MPFB2 template is Z-up)
+   - Proper mm→meters scaling for slider values (was using raw scene units → 1900% overscaling)
+   - Connected muscle group buttons to region adjustment system via `selectMuscleRegion`
+   - Added debug hooks: `window._adjustDebug()`, `window._getBodyMesh()`, `window._getRegionZRange()`
 
-### Skin Texture Tiling
-- Changed base tiling from 1.4×1.4 to 55×55 (close-up photo needs high repetition)
-- Updated all slider defaults and ranges
-- **STILL NOT SOLVED** — user says tiling approach with a square photo doesn't work well on a cylindrical mesh. Need a different approach for next session.
+2. **Server-side `deform_template()` fix** (`core/body_deform.py`):
+   - **Root cause 1**: 3 ethnicity shape keys (Asian/Caucasian/African male) were ALL applied additively — they're mutually exclusive variants, compounding 180mm displacement. Fix: only apply `muscle` and `weight` category deltas.
+   - **Root cause 2**: PCA circumference scaling used SMPL segmentation (6,890 verts) indices on MPFB2 template (13,380 verts) — wrong vertex indices created spikes. Fix: disabled PCA scaling, using proportional height scaling only.
+   - `deform_template()` now produces clean meshes. Save re-enabled with server-side mesh regeneration.
 
-## What Needs Work — PRIORITY
+3. **Live adjustment sliders** — all 6 width/depth/length sliders (Scene + Studio tabs) auto-apply on drag, no Apply button needed.
 
-### Skin Texture (User's Top Priority)
+### DB State
+- Cleaned all beast mesh records (IDs 18-39, plus test IDs 40-43)
+- Latest mesh: **#17** (`body_1_1774286054.glb`, 10MB, pipeline:smpl_direct)
+- `deform_template()` is **FIXED** — Save will regenerate via `POST /body_model` and load the new mesh inline
+
+### Browser Debugging
+- Playwright + `agent_browser.py` confirmed working for: console logs, screenshots, JS eval, visual diff
+- `scripts/test_adjust.py` — Playwright test for persistent-session adjust/reset flow
+- Use `agent_browser.py audit <url>` for quick one-shot viewer check
+
+## Current State
+- Viewer URL: `http://192.168.100.16:8000/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/17.glb`
+- Server needs restart after `core/body_deform.py` changes (py4web doesn't hot-reload core/)
+- Commits: `e58a0b5` (viewer fix), `cf64c5b` (deform fix), `8f093b8` (live sliders)
+
+## What Needs Work
+
+### Region Adjustments
+- Effect is subtle at ±30mm slider range — may need larger range for visible feedback
+- Only muscle/weight shape deltas are active; gender/ethnicity deltas disabled
+- Per-region PCA scaling disabled — needs proper MPFB2 vertex segmentation (13,380 verts) to re-enable
+- `_doDeformationUpdate()` is disabled (was never wired to UI anyway)
+
+### Skin Texture (Carried Over)
 - Square close-up photo tiled onto cylindrical UV mesh doesn't look right
-- The photo `web_app/static/viewer3d/skin_photo.jpg` is a ~3cm skin patch from user's arm
-- Problem: square tiling creates visible repetition patterns on a body mesh
-- **Next approach ideas:**
-  1. Make the photo seamlessly tileable first (Image Quilting / Poisson blending at edges)
-  2. Use different tiling for different UV regions (arms vs torso vs legs)
-  3. Generate a proper UV-space skin atlas instead of uniform tiling
-  4. Consider the existing per-region skin upload system (`buildSkinUploadPanel`)
+- Need seamless tiling or proper UV-space skin atlas
 
 ### Other Open Items
-- Texture atlas from RunPod pipeline has background bleed in UV gaps
+- Texture atlas from RunPod has background bleed in UV gaps
 - Canonical SMPL UVs not loading (falling back to cylindrical — seam at U=0/1)
-- RunPod texture upscale times out (Real-ESRGAN on endpoint)
 
-## Key Files Modified This Session
-- `web_app/static/viewer3d/body_viewer.js` — zoom, SSS removal, DoubleSide, tiling
-- `web_app/static/viewer3d/index.html` — slider ranges/defaults
-- `web_app/static/viewer3d/muscle_highlighter.js` — panel position, collapse, comment fix
-- `web_app/static/viewer3d/template_vert_segmentation.json` — regenerated for SMPL 6890
+## Key Files Modified
+- `web_app/static/viewer3d/body_viewer.js` — adjust system, debug hooks, save flow
+- `web_app/static/viewer3d/muscle_highlighter.js` — selectMuscleRegion connection
+- `web_app/static/viewer3d/index.html` — live slider oninput handlers
+- `core/body_deform.py` — disabled ethnicity shape deltas + PCA scaling
 
 ## Quick Commands
 ```bash
 PY=/c/Users/MiEXCITE/AppData/Local/Programs/Python/Python312/python.exe
 
-# View body in browser
-open http://192.168.100.16:8000/web_app/static/viewer3d/index.html?model=meshes/body_1_runpod_textured.glb
+# Test deform_template produces clean mesh
+$PY -c "import sys;sys.path.insert(0,'.');from core.body_deform import deform_template;m=deform_template();print(m['num_vertices'],'verts',m['volume_cm3'],'cm3')"
 
-# Skin photo source
-# C:\Users\MiEXCITE\Pictures\Screenshots\Screenshot 2026-03-19 004838.jpg
+# Browser audit
+$PY scripts/agent_browser.py audit "http://192.168.100.16:8000/web_app/static/viewer3d/index.html?model=/web_app/api/mesh/17.glb" --out captures/audit.png
+
+# Visual diff
+$PY scripts/agent_browser.py diff captures/before.png captures/after.png --out captures/diff.png
 ```

@@ -1,20 +1,22 @@
-# Session Summary â€” 2026-03-23 (Gemini)
+ï»¿# GEMINI SESSION SUMMARY (2026-03-24)
 
-### Done (Research Phase 3)
-- **G-R11:** MPFB2 to SMPL region mapping completed.
-- **G-R14:** Unassigned vertex coverage analysis completed.
-- **G-R12:** Shape key delta export methodology defined.
-- **G-R13:Þ* Bone-axis-aligned deformation PCA math established.
-- **G-R15:** Shape key extraction order verified (remove helpers first).
-- **G-R16/R19:** DensePose IUV-MPFB2 UV transfer algorithm defined.
-- **G-R17:** Viewer slider event model and mapping mapped.
-- **G-R18:** MPFB2 muscle/weight macro system investigated (.target deltas required).
-- **G-R20:** Phenotype slider UX patterns designed.
+## DONE
+- **Task 4 (Skin Research):** 
+  - Calibrated Fitzpatrick ranges for HSV (OpenCV 0-180) and CIELAB.
+  - Formulated the "Edge Warmth Ratio" metric for SSS detection (Threshold > 1.2).
+  - Refined Specular thresholds (Max 7.0%, Size 20px, Blur Sigma 2.0).
+  - Created [GEMINI_SKIN_REPORT_V3.md](file:///C:/Users/MiEXCITE/Projects/gtd3d/GEMINI_SKIN_REPORT_V3.md).
+- **Open Hardware Section:**
+  - Created [openhardware/](file:///C:/Users/MiEXCITE/Projects/gtd3d/openhardware/) directory.
+  - Created [SHOPPING_LIST.md](file:///C:/Users/MiEXCITE/Projects/gtd3d/openhardware/SHOPPING_LIST.md) (Pi 5 / ESP32-S3 Pro-Grade spec).
+  - Created [RESEARCH_SUMMARY.md](file:///C:/Users/MiEXCITE/Projects/gtd3d/openhardware/RESEARCH_SUMMARY.md) (Hardware-focused skin metrics).
+  - Created [README.md](file:///C:/Users/MiEXCITE/Projects/gtd3d/openhardware/README.md).
 
-### Next Steps
-1. *)Implementation:** Sonnet to export muscle/weight deltas using HumanService API.
-2. **Viewer:** Add Phenotype sliders to #adjust-panel.
-3. **Texture:** Implement @uªmer for DensePose transfer using KDTree OBJ correspondence.
+## PENDING
+- **Integration:** Results from Task 4 need to be integrated into `core/glb_inspector.py` (Sonnet-owned file).
+- **Hardware Prototyping:** Procurement and assembly of the Pi 5 / RPLIDAR rig.
 
-### Commits
-- **gemini:** add Phase 3/4 research deliverables (11 files)
+## NEXT STEPS
+- **G-NEXT-5:** Implement the Slit-Scanning depth extraction Python utility for mobile video.
+- **G-NEXT-6:** Develop the synchronization protocol for the ESP32-S3 wireless camera nodes.
+- **Validation:** Test Task 4 metrics against the `meshes/skin_densepose.glb` using `scripts/agent_browser.py skin-check`.

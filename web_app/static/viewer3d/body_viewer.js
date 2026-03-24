@@ -20,6 +20,7 @@ import { EffectComposer } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examp
 import { RenderPass }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js';
 import { SSAOPass }       from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/SSAOPass.js';
 import { OutputPass }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/OutputPass.js';
+import { UnrealBloomPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js';
 
 // ── Scene globals ─────────────────────────────────────────────────────────────
 let scene, camera, renderer, controls;
@@ -66,7 +67,7 @@ let _preMirrorMat     = null;
 // ── Walk mode globals ────────────────────────────────────────────────────────
 let _walkMode        = false;
 let _pointerControls = null;
-const _moveState     = { forward: false, backward: false, left: false, right: false };
+const _moveState     = { forward: false, backward: false, left: false, right: false, zoomIn: false, zoomOut: false };
 const _moveDirection = new THREE.Vector3();
 const _WALK_SPEED    = 200;
 const _EYE_HEIGHT    = 300;
@@ -996,7 +997,10 @@ function init() {
   document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
     switch (e.key) {
-      case '1': window.setViewMode('solid');     break;
+      
+        case 'z': case 'Z': _moveState.zoomIn = true; break;
+        case 'v': case 'V': _moveState.zoomOut = true; break;
+        case '1': window.setViewMode('solid');     break;
       case '2': window.setViewMode('wireframe'); break;
       case '3': window.setViewMode('heatmap');   break;
       case '4': window.setViewMode('textured');  break;
@@ -1015,18 +1019,8 @@ function init() {
       case 'q': case 'Q': window.togglePostureAxis();  break;
       case 'm': case 'M': window.toggleMeasure();   break;
       case 'r': case 'R': window.resetCamera();   break;
-      case 'z':
-        // Zoom in — move camera 10% closer
-        { const dir = new THREE.Vector3().subVectors(controls.target, camera.position);
-          camera.position.addScaledVector(dir, 0.1);
-          controls.update(); }
-        break;
-      case 'Z':
-        // Zoom out — move camera 10% further
-        { const dir = new THREE.Vector3().subVectors(camera.position, controls.target);
-          camera.position.addScaledVector(dir, 0.1);
-          controls.update(); }
-        break;
+      
+      
       case 'e': case 'E': exportDataCSV();         break;
       case 's': case 'S':
         if (_walkMode) _moveState.backward = true;
@@ -1058,7 +1052,10 @@ function init() {
   });
   document.addEventListener('keyup', (e) => {
     switch (e.key) {
-      case 'w': case 'W': _moveState.forward  = false; break;
+      
+        case 'z': case 'Z': _moveState.zoomIn = false; break;
+        case 'v': case 'V': _moveState.zoomOut = false; break;
+        case 'w': case 'W': _moveState.forward  = false; break;
       case 'a': case 'A': _moveState.left     = false; break;
       case 's': case 'S': _moveState.backward = false; break;
       case 'd': case 'D': _moveState.right    = false; break;
@@ -1075,15 +1072,15 @@ function init() {
 // ── Lighting ──────────────────────────────────────────────────────────────────
 function _setupStudioLights() {
   // Ambient — warm, low intensity to prevent pitch black shadows
-  const a = new THREE.AmbientLight(0xfff5e4, 0.25);
+  const a = new THREE.AmbientLight(0xfff5e4, 0.4); // increased from 0.25
   scene.add(a); _studioLightObjs.push(a);
 
   // Hemisphere — sky/ground bounce for natural feel
-  const h = new THREE.HemisphereLight(0xffeedd, 0x443322, 0.35);
+  const h = new THREE.HemisphereLight(0xffeedd, 0x443322, 0.6); // increased from 0.35
   scene.add(h); _studioLightObjs.push(h);
 
   // Key light — main illumination, warm, high position for natural shadows
-  const key = new THREE.DirectionalLight(0xffefd5, 1.4);
+  const key = new THREE.DirectionalLight(0xffefd5, 2.5); // increased from 1.4 for punchy highlights
   key.position.set(150, 450, 250);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
@@ -1096,23 +1093,23 @@ function _setupStudioLights() {
   scene.add(key); _studioLightObjs.push(key);
 
   // Fill light — cooler, from opposite side to define muscle contours
-  const fill = new THREE.DirectionalLight(0xb4e7ff, 0.45);
+  const fill = new THREE.DirectionalLight(0xb4e7ff, 1.0); // increased from 0.45
   fill.position.set(-350, 200, 150);
   scene.add(fill); _studioLightObjs.push(fill);
 
   // Rim light — back edge separation, warm glow for depth
-  const rim = new THREE.PointLight(0xffd0a0, 0.8);
+  const rim = new THREE.PointLight(0xffd0a0, 1.8); // increased from 0.8
   rim.position.set(0, 250, -400);
   rim.distance = 1200;
   scene.add(rim); _studioLightObjs.push(rim);
 
   // Under-chin fill — prevents dark shadows under jaw/chin
-  const underFill = new THREE.DirectionalLight(0xffe8d0, 0.2);
+  const underFill = new THREE.DirectionalLight(0xffe8d0, 0.5); // increased from 0.2
   underFill.position.set(0, -50, 200);
   scene.add(underFill); _studioLightObjs.push(underFill);
 
   // Side accent — accentuates muscle definition from the side
-  const accent = new THREE.DirectionalLight(0xfff0e0, 0.3);
+  const accent = new THREE.DirectionalLight(0xfff0e0, 0.8); // increased from 0.3
   accent.position.set(400, 250, -100);
   scene.add(accent); _studioLightObjs.push(accent);
 }
@@ -1314,16 +1311,24 @@ function _initSSAO() {
   _composer.addPass(renderPass);
 
   _ssaoPass = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
-  _ssaoPass.kernelRadius = 24;       // world-space radius (body is ~300 units tall)
-  _ssaoPass.minDistance = 0.001;
-  _ssaoPass.maxDistance = 0.15;
-  _ssaoPass.output = SSAOPass.OUTPUT.Default;  // blended
+  // INCREASED SSAO for deeper muscle shadows (more "power")
+  _ssaoPass.kernelRadius = 48;       // increased from 24
+  _ssaoPass.minDistance = 0.0005;    // decreased from 0.001
+  _ssaoPass.maxDistance = 0.2;       // increased from 0.15
+  _ssaoPass.output = SSAOPass.OUTPUT.Default;
   _composer.addPass(_ssaoPass);
+
+  // ADD BLOOM for "sweaty/oily" skin specular highlights
+  const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+  bloomPass.threshold = 0.7; // Only very bright highlights bloom
+  bloomPass.strength = 0.35; // Subtle but noticeable bloom
+  bloomPass.radius = 0.5;
+  _composer.addPass(bloomPass);
 
   const outputPass = new OutputPass();
   _composer.addPass(outputPass);
 
-  console.log('SSAO post-processing initialized');
+  console.log('SSAO + Bloom post-processing initialized');
 }
 
 function setSSAOEnabled(on) {
@@ -3934,7 +3939,26 @@ function _animate() {
   }
   _updateFirstPerson();
   _mcpUpdateRotations();
-  if (!_walkMode) controls.update();
+  
+    // Continuous Zoom (z=in, v=out)
+    if (_moveState.zoomIn) {
+        const factor = 0.95; // 5% per frame
+        const dist = camera.position.distanceTo(controls.target);
+        if (dist > controls.minDistance + 1) {
+            camera.position.lerp(controls.target, 1.0 - factor);
+            controls.update();
+        }
+    }
+    if (_moveState.zoomOut) {
+        const factor = 1.05; // 5% per frame
+        const dist = camera.position.distanceTo(controls.target);
+        if (dist < controls.maxDistance - 1) {
+            const dir = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+            camera.position.addScaledVector(dir, dist * (factor - 1.0));
+            controls.update();
+        }
+    }
+    if (!_walkMode) controls.update();
   // Update mirror every 2nd frame for performance (always uses renderer directly)
   if (++_mirrorFrame % 2 === 0) _updateMirror();
   // Render with SSAO composer when enabled, otherwise direct
