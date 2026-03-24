@@ -204,23 +204,65 @@ def _inpaint_diffusion(texture, gap_mask):
         return _inpaint_opencv(texture, gap_mask)
 
 
-def enhance_texture_atlas(texture, coverage_mask=None, upscale=True, inpaint=True, target_size=4096):
+
+def delight_texture(texture: np.ndarray, coverage_mask: np.ndarray = None,
+                    sigma_ratio: float = 0.15) -> np.ndarray:
     """
-    Full texture enhancement pipeline.
+    Remove low-frequency lighting from projected photo texture.
+    """
+    import cv2
+    import numpy as np
 
-    Args:
-        texture: (H, W, 3) uint8 BGR
-        coverage_mask: (H, W) float32 coverage weights (from project_texture)
-        upscale: bool — apply Real-ESRGAN 4x upscale
-        inpaint: bool — fill gaps
-        target_size: max output size
+    h, w = texture.shape[:2]
+    sigma = int(max(h, w) * sigma_ratio) | 1  # Ensure odd
 
-    Returns:
-        (H', W', 3) uint8 BGR enhanced texture
+    # Work in float LAB space to preserve color
+    lab = cv2.cvtColor(texture, cv2.COLOR_BGR2LAB).astype(np.float32)
+    L = lab[:, :, 0]
+
+    # Log-space high-pass on luminance only (preserve chrominance)
+    L_log = np.log1p(L)
+    L_blur = cv2.GaussianBlur(L_log, (sigma, sigma), 0)
+    L_highpass = L_log - L_blur
+
+    # Rescale to target mean luminance (128 = middle grey in LAB)
+    L_new = np.expm1(L_highpass)
+    L_new = (L_new - L_new.min()) / (L_new.max() - L_new.min() + 1e-6) * 200 + 28
+
+    # Blend: 70% delighted + 30% original (preserve some natural variation)
+    lab[:, :, 0] = L_new * 0.7 + L * 0.3
+
+    # Slight desaturation of extreme chrominance (removes colored light tints)
+    ab_center = 128.0
+    lab[:, :, 1] = (lab[:, :, 1] - ab_center) * 0.85 + ab_center
+    lab[:, :, 2] = (lab[:, :, 2] - ab_center) * 0.85 + ab_center
+
+    result = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+    # Only apply to covered regions
+    if coverage_mask is not None:
+        mask = (coverage_mask > 0).astype(np.float32)
+        if len(mask.shape) == 2:
+            mask = mask[:, :, None]
+        result = (result * mask + texture.astype(np.float32) * (1 - mask)).astype(np.uint8)
+
+    return result
+
+def enhance_texture_atlas(texture, coverage_mask=None, upscale=True, inpaint=True, 
+                           delight=True, target_size=4096):
+    """
+    Full texture enhancement pipeline (Pro Edition).
     """
     result = texture.copy()
 
-    # Step 1: Inpaint gaps BEFORE upscaling (faster at low res)
+    # Step 0: Delight (Remove baked lighting gradients)
+    if delight:
+        try:
+            result = delight_texture(result, coverage_mask=coverage_mask)
+        except Exception:
+            pass
+
+    # Step 1: Inpaint gaps BEFORE upscaling
     if inpaint and coverage_mask is not None:
         result = inpaint_gaps(result, coverage_mask, method='opencv')
 
@@ -228,9 +270,9 @@ def enhance_texture_atlas(texture, coverage_mask=None, upscale=True, inpaint=Tru
     if upscale:
         result = upscale_texture(result, target_size=target_size)
 
-    # Step 3: Mild unsharp mask sharpening
+    # Step 3: High-Frequency Sharpening (Micro-Detail)
     blurred = cv2.GaussianBlur(result, (0, 0), 2.0)
-    result = cv2.addWeighted(result, 1.3, blurred, -0.3, 0)
+    result = cv2.addWeighted(result, 1.4, blurred, -0.4, 0) # slightly stronger
     result = np.clip(result, 0, 255).astype(np.uint8)
 
     return result

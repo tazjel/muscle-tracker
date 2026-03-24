@@ -127,3 +127,46 @@ def _generate_roughness_map(img):
     roughness = cv2.GaussianBlur(roughness, (5, 5), 1)
 
     return roughness
+
+
+# Roughness values per SMPL body part ID
+REGION_ROUGHNESS = {
+    0: 0.60,   # torso
+    1: 0.55,   # upper arms
+    2: 0.65,   # forearms
+    3: 0.75,   # hands
+    4: 0.55,   # upper legs
+    5: 0.65,   # lower legs
+    6: 0.80,   # feet
+    7: 0.45,   # head/face (oilier)
+    8: 0.70,   # neck
+}
+
+def generate_regional_roughness_map(vertices, faces, uvs, body_part_ids,
+                                     atlas_size=1024):
+    """
+    Rasterize a roughness map where each texel gets the roughness
+    value of its corresponding body region, with smooth transitions.
+    """
+    import cv2
+    import numpy as np
+
+    roughness = np.full((atlas_size, atlas_size), 155, dtype=np.uint8)  # 0.6 default
+
+    # Rasterize each triangle with its body part roughness
+    for fi in range(len(faces)):
+        v0, v1, v2 = faces[fi]
+        part = body_part_ids[v0]
+        r_val = int(REGION_ROUGHNESS.get(part, 0.6) * 255)
+
+        uv_tri = (uvs[[v0, v1, v2]] * atlas_size).astype(np.int32)
+        cv2.fillConvexPoly(roughness, uv_tri, r_val)
+
+    # Smooth transitions between regions (no hard edges)
+    roughness = cv2.GaussianBlur(roughness, (31, 31), 0)
+
+    # Add micro-variation noise
+    noise = np.random.randint(-8, 9, roughness.shape, dtype=np.int16)
+    roughness = np.clip(roughness.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+
+    return roughness

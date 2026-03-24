@@ -726,35 +726,41 @@ _skinPhotoTex.repeat.set(30, 55);
 _skinPhotoTex.colorSpace = THREE.SRGBColorSpace;
 
 const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
-  map:              _skinPhotoTex,
-  roughnessMap:     _createSkinRoughnessMap(),
-  roughness:        0.42,
-  metalness:        0.0,
-  side:             THREE.DoubleSide,
-  color:            0xffffff,
-  // Sheen — warm subsurface glow at grazing angles
-  sheen:            0.4,
-  sheenRoughness:   0.45,
-  sheenColor:       new THREE.Color(0xdd9977),
-  // Surface oil — subtle clear coat
-  clearcoat:        0.12,
-  clearcoatRoughness: 0.2,
-  // Specularity — skin reflects ~6% (dielectric)
-  specularIntensity: 0.35,
-  specularColor:    new THREE.Color(1.0, 1.0, 1.0),  // neutral specular (realistic)
-  // Normal map for anatomical surface detail
-  normalMap:        _createSkinNormalMap(),
-  normalScale:      new THREE.Vector2(0.85, 0.85),
-  // Environment reflection
-  envMapIntensity:  0.5,
-});
+    map:              _skinPhotoTex,
+    roughnessMap:     _createSkinRoughnessMap(),
+    roughness:        0.55,                // Real skin is rougher overall
+    metalness:        0.0,
+    side:             THREE.DoubleSide,
+    color:            0xffffff,
+    // SSS (Subsurface Scattering) — the holy grail of skin
+    transmission:       0.02,              // Light enters the skin
+    thickness:          2.0,               // Volume thickness for scattering
+    ior:                1.38,              // Skin refractive index
+    attenuationColor:   new THREE.Color(0xee6644), // Warm blood tone
+    attenuationDistance: 1.5,              // Distance light travels inside
+    // Sheen — peach fuzz effect
+    sheen:              0.25,
+    sheenRoughness:     0.4,
+    sheenColor:         new THREE.Color(0xddbb99),
+    // Surface oil (Sebum)
+    clearcoat:          0.08,
+    clearcoatRoughness: 0.3,
+    // Specularity
+    specularIntensity:  0.45,
+    specularColor:      new THREE.Color(1.0, 1.0, 1.0),
+    // Normal map
+    normalMap:          _createSkinNormalMap(),
+    normalScale:        new THREE.Vector2(0.9, 0.9),
+    // Environment reflection
+    envMapIntensity:    0.85,
+  });
 
 // ── Micro-normal (skin pore) detail ──────────────────────────────────────────
 // Blends high-frequency pore detail into the material's normalMap via canvas
 // compositing. This avoids onBeforeCompile which breaks MeshPhysicalMaterial's
 // transmission/IOR shader code.
 let _poreNormalImg = null;
-let _poreNormalStrength = 0.3;
+let _poreNormalStrength = 0.45;
 
 (function _initPoreNormal() {
   const img = new Image();
@@ -795,7 +801,7 @@ function _applyPoreNormalPatch(material) {
   // "Overlay" or "Soft Light" blending at low opacity, or custom math.
   // We'll use 'overlay' which preserves the 128,128,255 neutral vector.
   ctx.globalAlpha = _poreNormalStrength;
-  ctx.globalCompositeOperation = 'overlay';
+  ctx.globalCompositeOperation = 'soft-light';
 
   const poreSize = 256; // typical micro-normal size
   const tilesX = Math.ceil(size / poreSize) * 2; // high density
@@ -1077,7 +1083,7 @@ function _setupStudioLights() {
   scene.add(h); _studioLightObjs.push(h);
 
   // Key light — main illumination, warm, high position for natural shadows
-  const key = new THREE.DirectionalLight(0xffefd5, 1.8);
+  const key = new THREE.DirectionalLight(0xffefd5, 1.4);
   key.position.set(150, 450, 250);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
@@ -1090,7 +1096,7 @@ function _setupStudioLights() {
   scene.add(key); _studioLightObjs.push(key);
 
   // Fill light — cooler, from opposite side to define muscle contours
-  const fill = new THREE.DirectionalLight(0xb4e7ff, 0.6);
+  const fill = new THREE.DirectionalLight(0xb4e7ff, 0.45);
   fill.position.set(-350, 200, 150);
   scene.add(fill); _studioLightObjs.push(fill);
 
