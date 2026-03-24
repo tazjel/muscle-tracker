@@ -20,6 +20,40 @@ import { EffectComposer } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examp
 import { RenderPass }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js';
 import { SSAOPass }       from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/SSAOPass.js';
 import { OutputPass }     from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/OutputPass.js';
+
+// ── Pro-Photo Shader Extensions ──────────────────────────────────────────────
+const _VIGNETTE_SHADER = {
+    uniforms: {
+        "tDiffuse": { value: null },
+        "offset":   { value: 1.0 },
+        "darkness": { value: 1.5 }
+    },
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+    fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform float offset;
+        uniform float darkness;
+        varying vec2 vUv;
+        void main() {
+            vec4 texel = texture2D(tDiffuse, vUv);
+            vec2 uv = (vUv - 0.5) * 2.0;
+            float dist = length(uv);
+            float vigor = smoothstep(offset, offset - 0.8, dist * darkness);
+            gl_FragColor = vec4(texel.rgb * vigor, texel.a);
+            
+            // Subtle Film Grain
+            float x = (vUv.x + 4.0 ) * (vUv.y + 4.0 ) * 10.0;
+            float grain = mod((mod(x, 13.0) + 1.0) * (mod(x, 123.0) + 1.0), 0.01) - 0.005;
+            gl_FragColor.rgb += grain * 0.12;
+        }`
+};
+
+import { ShaderPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js';
 
 // ── Scene globals ─────────────────────────────────────────────────────────────
@@ -144,7 +178,7 @@ function _createSkinColorMap(size = 1024) {
   const ctx = canvas.getContext('2d');
 
   // Base skin tone — warm mid-tone
-  ctx.fillStyle = '#C8996E';
+  ctx.fillStyle = '#D4A373';
   ctx.fillRect(0, 0, size, size);
 
   // Layer 0: Vertical warmth gradient (top=warmer/redder, bottom=slightly paler)
@@ -159,8 +193,8 @@ function _createSkinColorMap(size = 1024) {
 
   // Layer 1: Subsurface color zones — stronger for visible warmth variation
   const zones = [
-    { color: 'rgba(200,85,70,0.14)',   count: 12, rMin: 80, rMax: 180 },  // blood flush (cheeks, chest)
-    { color: 'rgba(185,100,65,0.12)',  count: 18, rMin: 50, rMax: 130 },  // warm undertone
+    { color: 'rgba(200,85,70,0.14)',   count: 12, rMin: 250, rMax: 500 },  // blood flush (cheeks, chest)
+    { color: 'rgba(185,100,65,0.12)',  count: 18, rMin: 200, rMax: 400 },  // warm undertone
     { color: 'rgba(210,145,95,0.10)',  count: 15, rMin: 60, rMax: 110 },  // golden highlights
     { color: 'rgba(150,90,70,0.09)',   count: 12, rMin: 40, rMax: 100 },  // shadow warmth
     { color: 'rgba(180,125,100,0.07)', count: 20, rMin: 25, rMax: 80 },   // subtle tone variation
@@ -249,7 +283,7 @@ function _createSkinColorMap(size = 1024) {
   for (let n = 0; n < 30; n++) {
     const px = Math.floor(Math.random() * size);
     const py = Math.floor(Math.random() * size);
-    const r = 20 + Math.floor(Math.random() * 60);
+    const r = 150 + Math.floor(Math.random() * 200);
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
         const dist2 = dx * dx + dy * dy;
@@ -264,6 +298,19 @@ function _createSkinColorMap(size = 1024) {
       }
     }
   }
+  
+  // Layer 6: Large-scale anatomical variation (Macro-Veins & Skin Elasticity)
+  for (let n = 0; n < 8; n++) {
+    const px = Math.floor(Math.random() * size);
+    const py = Math.floor(Math.random() * size);
+    const r = 100 + Math.floor(Math.random() * 200);
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, r);
+    grad.addColorStop(0, 'rgba(100,120,180,0.08)'); // deep blue veins
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+  }
+
   ctx.putImageData(imgData, 0, 0);
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -374,6 +421,19 @@ function _createSkinNormalMap(size = 1024) {
     }
   }
 
+  
+  // Layer 6: Large-scale anatomical variation (Macro-Veins & Skin Elasticity)
+  for (let n = 0; n < 8; n++) {
+    const px = Math.floor(Math.random() * size);
+    const py = Math.floor(Math.random() * size);
+    const r = 100 + Math.floor(Math.random() * 200);
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, r);
+    grad.addColorStop(0, 'rgba(100,120,180,0.08)'); // deep blue veins
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+  }
+
   ctx.putImageData(imgData, 0, 0);
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
@@ -395,6 +455,19 @@ function _createSkinRoughnessMap(size = 256) {
     const v = 140 + Math.random() * 30;  // 0.55–0.67 roughness range
     d[i] = d[i + 1] = d[i + 2] = v;
   }
+  
+  // Layer 6: Large-scale anatomical variation (Macro-Veins & Skin Elasticity)
+  for (let n = 0; n < 8; n++) {
+    const px = Math.floor(Math.random() * size);
+    const py = Math.floor(Math.random() * size);
+    const r = 100 + Math.floor(Math.random() * 200);
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, r);
+    grad.addColorStop(0, 'rgba(100,120,180,0.08)'); // deep blue veins
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+  }
+
   ctx.putImageData(imgData, 0, 0);
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
@@ -483,6 +556,18 @@ async function _loadRealSkinTexture() {
     if (normalTex) SKIN_MATERIAL.normalScale.set(0.85, 0.85);
     _applyPoreNormalPatch(SKIN_MATERIAL);
     SKIN_MATERIAL.needsUpdate = true;
+
+    // Gemini Texture Sharpness Overdrive
+    const _maxAniso = renderer.capabilities.getMaxAnisotropy();
+    [SKIN_MATERIAL.map, SKIN_MATERIAL.normalMap, SKIN_MATERIAL.roughnessMap].forEach(t => {
+        if (t) {
+            t.anisotropy = _maxAniso;
+            t.generateMipmaps = true;
+            t.magFilter = THREE.LinearFilter;
+            t.minFilter = THREE.LinearMipmapLinearFilter;
+        }
+    });
+
 
     _realSkinLoaded = true;
     console.log('Real skin texture loaded for customer', cid);
@@ -654,6 +739,18 @@ function setSkinTiling(tilesX, tilesY) {
   if (SKIN_MATERIAL.normalMap) SKIN_MATERIAL.normalMap.repeat.set(tilesX, tilesY);
   if (SKIN_MATERIAL.roughnessMap) SKIN_MATERIAL.roughnessMap.repeat.set(tilesX, tilesY);
   SKIN_MATERIAL.needsUpdate = true;
+
+    // Gemini Texture Sharpness Overdrive
+    const _maxAniso = renderer.capabilities.getMaxAnisotropy();
+    [SKIN_MATERIAL.map, SKIN_MATERIAL.normalMap, SKIN_MATERIAL.roughnessMap].forEach(t => {
+        if (t) {
+            t.anisotropy = _maxAniso;
+            t.generateMipmaps = true;
+            t.magFilter = THREE.LinearFilter;
+            t.minFilter = THREE.LinearMipmapLinearFilter;
+        }
+    });
+
 }
 window.setSkinTiling = setSkinTiling;
 
@@ -689,6 +786,18 @@ function setTextureOffset(ox, oy) {
   if (SKIN_MATERIAL.normalMap) SKIN_MATERIAL.normalMap.offset.set(ox, oy);
   if (SKIN_MATERIAL.roughnessMap) SKIN_MATERIAL.roughnessMap.offset.set(ox, oy);
   SKIN_MATERIAL.needsUpdate = true;
+
+    // Gemini Texture Sharpness Overdrive
+    const _maxAniso = renderer.capabilities.getMaxAnisotropy();
+    [SKIN_MATERIAL.map, SKIN_MATERIAL.normalMap, SKIN_MATERIAL.roughnessMap].forEach(t => {
+        if (t) {
+            t.anisotropy = _maxAniso;
+            t.generateMipmaps = true;
+            t.magFilter = THREE.LinearFilter;
+            t.minFilter = THREE.LinearMipmapLinearFilter;
+        }
+    });
+
 }
 window.setTextureOffset = setTextureOffset;
 
@@ -720,7 +829,19 @@ const _skinPhotoTex = new THREE.TextureLoader().load('./skin_photo.jpg', (tex) =
   tex.repeat.set(22, 57);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
-  if (SKIN_MATERIAL) { SKIN_MATERIAL.map = tex; SKIN_MATERIAL.needsUpdate = true; }
+  if (SKIN_MATERIAL) { SKIN_MATERIAL.map = tex; SKIN_MATERIAL.needsUpdate = true;
+
+    // Gemini Texture Sharpness Overdrive
+    const _maxAniso = renderer.capabilities.getMaxAnisotropy();
+    [SKIN_MATERIAL.map, SKIN_MATERIAL.normalMap, SKIN_MATERIAL.roughnessMap].forEach(t => {
+        if (t) {
+            t.anisotropy = _maxAniso;
+            t.generateMipmaps = true;
+            t.magFilter = THREE.LinearFilter;
+            t.minFilter = THREE.LinearMipmapLinearFilter;
+        }
+    });
+ }
 });
 _skinPhotoTex.wrapS = _skinPhotoTex.wrapT = THREE.RepeatWrapping;
 _skinPhotoTex.repeat.set(30, 55);
@@ -734,18 +855,18 @@ const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
     side:             THREE.DoubleSide,
     color:            0xffffff,
     // SSS (Subsurface Scattering) — the holy grail of skin
-    transmission:       0.02,              // Light enters the skin
-    thickness:          2.0,               // Volume thickness for scattering
+    transmission:       0.05,              // Light enters the skin
+    thickness:          4.0,               // Volume thickness for scattering
     ior:                1.38,              // Skin refractive index
     attenuationColor:   new THREE.Color(0xee6644), // Warm blood tone
-    attenuationDistance: 1.5,              // Distance light travels inside
+    attenuationDistance: 0.8,              // Distance light travels inside
     // Sheen — peach fuzz effect
     sheen:              0.25,
     sheenRoughness:     0.4,
     sheenColor:         new THREE.Color(0xddbb99),
     // Surface oil (Sebum)
-    clearcoat:          0.08,
-    clearcoatRoughness: 0.3,
+    clearcoat:          0.45,
+    clearcoatRoughness: 0.12,
     // Specularity
     specularIntensity:  0.45,
     specularColor:      new THREE.Color(1.0, 1.0, 1.0),
@@ -753,7 +874,12 @@ const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
     normalMap:          _createSkinNormalMap(),
     normalScale:        new THREE.Vector2(0.9, 0.9),
     // Environment reflection
-    envMapIntensity:    0.85,
+    envMapIntensity:    1.2,
+    onBeforeCompile: (shader) => { 
+      shader.fragmentShader = shader.fragmentShader.replace('#include <map_pars_fragment>', '#include <map_pars_fragment>\nvec4 textureStochastic(sampler2D tex, vec2 uv) { vec4 c1 = texture2D(tex, uv); vec4 c2 = texture2D(tex, uv * 0.85 + 0.3); return mix(c1, c2, 0.5); }'); 
+      shader.fragmentShader = shader.fragmentShader.replace('vec4 sampledDiffuseColor = texture2D( map, vMapUv );', 'vec4 sampledDiffuseColor = textureStochastic( map, vMapUv );'); 
+    },
+    transparent: false,
   });
 
 // ── Micro-normal (skin pore) detail ──────────────────────────────────────────
@@ -761,7 +887,7 @@ const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
 // compositing. This avoids onBeforeCompile which breaks MeshPhysicalMaterial's
 // transmission/IOR shader code.
 let _poreNormalImg = null;
-let _poreNormalStrength = 0.45;
+let _poreNormalStrength = 0.28;
 
 (function _initPoreNormal() {
   const img = new Image();
@@ -801,7 +927,7 @@ function _applyPoreNormalPatch(material) {
   // Normal map blending in 2D is tricky. A good approximation for micro-detail:
   // "Overlay" or "Soft Light" blending at low opacity, or custom math.
   // We'll use 'overlay' which preserves the 128,128,255 neutral vector.
-  ctx.globalAlpha = _poreNormalStrength;
+  ctx.globalAlpha = _poreNormalStrength * 1.5;
   ctx.globalCompositeOperation = 'soft-light';
 
   const poreSize = 256; // typical micro-normal size
@@ -834,7 +960,7 @@ function init() {
 
   // Scene
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x1a1a2e);
+  scene.background = new THREE.Color(0x0a0a12);
 
   // Camera
   camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 5000);
@@ -845,7 +971,7 @@ function init() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping        = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.0;
   renderer.shadowMap.enabled  = true;
   renderer.shadowMap.type     = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace   = THREE.SRGBColorSpace;
@@ -1078,15 +1204,15 @@ function init() {
 // ── Lighting ──────────────────────────────────────────────────────────────────
 function _setupStudioLights() {
   // Ambient — warm, low intensity to prevent pitch black shadows
-  const a = new THREE.AmbientLight(0xfff5e4, 0.4); // increased from 0.25
+  const a = new THREE.AmbientLight(0xfff5e4, 0.15); // increased from 0.25
   scene.add(a); _studioLightObjs.push(a);
 
   // Hemisphere — sky/ground bounce for natural feel
-  const h = new THREE.HemisphereLight(0xffeedd, 0x443322, 0.6); // increased from 0.35
+  const h = new THREE.HemisphereLight(0xffeedd, 0x443322, 0.3); // increased from 0.35
   scene.add(h); _studioLightObjs.push(h);
 
   // Key light — main illumination, warm, high position for natural shadows
-  const key = new THREE.DirectionalLight(0xffefd5, 2.5); // increased from 1.4 for punchy highlights
+  const key = new THREE.DirectionalLight(0xffefd5, 1.8); // increased from 1.4 for punchy highlights
   key.position.set(150, 450, 250);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
@@ -1327,11 +1453,17 @@ function _initSSAO() {
   // ADD BLOOM for "sweaty/oily" skin specular highlights
   const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
   bloomPass.threshold = 0.7; // Only very bright highlights bloom
-  bloomPass.strength = 0.35; // Subtle but noticeable bloom
-  bloomPass.radius = 0.5;
+  bloomPass.strength = 0.25; // Subtle but noticeable bloom
+  bloomPass.radius = 0.8;
   _composer.addPass(bloomPass);
 
+  
+  // ADD CINEMATIC VIGNETTE
+  // vignette removed
+  // vignette pass disabled
+
   const outputPass = new OutputPass();
+
   _composer.addPass(outputPass);
 
   console.log('SSAO + Bloom post-processing initialized');
@@ -3714,7 +3846,7 @@ window.toggleRoom = function() {
   } else {
     _clearLights(_roomLightObjs);
     _setupStudioLights();
-    scene.background = new THREE.Color(0x1a1a2e);
+    scene.background = new THREE.Color(0x0a0a12);
   }
   document.getElementById('btn-room')?.classList.toggle('active', _roomOn);
   _saveViewerSettings();
@@ -3967,6 +4099,18 @@ function _animate() {
             camera.position.addScaledVector(dir, dist * (factor - 1.0));
             controls.update();
         }
+    }
+    
+    // Distance-Aware Normal Scaling (Gemini Pro)
+    if (bodyMesh) {
+        const dist = camera.position.distanceTo(controls.target);
+        // Scale normals from 0.8 (close) up to 2.5 (far) to maintain anatomical pop
+        const nScale = THREE.MathUtils.mapLinear(THREE.MathUtils.clamp(dist, 50, 800), 50, 800, 0.8, 2.5);
+        bodyMesh.traverse(c => {
+            if (c.isMesh && c.material && c.material.normalScale) {
+                c.material.normalScale.set(nScale, nScale);
+            }
+        });
     }
     if (!_walkMode) controls.update();
   // Update mirror every 2nd frame for performance (always uses renderer directly)
