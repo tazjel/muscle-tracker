@@ -1065,6 +1065,12 @@ function init() {
   // Restore saved viewer settings
   _restoreViewerSettings();
 
+  // FORCE PRO DEFAULTS (Overwrites low-quality saved settings)
+  setLightPreset('studio');
+  _ssaoEnabled = true;
+  const chkSSAO = document.getElementById('chk-ssao');
+  if (chkSSAO) chkSSAO.checked = true;
+
   // Start render loop
   _animate();
 }
@@ -1357,10 +1363,14 @@ function _loadFromUrl() {
     _loadGLB(glbUrl, compareOld && compareNew
       ? () => _applyCompareHeatmap(parseInt(compareOld), parseInt(compareNew))
       : null);
+    // FORCE PRO DEFAULT VIEW (Give it a moment to initialize mesh)
+    setTimeout(() => window.setViewMode('textured'), 500);
   } else if (objUrl) {
     _loadOBJ(objUrl);
+    setTimeout(() => window.setViewMode('textured'), 500);
   } else {
     _showPlaceholder();
+    setTimeout(() => window.setViewMode('textured'), 500);
   }
 }
 
