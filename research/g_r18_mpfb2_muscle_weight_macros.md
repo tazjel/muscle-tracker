@@ -1,32 +1,13 @@
-# G-R18: MPFB2 Muscle/Weight Macro System
+# Task G-R18: MPFB2 Muscle/Weight Macro System
 
-### 1. Mechanism of Action
-MPFB2 does NOT use standard Blender shape keys for muscle and weight. It uses an internal **Target Service** that interpolates between sparse vertex delta files (.target). 
-Shape keys appear only after calling the MPFB2 API.
-
-### 2. Target File Paths
-Located in `selected_addon_dir/data/targets/macrodetails/`:
-- **Muscle:** `minmuscle.target`, `averagemuscle.target`, `maxmuscle.target`
-- **Weight:** `minweight.target`, `averageweight.target`, `maxweight.target`
-
-### 3. Extraction Sequence (for Sonnet)
-To get numpy deltas without manual target parsing:
-```python
-from mpfb.services.humanservice import HumanService
-from mpfb.services.targetservice import TargetService
-
-# 1, Get baseline (muscle=0.5)
-human = HumanService.get_active_human()
-TargetService.set_macro_value(human, 'muscle', 0.5)
-V_base = get_vertices(human)
-
-# 2, Get extreme (muscle=1.0)
-TargetService.set_macro_value(human, 'muscle', 1.0)
-V_max = get_vertices(human)
-
-# 3, Compute delta
-delta_muscle = V_max - V_base
-````
-
-### 4. Verdict
-Muscle/Weight are independent macros. They do not appear in the basic `sshape_keys` filter unless explicitly set through MPFB2 services. Sonnet must use the HumanService approach to export these.
+1. **Mechanism**: MPFB2 does **not** use standard Blender shape keys (like `$ma` or `$fe`) for muscle and weight. Instead, it uses a proprietary macro system backed by `.target.gz` files containing sparse vertex deltas.
+2. **Storage**: These files are located in `data/targets/macrodetails/` inside the add-on directory. They are combined phenotypic targets (e.g., `universal-male-young-maxmuscle-averageweight.target.gz`).
+3. **API**: The Python API handles this via `HumanObjectProperties.set_value("muscle", value, entity_reference=basemesh)`. The system blends between `minmuscle` (0.0), `averagemuscle` (0.5), and `maxmuscle` (1.0) states.
+4. **Independence**: They are technically separate macros but are resolved into combined targets based on age, gender, muscle, and weight to ensure accurate anatomical combinations.
+5. **Extraction Strategy for Sonnet**: Since standard shape keys are not populated for muscle/weight, Sonnet must extract these deltas procedurally:
+   - Create the MPFB2 human.
+   - Store the baseline vertex positions (`muscle=0.5`, `weight=0.5`).
+   - Call the MPFB2 API to set `muscle=1.0` (or weight).
+   - Force a scene update (`bpy.context.view_layer.update()`).
+   - Read the new vertex positions and compute the delta (`new_verts - baseline_verts`).
+   - Export these calculated deltas.

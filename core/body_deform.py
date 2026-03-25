@@ -221,7 +221,7 @@ def deform_template(profile: dict = None) -> dict:
     # Apply BEFORE height/circumference scaling so deltas remain in template
     # coordinate space. Each delta is (N, 3) float32 in meters.
     shape_deltas = _load_shape_deltas()
-    _SAFE_CATEGORIES = ('muscle', 'weight')
+    _SAFE_CATEGORIES = ('muscle', 'weight', 'gender_male', 'gender_female')
     for key_name, info in shape_deltas.items():
         if info.get('category', '') not in _SAFE_CATEGORIES:
             continue

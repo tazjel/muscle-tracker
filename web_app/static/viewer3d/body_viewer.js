@@ -1,4 +1,4 @@
-/**
+﻿/**
  * body_viewer.js — Muscle Tracker 3D Viewer (Three.js r160+)
  * ─────────────────────────────────────────────────────────────
  * Supports:
@@ -968,75 +968,120 @@ function _applyPoreNormalPatch(material) {
   newTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
   newTex.userData.isPorePatched = true;
   newTex.userData.strength = _poreNormalStrength;
+  newTex.userData.isPorePatched = true;
+  newTex.userData.strength = _poreNormalStrength;
 
   material.normalMap = newTex;
   material.needsUpdate = true;
 }
 
+// ── Phenotype Sliders & Profile Reset ────────────────────────────────────────
+let _phenotypeTimeout = null;
+
+window.applyPhenotype = async function() {
+  try {
+    const cid = _customerId();
+    const mVal = document.getElementById('pheno-muscle')?.value || 50;
+    const wVal = document.getElementById('pheno-weight')?.value || 50;
+    const gVal = document.getElementById('pheno-gender')?.value || 100;
+
+    const updates = {
+      muscle_factor: parseInt(mVal) / 100.0,
+      weight_factor: parseInt(wVal) / 100.0,
+      gender_factor: parseInt(gVal) / 100.0,
+      gender: parseInt(gVal) < 50 ? 'female' : 'male'
+    };
+
+    _setStatus('Applying phenotype...');
+
+    const postResp = await fetch(`/web_app/api/customer/${cid}/body_profile`, {
+      method: 'POST',
+      headers: _authHeaders(),
+      body: JSON.stringify(updates),
+    });
+    const result = await postResp.json();
+    if (result.status !== 'success') {
+      _setStatus('Phenotype update failed: ' + (result.message || '')); return;
+    }
+
+    const meshResp = await fetch(`/web_app/api/customer/${cid}/body_model`, {
+      method: 'POST',
+      headers: _authHeaders(),
+      body: JSON.stringify({}),
+    });
+    const meshResult = await meshResp.json();
+    if (meshResult.glb_url) {
+      _loadGLB(meshResult.glb_url, null);
+      _setStatus('');
+    } else {
+      _setStatus('Mesh regeneration failed');
+    }
+  } catch (e) {
+    _setStatus('Update failed: ' + e.message);
+  }
+};
+
+window.resetProfile = async function() {
+  try {
+    const cid = _customerId();
+    _setStatus('Resetting profile...');
+    const resp = await fetch(`/web_app/api/customer/${cid}/reset_profile`, {
+      method: 'POST',
+      headers: _authHeaders()
+    });
+    const res = await resp.json();
+    if (res.status === 'success') {
+      const m = document.getElementById('pheno-muscle');
+      const w = document.getElementById('pheno-weight');
+      const g = document.getElementById('pheno-gender');
+      if (m) { m.value = 50; document.getElementById('pheno-muscle-val').textContent = '50'; }
+      if (w) { w.value = 50; document.getElementById('pheno-weight-val').textContent = '50'; }
+      if (g) { g.value = 100; document.getElementById('pheno-gender-label').textContent = 'Male'; }
+      await window.applyPhenotype();
+    } else {
+      _setStatus('Reset failed: ' + res.message);
+    }
+  } catch (e) {
+    _setStatus('Reset error: ' + e.message);
+  }
+};
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
   const container = document.getElementById('canvas-container');
-
-  // Scene
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0a12);
-
-  // Camera
   camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 5000);
   camera.position.set(0, 120, 17);
-
-  // Renderer
   renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.toneMapping        = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
-  renderer.shadowMap.enabled  = true;
-  renderer.shadowMap.type     = THREE.PCFSoftShadowMap;
-  renderer.outputColorSpace   = THREE.SRGBColorSpace;
-  renderer.physicallyCorrectLights = true;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
   container.appendChild(renderer.domElement);
-
-  // Controls
   controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping    = true;
-  controls.dampingFactor    = 0.08;
-  controls.minDistance      = 5;
-  controls.maxDistance      = 3000;
-  controls.zoomSpeed        = 0.5; // 50% smaller zoom steps
-
-  controls.target.set(0, 80, 0);  // roughly mid-torso height
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.target.set(0, 80, 0);
   controls.update();
-
-  // Lights — studio default for PBR material visibility
   _setupStudioLights();
   _currentLightPreset = 'studio';
-
-  // Environment map (PMREMGenerator gradient — no external HDR file needed)
   _setupEnvironment();
-
-  // V7: Room, props, mirror, contact shadow
   _buildRoom();
   _buildProps();
   _createContactShadow();
   _setupMirror();
   _setupWalkControls();
-
-  // SSAO post-processing (ambient occlusion for crevices/contact areas)
   _initSSAO();
-
-  // Resize
   window.addEventListener('resize', _onResize);
-
-  // Restore sidebar when exiting fullscreen via Escape
   document.addEventListener('fullscreenchange', () => {
     if (!document.fullscreenElement) {
       const overlay = document.getElementById('ui-overlay');
       if (overlay) overlay.style.display = '';
     }
   });
-
-  // Expose for MeasurementOverlay, agent_browser, and debugging
   window.scene = scene;
   window.camera = camera;
   window.controls = controls;
@@ -1045,16 +1090,10 @@ function init() {
     get mesh() { return bodyMesh; },
     getMeshIntersection: _getMeshIntersection,
   };
-
-  // Click-to-select body region
   renderer.domElement.addEventListener('click', _onMeshClick);
   renderer.domElement.addEventListener('mousemove', _onMeshHover);
-
-  // Prevent browser default touch behaviors (scroll, pinch-zoom) on the 3D canvas
   renderer.domElement.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
   renderer.domElement.addEventListener('touchmove',  (e) => e.preventDefault(), { passive: false });
-
-  // Double-tap to reset camera (mobile convenience)
   let _lastTap = 0;
   renderer.domElement.addEventListener('touchend', (e) => {
     const now = Date.now();
@@ -1063,8 +1102,6 @@ function init() {
     }
     _lastTap = now;
   });
-
-  // Adjustment slider live preview
   ['adj-width', 'adj-depth', 'adj-length'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', () => {
@@ -1072,55 +1109,6 @@ function init() {
       if (val) val.textContent = el.value;
     });
   });
-
-  // Phenotype slider listeners (Server-side deform with 500ms debounce)
-  let _phenotypeTimeout = null;
-
-  window.applyPhenotype = async function() {
-    try {
-      const cid = _customerId();
-      const mVal = document.getElementById('pheno-muscle')?.value || 50;
-      const wVal = document.getElementById('pheno-weight')?.value || 50;
-      const gVal = document.getElementById('pheno-gender')?.value || 100;
-
-      const updates = {
-        muscle_factor: parseInt(mVal) / 100.0,
-        weight_factor: parseInt(wVal) / 100.0,
-        gender_factor: parseInt(gVal) / 100.0,
-        gender: parseInt(gVal) < 50 ? 'female' : 'male'
-      };
-
-      _setStatus('Applying phenotype...');
-
-      // 1. Update profile
-      const postResp = await fetch(`/web_app/api/customer/${cid}/body_profile`, {
-        method: 'POST',
-        headers: _authHeaders(),
-        body: JSON.stringify(updates),
-      });
-      const result = await postResp.json();
-      if (result.status !== 'success') {
-        _setStatus('Phenotype update failed: ' + (result.message || '')); return;
-      }
-
-      // 2. Regenerate mesh
-      const meshResp = await fetch(`/web_app/api/customer/${cid}/body_model`, {
-        method: 'POST',
-        headers: _authHeaders(),
-        body: JSON.stringify({}),
-      });
-      const meshResult = await meshResp.json();
-      if (meshResult.glb_url) {
-        _loadGLB(meshResult.glb_url, null);
-        _setStatus('');
-      } else {
-        _setStatus('Mesh regeneration failed');
-      }
-    } catch (e) {
-      _setStatus('Update failed: ' + e.message);
-    }
-  };
-
   ['pheno-muscle', 'pheno-weight', 'pheno-gender'].forEach(id => {
     const el = document.getElementById(id);
     if (el) {
@@ -1133,19 +1121,14 @@ function init() {
            const val = document.getElementById(id + '-val');
            if (val) val.textContent = el.value;
         }
-
         clearTimeout(_phenotypeTimeout);
         _phenotypeTimeout = setTimeout(window.applyPhenotype, 500);
       });
     }
   });
-
-  // Collapsible panels — click h3 to toggle
   document.querySelectorAll('.collapsible > h3').forEach(h3 => {
     h3.addEventListener('click', () => h3.parentElement.classList.toggle('collapsed'));
   });
-
-  // ── Tab switching ──────────────────────────────────────────────────────────
   window.switchTab = function(tabName) {
     document.querySelectorAll('.tab-content').forEach(el => {
       el.classList.toggle('active', el.dataset.tab === tabName);
@@ -1153,7 +1136,6 @@ function init() {
     document.querySelectorAll('.tab-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.tab === tabName);
     });
-    // Auto-switch to skin view when Studio tab is opened
     if (tabName === 'studio') {
       const skinBtn = document.getElementById('btn-skin');
       if (skinBtn && !skinBtn.classList.contains('active')) {
@@ -1162,7 +1144,6 @@ function init() {
     }
     _saveViewerSettings();
   };
-
   const _featureTabMap = {
     'growth': 'analyze', 'slices': 'analyze', 'profile': 'analyze', 'axis': 'analyze',
     'walk': 'scene', 'room': 'scene', 'mirror': 'scene', 'props': 'scene', 'stats': 'scene',
@@ -1171,14 +1152,8 @@ function init() {
     const tab = _featureTabMap[feature];
     if (tab) switchTab(tab);
   }
-
-  // Authenticate for save/regenerate calls then load mesh list + room textures
   _autoLogin().then(() => { _loadMeshList(); _loadRoomTextures(); _loadBodyStats(); _loadCustomerList(); });
-
-  // Load model from URL params
   _loadFromUrl();
-
-  // Cross-section slider
   const secSlider = document.getElementById('section-height');
   if (secSlider) {
     secSlider.addEventListener('input', (e) => {
@@ -1186,12 +1161,9 @@ function init() {
       _updateCrossSection(parseInt(e.target.value) / 100);
     });
   }
-
-  // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
     switch (e.key) {
-      
         case 'z': case 'Z': _moveState.zoomIn = true; break;
         case 'v': case 'V': _moveState.zoomOut = true; break;
         case '1': window.setViewMode('solid');     break;
@@ -1213,8 +1185,6 @@ function init() {
       case 'q': case 'Q': window.togglePostureAxis();  break;
       case 'm': case 'M': window.toggleMeasure();   break;
       case 'r': case 'R': window.resetCamera();   break;
-      
-      
       case 'e': case 'E': exportDataCSV();         break;
       case 's': case 'S':
         if (_walkMode) _moveState.backward = true;
@@ -1246,7 +1216,6 @@ function init() {
   });
   document.addEventListener('keyup', (e) => {
     switch (e.key) {
-      
         case 'z': case 'Z': _moveState.zoomIn = false; break;
         case 'v': case 'V': _moveState.zoomOut = false; break;
         case 'w': case 'W': _moveState.forward  = false; break;
@@ -1255,87 +1224,64 @@ function init() {
       case 'd': case 'D': _moveState.right    = false; break;
     }
   });
-
-  // Restore saved viewer settings
   _restoreViewerSettings();
-
-  // FORCE PRO DEFAULTS (Overwrites low-quality saved settings)
   setLightPreset('studio');
   _ssaoEnabled = true;
   const chkSSAO = document.getElementById('chk-ssao');
   if (chkSSAO) chkSSAO.checked = true;
-
-  // Start render loop
   _animate();
 }
 
 // ── Lighting ──────────────────────────────────────────────────────────────────
 function _setupStudioLights() {
-  // Ambient — warm, low intensity to prevent pitch black shadows
-  const a = new THREE.AmbientLight(0xfff5e4, 0.15); // increased from 0.25
+  const a = new THREE.AmbientLight(0xfff5e4, 0.15);
   scene.add(a); _studioLightObjs.push(a);
-
-  // Hemisphere — sky/ground bounce for natural feel
-  const h = new THREE.HemisphereLight(0xffeedd, 0x443322, 0.3); // increased from 0.35
+  const h = new THREE.HemisphereLight(0xffeedd, 0x443322, 0.3);
   scene.add(h); _studioLightObjs.push(h);
-
-  // Key light — main illumination, warm, high position for natural shadows
-  const key = new THREE.DirectionalLight(0xffefd5, 1.8); // increased from 1.4 for punchy highlights
-  key.position.set(150, 450, 250);
+  const key = new THREE.DirectionalLight(0xffefd5, 1.8);
+  key.position.set(100, 300, 200);
   key.castShadow = true;
-  key.shadow.mapSize.set(2048, 2048);
-  key.shadow.camera.left   = -400;
-  key.shadow.camera.right  =  400;
-  key.shadow.camera.top    =  400;
-  key.shadow.camera.bottom = -400;
-  key.shadow.bias = -0.0001;
-  key.shadow.normalBias = 0.02;
+  key.shadow.mapSize.width = 2048;
+  key.shadow.mapSize.height = 2048;
+  key.shadow.camera.near = 0.5;
+  key.shadow.camera.far = 1000;
+  key.shadow.camera.left = -200;
+  key.shadow.camera.right = 200;
+  key.shadow.camera.top = 200;
+  key.shadow.camera.bottom = -200;
+  key.shadow.bias = -0.0005;
   scene.add(key); _studioLightObjs.push(key);
-
-  // Fill light — cooler, from opposite side to define muscle contours
-  const fill = new THREE.DirectionalLight(0xb4e7ff, 1.0); // increased from 0.45
-  fill.position.set(-350, 200, 150);
+  const fill = new THREE.DirectionalLight(0x88aacc, 0.25);
+  fill.position.set(-200, 100, -300);
   scene.add(fill); _studioLightObjs.push(fill);
-
-  // Rim light — back edge separation, warm glow for depth
-  const rim = new THREE.PointLight(0xffd0a0, 1.8); // increased from 0.8
-  rim.position.set(0, 250, -400);
-  rim.distance = 1200;
+  const rim = new THREE.SpotLight(0xffffff, 2.0);
+  rim.position.set(0, 400, -400);
+  rim.angle = Math.PI / 6;
+  rim.penumbra = 0.5;
+  rim.decay = 2;
+  rim.distance = 2000;
   scene.add(rim); _studioLightObjs.push(rim);
-
-  // Under-chin fill — prevents dark shadows under jaw/chin
-  const underFill = new THREE.DirectionalLight(0xffe8d0, 0.5); // increased from 0.2
-  underFill.position.set(0, -50, 200);
-  scene.add(underFill); _studioLightObjs.push(underFill);
-
-  // Side accent — accentuates muscle definition from the side
-  const accent = new THREE.DirectionalLight(0xfff0e0, 0.8); // increased from 0.3
+  const back = new THREE.PointLight(0xffeedd, 0.8, 1000);
+  back.position.set(0, 100, -500);
+  scene.add(back); _studioLightObjs.push(back);
+  const accent = new THREE.DirectionalLight(0xffaa88, 0.3);
   accent.position.set(400, 250, -100);
   scene.add(accent); _studioLightObjs.push(accent);
 }
 
 function _setupRoomLights() {
-  // Overhead point light (warm, just below ceiling)
   const overhead = new THREE.PointLight(0xffe8cc, 1.5, 0, 2);
-  overhead.position.set(0, _ROOM_H - 20, 0);
+  overhead.position.set(0, 240, 0);
   overhead.castShadow = true;
-  overhead.shadow.mapSize.set(1024, 1024);
+  overhead.shadow.mapSize.width = 1024;
+  overhead.shadow.mapSize.height = 1024;
+  overhead.shadow.bias = -0.001;
   scene.add(overhead); _roomLightObjs.push(overhead);
-
-  const ambient = new THREE.AmbientLight(0xfff5e4, 0.25);
-  scene.add(ambient); _roomLightObjs.push(ambient);
-
-  const hemi = new THREE.HemisphereLight(0xffeedd, 0x334455, 0.15);
-  scene.add(hemi); _roomLightObjs.push(hemi);
-}
-
-function _clearLights(arr) {
-  arr.forEach(l => scene.remove(l));
-  arr.length = 0;
+  const floorBounce = new THREE.HemisphereLight(0xffffff, 0x444444, 0.4);
+  scene.add(floorBounce); _roomLightObjs.push(floorBounce);
 }
 
 function _setupClinicalLights() {
-  // Even, shadow-free lighting for accurate body assessment
   const a = new THREE.AmbientLight(0xffffff, 0.5);
   scene.add(a); _studioLightObjs.push(a);
   [[0,400,400],[0,400,-400],[400,400,0],[-400,400,0]].forEach(([x,y,z]) => {
@@ -1343,49 +1289,30 @@ function _setupClinicalLights() {
     d.position.set(x, y, z);
     scene.add(d); _studioLightObjs.push(d);
   });
-  const top = new THREE.DirectionalLight(0xffffff, 0.3);
-  top.position.set(0, 600, 0);
-  scene.add(top); _studioLightObjs.push(top);
 }
 
-function _setupOutdoorLights() {
-  // Golden hour outdoor feel
-  const hemi = new THREE.HemisphereLight(0x87ceeb, 0x556633, 0.6);
-  scene.add(hemi); _studioLightObjs.push(hemi);
-  const sun = new THREE.DirectionalLight(0xffd090, 1.6);
-  sun.position.set(300, 500, 200);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -400; sun.shadow.camera.right = 400;
-  sun.shadow.camera.top = 400;   sun.shadow.camera.bottom = -400;
-  scene.add(sun); _studioLightObjs.push(sun);
-  const fill = new THREE.DirectionalLight(0x88aacc, 0.25);
-  fill.position.set(-200, 100, -300);
-  scene.add(fill); _studioLightObjs.push(fill);
+function _clearLights(arr) {
+  if (!arr) return;
+  arr.forEach(obj => {
+    if (obj.parent) obj.parent.remove(obj);
+    if (obj.dispose) obj.dispose();
+  });
+  arr.length = 0;
 }
 
 function setLightPreset(preset) {
   _clearLights(_studioLightObjs);
+  _clearLights(_roomLightObjs);
   _currentLightPreset = preset;
   switch (preset) {
-    case 'clinical':
-      _setupClinicalLights();
-      _ssaoEnabled = false;  // flat/even for measurement accuracy
-      break;
-    case 'outdoor':
-      _setupOutdoorLights();
-      _ssaoEnabled = true;
-      break;
-    default:
-      _setupStudioLights();
-      _ssaoEnabled = true;
-      break;
+    case 'clinical': _setupClinicalLights(); _ssaoEnabled = false; break;
+    case 'studio': _setupStudioLights(); _ssaoEnabled = true; break;
+    case 'room': _setupRoomLights(); _ssaoEnabled = true; break;
   }
   _saveViewerSettings();
   document.querySelectorAll('.light-preset-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.preset === preset);
   });
-  // Sync SSAO checkbox with preset
   const chk = document.getElementById('chk-ssao');
   if (chk) chk.checked = _ssaoEnabled;
 }

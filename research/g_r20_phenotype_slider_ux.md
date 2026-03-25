@@ -1,22 +1,22 @@
 # G-R20: Phenotype Slider UX Patterns
 
-### 1. Labels & Ranges
-Based on fitness app standards, use these ranges for the 0-1 macro values:
+### 1. Slider Labels and Ranges
+- **Muscle**: Instead of "0-100", use "Muscle Definition" (Smooth ↔ Shredded) or "Lean Mass Index" (Low ↔ High) for broader user comprehension.
+- **Weight/Fat**: "Body Fat %" (5% - 50%) is the industry standard in fitness apps, rather than abstract "Weight" variables. It correlates better with user goals.
+- **Gender**: A continuous slider (0.0 to 1.0) labeled "Masculine ↔ Feminine" allows for inclusive phenotype blending and handles varied baseline morphologies better than a binary toggle.
 
-| Macro | Label | Range Display | Visual Feedback |
-|----------|------------------|---------------|------------------|
-| muscle | Muscle Definition | Hidden → Ripped | Pore/vascularity |
-| weight | Body Fat | Athletic ↓ Obese | Body width/softness |
-| gender | Body Type | Female → Male | Hip/shoulder ratio |
+### 2. Contextual vs. Global Controls
+- **Global**: Phenotype controls (Gender, Muscle, Weight) dictate the base mesh generation. These must be **Global** (always visible in a sticky sidebar or top panel).
+- **Contextual**: Per-region adjustments (e.g., Left Bicep Width) should remain contextual, appearing only when the user selects a specific muscle group.
 
-### 2. Layout Strategy
-1. **Placement:** In the `Adjust` tab, above the `#adjust-panel`. These are "Global" modifiers compared to the region-specific width/depth sliders.
-2. **Grouping:** Create a new div `#phenotype-controls` with a separate header "Body Composition".
+### 3. Server Round-Trip UX (500ms Debounce)
+- **Debounce**: A 500ms debounce on slider `onChange` is mandatory to prevent server flooding.
+- **Progressive Preview**:
+  - *Instant Feedback*: Update UI numbers and overlay a lightweight wireframe or a loading spinner on the 3D canvas immediately upon drag.
+  - *Resolution*: Once the new GLB arrives (~1s), cross-fade or pop it in. Do not freeze the main thread while parsing the new mesh.
 
-### 3. Real-Time Feedback
-1. **Debounce:** 500ms is mandatory. Show a spinner on the 3D canvas during the `GLBLoader` phase.
-2. **Progressive:** Do not block the UI. Allow the user to adjust multiple sliders before the first update fires.
-3. **Min/Max:** Set slider steps to 0.01 for smooth morphing.
-
-### 4. Verdict
-Phenotype sliders should be the first thing a user sees in the Adjust tab. Use descriptive labels (Ripped, Athletic) rather than raw 0.0-1.0 numbers.
+### 4. Layout Placement in Viewer
+- Inside the `#adjust-panel` (Adjust Tab), the layout should be vertically stacked:
+  1. **Global Phenotype Panel**: Contains Gender, Muscle, and Body Fat sliders.
+  2. **Divider/Header**: "Region Adjustments"
+  3. **Contextual Panel**: The existing Width/Depth/Length sliders, active only when a region is clicked.

@@ -2014,6 +2014,37 @@ def _auth_check(customer_id=None):
     return payload, None
 
 
+@action('api/customer/<customer_id:int>/reset_profile', method=['POST'])
+@action.uses(db, cors)
+def reset_body_profile(customer_id):
+    payload, err = _auth_check()
+    if err: return err
+    customer = db.customer[customer_id]
+    
+    # Defaults
+    defaults = {
+        'height_cm': 168,
+        'weight_kg': 63,
+        'gender': 'male',
+        'muscle_factor': 0.5,
+        'weight_factor': 0.5,
+        'gender_factor': 1.0,
+        'chest_circumference_cm': 97,
+        'waist_circumference_cm': 90,
+        'hip_circumference_cm': 92,
+        'thigh_circumference_cm': 53,
+        'calf_circumference_cm': 34,
+        'bicep_circumference_cm': 32,
+        'forearm_circumference_cm': 29,
+        'neck_circumference_cm': 35,
+        'shoulder_width_cm': 37,
+        'skin_tone_hex': 'C4956A',
+    }
+    customer.update_record(**defaults)
+    db.commit()
+    return dict(status='success', message='Profile reset to defaults')
+
+
 @action('api/customer/<customer_id:int>/body_profile', method=['GET'])
 @action.uses(db, cors)
 def get_body_profile(customer_id):
