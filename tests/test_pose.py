@@ -30,13 +30,15 @@ import core.pose_analyzer as pose_analyzer
 from core.pose_analyzer import get_px_to_mm_ratio_from_pose
 
 class TestPoseAnalyzer(unittest.TestCase):
-    @patch.object(pose_analyzer, 'pose_detector', MockPose())
+    @patch.object(pose_analyzer, '_detect_pose')
     @patch.object(pose_analyzer, 'HAVE_MEDIAPIPE', True)
-    def test_get_px_to_mm_ratio_from_pose(self):
+    def test_get_px_to_mm_ratio_from_pose(self, mock_detect):
+        # In our mock, landmarks y are [0.1, 0.5, 0.9]
+        mock_detect.return_value = ([MockPoseLandmark(y) for y in [0.1, 0.5, 0.9]], (1000, 1000))
+        
         # Create a dummy image of height 1000px
         img = np.zeros((1000, 1000, 3), dtype=np.uint8)
         
-        # In our mock, landmarks y are [0.1, 0.5, 0.9]
         # Bounding box in pixels: min_y = 100, max_y = 900 => diff = 800
         # Height is padded by 1.08: person_px_height = 800 * 1.08 = 864
         # If user_height_cm = 180, user_height_mm = 1800

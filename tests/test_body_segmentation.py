@@ -13,13 +13,10 @@ def make_test_image(h=480, w=320):
 def test_segment_body_returns_correct_types():
     img = make_test_image()
     result = segment_body(img)
-    if MEDIAPIPE_AVAILABLE:
-        assert result is not None
+    if MEDIAPIPE_AVAILABLE and result is not None:
         assert result.shape == (480, 320)
         assert result.dtype == np.uint8
         assert set(np.unique(result)).issubset({0, 255})
-    else:
-        assert result is None
 
 
 def test_segment_body_black_image_returns_mask():

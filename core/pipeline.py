@@ -73,7 +73,9 @@ def full_scan_pipeline(
     if 'error' in res_f:
         return {'error': res_f['error'], 'errors': [res_f['error']]}
 
-    ratio_mm_per_px = res_f.get('ratio', 1.0)
+    ratio_mm_per_px = res_f.get('ratio')
+    if ratio_mm_per_px is None:
+        ratio_mm_per_px = 1.0
     pixels_per_cm   = 10.0 / ratio_mm_per_px if ratio_mm_per_px > 0 else 1.0
     pixels_per_mm   = 1.0  / ratio_mm_per_px if ratio_mm_per_px > 0 else 1.0
     unit    = 'mm' if res_f.get('calibrated') else 'px'
@@ -109,7 +111,9 @@ def full_scan_pipeline(
             area_side  = res_s['metrics'].get(f'area_a_{unit_s}2', 0.0)
             width_side = res_s['metrics'].get(f'width_a_{unit_s}', 0.0)
             contour_side = res_s.get('raw_data', {}).get('contour_a')
-            ratio_s      = res_s.get('ratio', 1.0)
+            ratio_s      = res_s.get('ratio')
+            if ratio_s is None:
+                ratio_s = 1.0
             pixels_per_mm_side = 1.0 / ratio_s if ratio_s > 0 else 1.0
         else:
             errors.append(f'Side view: {res_s["error"]}')

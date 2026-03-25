@@ -189,10 +189,12 @@ def get_px_to_mm_ratio_from_pose(img, user_height_cm):
     if user_height_cm is None or user_height_cm <= 0:
         return None
 
-    landmarks, (h, w) = _detect_pose(img)
-    if landmarks is None:
+    landmarks, shape = _detect_pose(img)
+    if landmarks is None or shape is None:
         logger.warning("No pose landmarks detected.")
         return None
+        
+    h, w = shape
 
     y_coords = [lm.y * h for lm in landmarks]
     if not y_coords:

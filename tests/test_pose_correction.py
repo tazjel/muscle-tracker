@@ -4,7 +4,7 @@ import math
 import numpy as np
 import sys
 import os
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -134,49 +134,33 @@ class TestAnalyzePoseMocked(unittest.TestCase):
 
         return landmarks
 
-    def test_analyze_pose_returns_scores(self):
+    @patch('core.pose_analyzer._detect_pose')
+    def test_analyze_pose_returns_scores(self, mock_detect):
         """Test that analyze_pose returns angles and scores for bicep."""
         import core.pose_analyzer as pa
+        mock_detect.return_value = (self._make_landmarks(90), (1000, 1000))
 
-        mock_detector = MagicMock()
-        mock_result = MagicMock()
-        mock_result.pose_landmarks.landmark = self._make_landmarks(90)
-        mock_detector.process.return_value = mock_result
+        img = np.zeros((1000, 1000, 3), dtype=np.uint8)
+        result = pa.analyze_pose(img, "bicep")
+        self.assertIn(result["status"], ("ok", "corrections_needed"))
+        self.assertIn("pose_score", result)
+        self.assertIn("angles", result)
+        self.assertGreater(result["pose_score"], 0)
 
-        original_detector = pa.pose_detector
-        pa.pose_detector = mock_detector
-        try:
-            img = np.zeros((1000, 1000, 3), dtype=np.uint8)
-            result = pa.analyze_pose(img, "bicep")
-            self.assertIn(result["status"], ("ok", "corrections_needed"))
-            self.assertIn("pose_score", result)
-            self.assertIn("angles", result)
-            self.assertGreater(result["pose_score"], 0)
-        finally:
-            pa.pose_detector = original_detector
-
-    def test_bad_angle_generates_correction(self):
+    @patch('core.pose_analyzer._detect_pose')
+    def test_bad_angle_generates_correction(self, mock_detect):
         """Test that a very wrong elbow angle produces corrections."""
         import core.pose_analyzer as pa
-
-        mock_detector = MagicMock()
-        mock_result = MagicMock()
         # 170° elbow = nearly straight arm, bad for bicep peak (ideal=90°)
-        mock_result.pose_landmarks.landmark = self._make_landmarks(170)
-        mock_detector.process.return_value = mock_result
+        mock_detect.return_value = (self._make_landmarks(170), (1000, 1000))
 
-        original_detector = pa.pose_detector
-        pa.pose_detector = mock_detector
-        try:
-            img = np.zeros((1000, 1000, 3), dtype=np.uint8)
-            result = pa.analyze_pose(img, "bicep")
-            self.assertEqual(result["status"], "corrections_needed")
-            self.assertGreater(result["num_corrections"], 0)
-            # Should have an elbow correction
-            axes = [c["axis"] for c in result["corrections"]]
-            self.assertIn("elbow flexion", axes)
-        finally:
-            pa.pose_detector = original_detector
+        img = np.zeros((1000, 1000, 3), dtype=np.uint8)
+        result = pa.analyze_pose(img, "bicep")
+        self.assertEqual(result["status"], "corrections_needed")
+        self.assertGreater(result["num_corrections"], 0)
+        # Should have an elbow correction
+        axes = [c["axis"] for c in result["corrections"]]
+        self.assertIn("elbow flexion", axes)
 
     def test_no_mediapipe_returns_error(self):
         import core.pose_analyzer as pa
@@ -196,25 +180,17 @@ class TestAnalyzePoseMocked(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("available_groups", result)
 
-    def test_group_name_aliases(self):
+    @patch('core.pose_analyzer._detect_pose')
+    def test_group_name_aliases(self, mock_detect):
         """Test that aliases like 'biceps', 'shoulder' map correctly."""
         import core.pose_analyzer as pa
+        mock_detect.return_value = (self._make_landmarks(90), (1000, 1000))
 
-        mock_detector = MagicMock()
-        mock_result = MagicMock()
-        mock_result.pose_landmarks.landmark = self._make_landmarks(90)
-        mock_detector.process.return_value = mock_result
-
-        original_detector = pa.pose_detector
-        pa.pose_detector = mock_detector
-        try:
-            img = np.zeros((1000, 1000, 3), dtype=np.uint8)
-            for alias in ("biceps", "Bicep", "shoulder", "lats"):
-                result = pa.analyze_pose(img, alias)
-                self.assertNotEqual(result["status"], "error",
-                                    f"Alias '{alias}' should be recognized")
-        finally:
-            pa.pose_detector = original_detector
+        img = np.zeros((1000, 1000, 3), dtype=np.uint8)
+        for alias in ("biceps", "Bicep", "shoulder", "lats"):
+            result = pa.analyze_pose(img, alias)
+            self.assertNotEqual(result["status"], "error",
+                                f"Alias '{alias}' should be recognized")
 
 
 if __name__ == '__main__':
