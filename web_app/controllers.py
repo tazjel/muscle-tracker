@@ -1984,7 +1984,7 @@ _BODY_PROFILE_FIELDS = [
     'waist_circumference_cm', 'hip_circumference_cm',
     'thigh_circumference_cm', 'quadricep_circumference_cm',
     'calf_circumference_cm', 'skin_tone_hex',
-    'muscle_factor', 'weight_factor', 'gender_factor',
+    'muscle_factor', 'weight_factor', 'gender_factor', 'gender',
 ]
 
 

@@ -51,6 +51,14 @@ def _load_template():
     verts = np.load(os.path.join(_MESHES_DIR, 'template_verts.npy'))  # (N,3) float32, meters
     faces = np.load(os.path.join(_MESHES_DIR, 'template_faces.npy'))  # (M,3) int32
     uvs = np.load(os.path.join(_MESHES_DIR, 'template_uvs.npy'))     # (N,2) float32
+    
+    # Load part mapping generated via KDTree
+    map_path = os.path.join(_MESHES_DIR, 'mpfb2_to_smpl_regions.npy')
+    if os.path.exists(map_path):
+        part_ids = np.load(map_path)
+    else:
+        logger.warning("MPFB2-to-SMPL mapping missing, using zeros")
+        part_ids = np.zeros(len(verts), dtype=np.int32)
 
     with open(_SEG_PATH) as f:
         seg = json.load(f)
@@ -62,6 +70,7 @@ def _load_template():
         'faces': faces,
         'uvs': uvs,
         'seg': seg,
+        'part_ids': part_ids,
     }
     return _template_cache
 
@@ -130,7 +139,7 @@ def _cross_section_circumference(verts_2d):
         return 0.0
 
 
-def _compute_template_measurements(verts, seg):
+def _compute_template_measurements(verts, part_ids):
     """Compute the template mesh's reference circumferences (in meters)."""
     global _template_ref
     if _template_ref is not None:
@@ -141,92 +150,46 @@ def _compute_template_measurements(verts, seg):
     # Height: Z range
     ref['height_m'] = float(verts[:, 2].max() - verts[:, 2].min())
 
-    # For each circumference, gather the relevant muscle group vertices
-    # and compute cross-section circumference in the XY plane at the group's
-    # mean Z height.
-    circ_groups = {
-        'chest':   ['pectorals', 'traps'],
-        'waist':   ['abs', 'obliques'],
-        'hip':     ['glutes'],
-        'thigh':   ['quads_l', 'quads_r'],
-        'calf':    ['calves_l', 'calves_r'],
-        'bicep':   ['biceps_l', 'biceps_r'],
-        'forearm': ['forearms_l', 'forearms_r'],
-        'neck':    ['traps'],  # upper traps region
+    # Map part IDs to regions (SMPL standard)
+    region_to_parts = {
+        'waist':   [0, 3],
+        'hip':     [0, 1, 2],
+        'chest':   [6, 9],
+        'neck':    [12],
+        'thigh_l': [1],
+        'thigh_r': [2],
+        'calf_l':  [4],
+        'calf_r':  [5],
+        'bicep_l': [16],
+        'bicep_r': [17],
+        'forearm_l': [18],
+        'forearm_r': [19],
     }
 
-    for region, groups in circ_groups.items():
-        # Collect all vertex indices for this region
-        all_idx = np.concatenate([seg[g] for g in groups if g in seg])
-        if len(all_idx) == 0:
-            ref[f'{region}_circ_m'] = 0.1  # fallback
+    for region, pids in region_to_parts.items():
+        # Mask vertices in these parts
+        mask = np.isin(part_ids, pids)
+        if not mask.any():
+            ref[f'{region}_circ_m'] = 0.1
             continue
-
-        region_verts = verts[all_idx]
-
-        if region == 'neck':
-            # Use top 30% of traps vertices (neck area)
-            z_min, z_max = region_verts[:, 2].min(), region_verts[:, 2].max()
-            z_thresh = z_min + 0.7 * (z_max - z_min)
-            mask = region_verts[:, 2] > z_thresh
-            if mask.sum() >= 3:
-                region_verts = region_verts[mask]
-
-        # For paired groups (thigh, calf, bicep, forearm), compute per-side
-        # and average, since each side is half the body
-        if region in ('thigh', 'calf', 'bicep', 'forearm'):
-            left_g = [g for g in groups if g.endswith('_l')]
-            right_g = [g for g in groups if g.endswith('_r')]
-            circs = []
-            for side_groups in (left_g, right_g):
-                side_idx = np.concatenate([seg[g] for g in side_groups if g in seg])
-                if len(side_idx) < 3:
-                    continue
-                sv = verts[side_idx]
-                circ = _cross_section_circumference(sv[:, :2])
-                circs.append(circ)
-            ref[f'{region}_circ_m'] = float(np.mean(circs)) if circs else 0.1
+            
+        region_verts = verts[mask]
+        
+        # Compute cross-section at the centroid Z of the region
+        z_mean = region_verts[:, 2].mean()
+        z_band = 0.02 # 2cm
+        all_in_band = verts[(verts[:, 2] > z_mean - z_band) & 
+                            (verts[:, 2] < z_mean + z_band)]
+        
+        if len(all_in_band) >= 3:
+            ref[f'{region}_circ_m'] = _cross_section_circumference(all_in_band[:, :2])
         else:
-            # Full cross-section at mean Z height — use all vertices in a Z band
-            z_mean = region_verts[:, 2].mean()
-            z_band = 0.02  # 2cm band
-            all_in_band = verts[(verts[:, 2] > z_mean - z_band) &
-                                (verts[:, 2] < z_mean + z_band)]
-            if len(all_in_band) >= 3:
-                circ = _cross_section_circumference(all_in_band[:, :2])
-            else:
-                circ = _cross_section_circumference(region_verts[:, :2])
-            ref[f'{region}_circ_m'] = circ
+            ref[f'{region}_circ_m'] = _cross_section_circumference(region_verts[:, :2])
 
     _template_ref = ref
     logger.info('Template ref measurements: %s',
                 {k: f'{v:.3f}m' for k, v in ref.items()})
     return ref
-
-
-# Mapping from profile keys to region names
-_PROFILE_TO_REGION = {
-    'chest_circumference_cm': 'chest',
-    'waist_circumference_cm': 'waist',
-    'hip_circumference_cm': 'hip',
-    'thigh_circumference_cm': 'thigh',
-    'calf_circumference_cm': 'calf',
-    'bicep_circumference_cm': 'bicep',
-    'forearm_circumference_cm': 'forearm',
-    'neck_circumference_cm': 'neck',
-}
-
-# Which muscle groups each region affects
-_REGION_GROUPS = {
-    'chest':   ['pectorals', 'traps'],
-    'waist':   ['abs', 'obliques'],
-    'hip':     ['glutes'],
-    'thigh':   ['quads_l', 'quads_r'],
-    'calf':    ['calves_l', 'calves_r'],
-    'bicep':   ['biceps_l', 'biceps_r'],
-    'forearm': ['forearms_l', 'forearms_r'],
-    'neck':    ['traps'],
-}
 
 
 def deform_template(profile: dict = None) -> dict:
@@ -240,7 +203,7 @@ def deform_template(profile: dict = None) -> dict:
           'vertices'      - np.float32 (N, 3), units = mm
           'faces'         - np.uint32  (M, 3)
           'uvs'           - np.float32 (N, 2)
-          'body_part_ids' - np.int32   (N,)  (all zeros)
+          'body_part_ids' - np.int32   (N,)
           'volume_cm3'    - float
           'num_vertices'  - int
           'num_faces'     - int
@@ -250,16 +213,13 @@ def deform_template(profile: dict = None) -> dict:
     verts = tmpl['verts'].copy()  # meters
     faces = tmpl['faces']
     uvs = tmpl['uvs']
-    seg = tmpl['seg']
+    part_ids = tmpl['part_ids']
 
-    ref = _compute_template_measurements(verts, seg)
+    ref = _compute_template_measurements(verts, part_ids)
 
     # ── Step 0: Apply shape key phenotype deltas ──────────────────────────
     # Apply BEFORE height/circumference scaling so deltas remain in template
     # coordinate space. Each delta is (N, 3) float32 in meters.
-    # NOTE: Only apply muscle/weight deltas. Gender/ethnicity keys (gender_male,
-    # gender_female) are mutually-exclusive ethnicity variants that compound
-    # when applied together, producing malformed meshes.
     shape_deltas = _load_shape_deltas()
     _SAFE_CATEGORIES = ('muscle', 'weight')
     for key_name, info in shape_deltas.items():
@@ -274,25 +234,58 @@ def deform_template(profile: dict = None) -> dict:
             verts += info['delta'] * diff
 
     # ── Step 1: Scale height ──────────────────────────────────────────────
-    target_h = p['height_cm'] / 100.0  # meters
+    target_h = p['height_cm'] / 100.0
     template_h = ref['height_m']
-    if template_h > 0:
-        h_scale = target_h / template_h
-        verts[:, 2] *= h_scale
-        # Also scale XY slightly to maintain proportions (cube-root scaling)
-        xy_scale_from_height = h_scale ** 0.33
-    else:
-        h_scale = 1.0
-        xy_scale_from_height = 1.0
+    h_scale = target_h / template_h if template_h > 0 else 1.0
+    verts[:, 2] *= h_scale
 
-    # ── Step 2: Proportional XY scaling ──────────────────────────────────
-    # Apply height-proportional scaling to XY to maintain proportions.
-    # NOTE: Per-region PCA bone-axis scaling is disabled because the vertex
-    # segmentation (template_vert_segmentation.json) is for SMPL (6890 verts)
-    # not the MPFB2 template (13380 verts). Using wrong indices creates spikes.
-    # The muscle/weight shape deltas from Step 0 handle body composition.
-    verts[:, 0] *= xy_scale_from_height
-    verts[:, 1] *= xy_scale_from_height
+    # ── Step 2: Per-region PCA scaling ──────────────────────────────────
+    # Apply individual scaling to regions based on circumferences
+    scale_factors = np.ones(len(verts), dtype=np.float32)
+    
+    region_mapping = {
+        'chest_circumference_cm': 'chest',
+        'waist_circumference_cm': 'waist',
+        'hip_circumference_cm': 'hip',
+        'thigh_circumference_cm': ['thigh_l', 'thigh_r'],
+        'calf_circumference_cm':  ['calf_l', 'calf_r'],
+        'bicep_circumference_cm': ['bicep_l', 'bicep_r'],
+        'forearm_circumference_cm': ['forearm_l', 'forearm_r'],
+        'neck_circumference_cm': 'neck',
+    }
+    
+    part_to_region = {
+        0: 'waist', 3: 'waist',
+        1: 'thigh_l', 2: 'thigh_r',
+        4: 'calf_l', 5: 'calf_r',
+        6: 'chest', 9: 'chest',
+        12: 'neck',
+        16: 'bicep_l', 17: 'bicep_r',
+        18: 'forearm_l', 19: 'forearm_r'
+    }
+
+    for prof_key, region_names in region_mapping.items():
+        if prof_key not in p: continue
+        target_circ = p[prof_key] / 100.0
+        
+        if isinstance(region_names, str):
+            region_names = [region_names]
+            
+        for reg in region_names:
+            ref_circ = ref.get(f'{reg}_circ_m', 0.5)
+            s = target_circ / ref_circ if ref_circ > 0 else 1.0
+            
+            # Apply scale factor to vertices in this region's parts
+            for pid, rname in part_to_region.items():
+                if rname == reg:
+                    scale_factors[part_ids == pid] = s
+
+    # Smooth the scale factor transitions to avoid spikes
+    _smooth_scale_factors(scale_factors, faces, iterations=10)
+    
+    # Apply scaling (XY only)
+    verts[:, 0] *= scale_factors
+    verts[:, 1] *= scale_factors
 
     # ── Convert to mm (pipeline convention) ───────────────────────────────
     verts_mm = (verts * 1000.0).astype(np.float32)
@@ -304,13 +297,13 @@ def deform_template(profile: dict = None) -> dict:
         from core.texture_factory import get_part_ids
         _part_ids = get_part_ids(len(verts_mm))
     except Exception:
-        _part_ids = None
+        _part_ids = part_ids
 
     return {
         'vertices': verts_mm,
         'faces': faces.astype(np.uint32),
         'uvs': uvs,
-        'body_part_ids': _part_ids if _part_ids is not None else np.zeros(len(verts_mm), dtype=np.int32),
+        'body_part_ids': _part_ids,
         'volume_cm3': volume_cm3,
         'num_vertices': len(verts_mm),
         'num_faces': len(faces),
@@ -318,53 +311,23 @@ def deform_template(profile: dict = None) -> dict:
     }
 
 
-def _smooth_boundaries(verts, faces, scale_factors, iterations=5, strength=0.4):
-    """Distance-weighted Laplacian smoothing on boundary vertices.
-
-    Extends 2 rings out from scale-factor boundaries for gradual blending.
-    """
-    n = len(verts)
+def _smooth_scale_factors(factors, faces, iterations=5):
+    """Laplacian smoothing of scalar factors over the mesh."""
+    n = len(factors)
     adj = [[] for _ in range(n)]
     for f in faces:
         for i in range(3):
-            a, b = int(f[i]), int(f[(i + 1) % 3])
-            adj[a].append(b)
-            adj[b].append(a)
-
-    # Find direct boundary vertices (1-ring)
-    boundary = set()
-    for i in range(n):
-        si = scale_factors[i]
-        for j in adj[i]:
-            if abs(scale_factors[j] - si) > 0.01:
-                boundary.add(i)
-                boundary.add(j)
-                break
-
-    if not boundary:
-        return
-
-    # Extend to 2-ring for smoother falloff
-    extended = set(boundary)
-    for v in list(boundary):
-        for nb in adj[v]:
-            extended.add(nb)
-
-    boundary_list = list(extended)
-    logger.debug('Smoothing %d boundary vertices (2-ring)', len(boundary_list))
-
-    # Distance from boundary center → reduced strength for outer ring
-    core = boundary
+            a, b = int(f[i]), int(f[(i+1)%3])
+            adj[a].append(b); adj[b].append(a)
+            
     for _ in range(iterations):
-        new_pos = verts.copy()
-        for i in boundary_list:
-            neighbors = adj[i]
-            if not neighbors:
-                continue
-            avg = verts[neighbors].mean(axis=0)
-            s = strength if i in core else strength * 0.5
-            new_pos[i] = verts[i] * (1 - s) + avg * s
-        verts[boundary_list] = new_pos[boundary_list]
+        new_factors = factors.copy()
+        for i in range(n):
+            if adj[i]:
+                # Use mean of neighbors
+                neighbors = list(set(adj[i]))
+                new_factors[i] = factors[neighbors].mean()
+        factors[:] = new_factors
 
 
 def _mesh_volume_cm3(verts_mm, faces):

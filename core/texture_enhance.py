@@ -205,6 +205,41 @@ def _inpaint_diffusion(texture, gap_mask):
 
 
 
+def generate_skin_normal_map(albedo_bgr, strength=10.0):
+    """
+    Generate a tangent-space normal map from skin albedo using frequency-separated
+    Scharr gradients. Isolates pore-level detail from baked-in lighting.
+
+    Args:
+        albedo_bgr: (H, W, 3) uint8 BGR skin atlas
+        strength: normal map intensity (higher = more pronounced pores)
+
+    Returns:
+        (H, W, 3) uint8 RGB tangent-space normal map
+    """
+    gray = cv2.cvtColor(albedo_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+
+    # High-pass: isolate pore micro-detail from low-freq lighting
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    high_freq = gray - blurred
+
+    # Scharr gradients (more rotationally invariant than Sobel)
+    dx = cv2.Scharr(high_freq, cv2.CV_32F, 1, 0)
+    dy = cv2.Scharr(high_freq, cv2.CV_32F, 0, 1)
+    z = np.ones_like(dx) / strength
+
+    norm = np.sqrt(dx ** 2 + dy ** 2 + z ** 2)
+    norm[norm == 0] = 1.0
+
+    # Tangent-space normal: RGB = (X+1)/2, (Y+1)/2, Z mapped to [0,255]
+    # OpenGL convention: R=X, G=Y, B=Z
+    nx = (dx / norm + 1.0) * 127.5
+    ny = (dy / norm + 1.0) * 127.5
+    nz = (z / norm + 1.0) * 127.5
+
+    normal_rgb = np.stack([nx, ny, nz], axis=-1).astype(np.uint8)
+    return normal_rgb
+
 def delight_texture(texture: np.ndarray, coverage_mask: np.ndarray = None,
                     sigma_ratio: float = 0.15) -> np.ndarray:
     """

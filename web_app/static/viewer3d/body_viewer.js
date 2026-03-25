@@ -875,11 +875,30 @@ const SKIN_MATERIAL = new THREE.MeshPhysicalMaterial({
     normalScale:        new THREE.Vector2(0.9, 0.9),
     // Environment reflection
     envMapIntensity:    1.2,
-    onBeforeCompile: (shader) => { 
-      shader.fragmentShader = shader.fragmentShader.replace('#include <map_pars_fragment>', '#include <map_pars_fragment>\nvec4 textureStochastic(sampler2D tex, vec2 uv) { vec4 c1 = texture2D(tex, uv); vec4 c2 = texture2D(tex, uv * 0.85 + 0.3); return mix(c1, c2, 0.5); }'); 
-      shader.fragmentShader = shader.fragmentShader.replace('vec4 sampledDiffuseColor = texture2D( map, vMapUv );', 'vec4 sampledDiffuseColor = textureStochastic( map, vMapUv );'); 
-    },
-    transparent: false,
+    onBeforeCompile: (shader) => {
+      const seamlessBlendChunk = `
+    #include <map_pars_fragment>
+    vec4 textureSeamlessBlend(sampler2D tex, vec2 uv) {
+    // Current tile local coordinates
+    vec2 tileUv = fract(uv);
+    vec4 photoColor = texture2D(tex, uv);
+
+    // Layer below the human skin: Sample the exact center of the tile
+    // to get a uniform, artifact-free base skin tone.
+    vec2 centerUv = floor(uv) + vec2(0.5);
+    vec4 baseColor = texture2D(tex, centerUv);
+
+    // Make the edges of the photo transparent
+    float dist = distance(tileUv, vec2(0.5));
+    float mask = 1.0 - smoothstep(0.25, 0.45, dist); // Soft fade
+
+    // Connect it all smooth
+    return mix(baseColor, photoColor, mask);
+    }
+    `;
+      shader.fragmentShader = shader.fragmentShader.replace('#include <map_pars_fragment>', seamlessBlendChunk);
+      shader.fragmentShader = shader.fragmentShader.replace('vec4 sampledDiffuseColor = texture2D( map, vMapUv );', 'vec4 sampledDiffuseColor = textureSeamlessBlend( map, vMapUv );');
+    },    transparent: false,
   });
 
 // ── Micro-normal (skin pore) detail ──────────────────────────────────────────
@@ -984,6 +1003,7 @@ function init() {
   controls.dampingFactor    = 0.08;
   controls.minDistance      = 5;
   controls.maxDistance      = 3000;
+  controls.zoomSpeed        = 0.5; // 50% smaller zoom steps
 
   controls.target.set(0, 80, 0);  // roughly mid-torso height
   controls.update();
@@ -1053,24 +1073,72 @@ function init() {
     });
   });
 
-  // Phenotype slider listeners — client-side preview only (no server call)
-  ['pheno-muscle', 'pheno-weight'].forEach(id => {
+  // Phenotype slider listeners (Server-side deform with 500ms debounce)
+  let _phenotypeTimeout = null;
+
+  window.applyPhenotype = async function() {
+    try {
+      const cid = _customerId();
+      const mVal = document.getElementById('pheno-muscle')?.value || 50;
+      const wVal = document.getElementById('pheno-weight')?.value || 50;
+      const gVal = document.getElementById('pheno-gender')?.value || 100;
+
+      const updates = {
+        muscle_factor: parseInt(mVal) / 100.0,
+        weight_factor: parseInt(wVal) / 100.0,
+        gender_factor: parseInt(gVal) / 100.0,
+        gender: parseInt(gVal) < 50 ? 'female' : 'male'
+      };
+
+      _setStatus('Applying phenotype...');
+
+      // 1. Update profile
+      const postResp = await fetch(`/web_app/api/customer/${cid}/body_profile`, {
+        method: 'POST',
+        headers: _authHeaders(),
+        body: JSON.stringify(updates),
+      });
+      const result = await postResp.json();
+      if (result.status !== 'success') {
+        _setStatus('Phenotype update failed: ' + (result.message || '')); return;
+      }
+
+      // 2. Regenerate mesh
+      const meshResp = await fetch(`/web_app/api/customer/${cid}/body_model`, {
+        method: 'POST',
+        headers: _authHeaders(),
+        body: JSON.stringify({}),
+      });
+      const meshResult = await meshResp.json();
+      if (meshResult.glb_url) {
+        _loadGLB(meshResult.glb_url, null);
+        _setStatus('');
+      } else {
+        _setStatus('Mesh regeneration failed');
+      }
+    } catch (e) {
+      _setStatus('Update failed: ' + e.message);
+    }
+  };
+
+  ['pheno-muscle', 'pheno-weight', 'pheno-gender'].forEach(id => {
     const el = document.getElementById(id);
     if (el) {
       el.addEventListener('input', () => {
-        const val = document.getElementById(id + '-val');
-        if (val) val.textContent = el.value;
+        if (id === 'pheno-gender') {
+           const v = parseInt(el.value);
+           const label = document.getElementById('pheno-gender-label');
+           if (label) label.textContent = v < 50 ? 'Female' : 'Male';
+        } else {
+           const val = document.getElementById(id + '-val');
+           if (val) val.textContent = el.value;
+        }
+
+        clearTimeout(_phenotypeTimeout);
+        _phenotypeTimeout = setTimeout(window.applyPhenotype, 500);
       });
     }
   });
-  const genderEl = document.getElementById('pheno-gender');
-  if (genderEl) {
-    genderEl.addEventListener('input', () => {
-      const v = parseInt(genderEl.value);
-      const label = document.getElementById('pheno-gender-label');
-      if (label) label.textContent = v < 33 ? 'Female' : v > 66 ? 'Male' : 'Neutral';
-    });
-  }
 
   // Collapsible panels — click h3 to toggle
   document.querySelectorAll('.collapsible > h3').forEach(h3 => {
@@ -2140,10 +2208,10 @@ function _getRegionZRange(region) {
   });
   const h = maxH - minH;
   const RANGES = {
-    ankle:    [0.00, 0.08], calf:   [0.08, 0.18], knee:   [0.18, 0.28],
-    thigh:    [0.28, 0.40], hip:    [0.40, 0.50], waist:  [0.50, 0.58],
-    chest:    [0.58, 0.70], shoulder:[0.70, 0.82], neck:  [0.82, 0.90],
-    head:     [0.90, 1.00], arm:    [0.55, 1.00], leg:    [0.00, 0.40],
+    ankle:    [0.00, 0.08], calf:   [0.08, 0.22], knee:   [0.22, 0.32],
+    thigh:    [0.32, 0.45], hip:    [0.45, 0.55], waist:  [0.55, 0.65],
+    chest:    [0.65, 0.78], shoulder:[0.78, 0.85], neck:  [0.85, 0.92],
+    head:     [0.92, 1.00], arm:    [0.55, 1.00], leg:    [0.00, 0.45],
   };
   const r = RANGES[region] || [0, 1];
   return [minH + r[0] * h, minH + r[1] * h, heightAxis];
@@ -4084,7 +4152,7 @@ function _animate() {
   
     // Continuous Zoom (z=in, v=out)
     if (_moveState.zoomIn) {
-        const factor = 0.95; // 5% per frame
+        const factor = 0.975; // 2.5% per frame (smoother)
         const dist = camera.position.distanceTo(controls.target);
         if (dist > controls.minDistance + 1) {
             camera.position.lerp(controls.target, 1.0 - factor);
@@ -4092,7 +4160,7 @@ function _animate() {
         }
     }
     if (_moveState.zoomOut) {
-        const factor = 1.05; // 5% per frame
+        const factor = 1.025; // 2.5% per frame (smoother)
         const dist = camera.position.distanceTo(controls.target);
         if (dist < controls.maxDistance - 1) {
             const dir = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();

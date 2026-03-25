@@ -472,11 +472,17 @@ def generate_pbr_textures(albedo, uvs, vertices, faces,
         # Resize to match albedo resolution
         result['normal'] = cv2.resize(normal_map, (oh, ow), interpolation=cv2.INTER_LINEAR)
     else:
-        # Generate from geometry
-        from core.mesh_reconstruction import _generate_normal_map
-        result['normal'] = _generate_normal_map(vertices, faces, uvs, atlas_size=atlas_size)
-        if actual_size > atlas_size:
-            result['normal'] = cv2.resize(result['normal'], (ow, oh), interpolation=cv2.INTER_LINEAR)
+        # High-Fidelity Path: Generate from albedo micro-detail (pore-level)
+        try:
+            from core.texture_enhance import generate_skin_normal_map
+            result['normal'] = generate_skin_normal_map(enhanced_albedo, strength=12.0)
+            logger.info("Normal map generated from albedo micro-detail")
+        except Exception as e:
+            logger.warning("Albedo-based normal map failed, falling back to geometry: %s", e)
+            from core.mesh_reconstruction import _generate_normal_map
+            result['normal'] = _generate_normal_map(vertices, faces, uvs, atlas_size=atlas_size)
+            if actual_size > atlas_size:
+                result['normal'] = cv2.resize(result['normal'], (ow, oh), interpolation=cv2.INTER_LINEAR)
 
     # 3. Roughness map
     roughness_float = generate_roughness_map(uvs, atlas_size, vertices=vertices)

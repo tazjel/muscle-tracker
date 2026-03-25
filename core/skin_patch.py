@@ -128,59 +128,57 @@ def make_tileable(sample_bgr, out_size=512, patch_size=64, overlap=16):
 
 
 def _find_best_patch(canvas, sample, y, x, patch_size, overlap,
-                     has_top, has_left, n_candidates=200):
+                     has_top, has_left, n_candidates=None):
     """
-    Find best matching patch using vectorized SSD with rotation augmentation.
-
-    Tests n_candidates random patches at 4 rotations (0/90/180/270) for
-    a total of n_candidates*4 comparisons. Uses batch SSD for speed.
+    Find best matching patch using vectorized Global SSD via cv2.matchTemplate.
+    Finds the mathematical global optimum across the entire sample image.
     """
     sh, sw = sample.shape[:2]
-
-    # Extract overlap reference regions from canvas once
-    left_ref = canvas[y:y+patch_size, x:x+overlap].astype(np.float32) if has_left else None
-    top_ref = canvas[y:y+overlap, x:x+patch_size].astype(np.float32) if has_top else None
-
-    # Sample random candidate patches
-    candidates = []
-    max_y, max_x = sh - patch_size, sw - patch_size
-    if max_y <= 0 or max_x <= 0:
-        # Sample too small — just return a random patch
-        sy = max(0, min(np.random.randint(0, max(1, max_y + 1)), sh - patch_size))
-        sx = max(0, min(np.random.randint(0, max(1, max_x + 1)), sw - patch_size))
-        patch = sample[sy:sy+patch_size, sx:sx+patch_size].copy()
-        mask = np.ones((patch_size, patch_size), dtype=np.float32)
-        return patch, mask
-
-    sy_arr = np.random.randint(0, max_y + 1, size=n_candidates)
-    sx_arr = np.random.randint(0, max_x + 1, size=n_candidates)
-
-    for i in range(n_candidates):
-        base = sample[sy_arr[i]:sy_arr[i]+patch_size, sx_arr[i]:sx_arr[i]+patch_size]
-        candidates.append(base)
-        # Rotation augmentation: 90, 180, 270 degrees
-        for k in (1, 2, 3):
-            candidates.append(np.rot90(base, k))
-
-    # Vectorized SSD computation
+    
+    # Extract overlap reference regions from canvas
+    left_ref = canvas[y:y+patch_size, x:x+overlap] if has_left else None
+    top_ref = canvas[y:y+overlap, x:x+patch_size] if has_top else None
+    
+    # Compute total SSD map across the sample image for each rotation
     best_ssd = float('inf')
-    best_patch = candidates[0]
+    best_patch = None
+    
+    # We test 4 rotations to maximize texture variety
+    for k in (0, 1, 2, 3):
+        rot_sample = np.rot90(sample, k)
+        rh, rw = rot_sample.shape[:2]
+        if rh < patch_size or rw < patch_size: continue
+        
+        # Total SSD = SSD(left_overlap) + SSD(top_overlap)
+        total_ssd = np.zeros((rh - patch_size + 1, rw - patch_size + 1), dtype=np.float32)
+        
+        if has_left:
+            # Match only the left vertical strip of the patch
+            res_left = cv2.matchTemplate(rot_sample, left_ref, cv2.TM_SQDIFF)
+            # res_left size is (rh - patch_size + 1, rw - overlap + 1)
+            # Align res_left to the start position of a full patch_size window
+            total_ssd += res_left[:, :rw - patch_size + 1]
+            
+        if has_top:
+            # Match only the top horizontal strip of the patch
+            res_top = cv2.matchTemplate(rot_sample, top_ref, cv2.TM_SQDIFF)
+            # res_top size is (rh - overlap + 1, rw - patch_size + 1)
+            total_ssd += res_top[:rh - patch_size + 1, :]
+            
+        min_val, _, min_loc, _ = cv2.minMaxLoc(total_ssd)
+        
+        if min_val < best_ssd:
+            best_ssd = min_val
+            sx, sy = min_loc
+            best_patch = rot_sample[sy:sy+patch_size, sx:sx+patch_size].copy()
 
-    for cand in candidates:
-        if cand.shape[0] != patch_size or cand.shape[1] != patch_size:
-            continue
-        ssd = 0.0
-        if has_left and left_ref is not None:
-            diff = left_ref - cand[:, :overlap].astype(np.float32)
-            ssd += np.dot(diff.ravel(), diff.ravel())
-        if has_top and top_ref is not None:
-            diff = top_ref - cand[:overlap, :].astype(np.float32)
-            ssd += np.dot(diff.ravel(), diff.ravel())
-        if ssd < best_ssd:
-            best_ssd = ssd
-            best_patch = cand
+    if best_patch is None:
+        # Fallback to random if something went wrong
+        sy = np.random.randint(0, sh - patch_size)
+        sx = np.random.randint(0, sw - patch_size)
+        best_patch = sample[sy:sy+patch_size, sx:sx+patch_size].copy()
 
-    best_patch = best_patch.copy()
+    # Compute minimum error boundary cut mask
 
     # Compute minimum error boundary cut mask
     mask = np.ones((patch_size, patch_size), dtype=np.float32)

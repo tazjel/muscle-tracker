@@ -17,10 +17,13 @@ import math
 import numpy as np
 import os
 import warnings
+import json
+import logging
 
 import trimesh
 import trimesh.smoothing
 
+logger = logging.getLogger(__name__)
 
 # ── Default profile (user's personal measurements) ────────────────────────────
 DEFAULT_PROFILE = {
@@ -49,8 +52,82 @@ DEFAULT_PROFILE = {
     # Extra
     'shoulder_width_cm':        37,
     'skin_tone_hex':            'C4956A',
+    'gender':                   'male',
 }
 
+def _build_mpfb2_mesh(profile: dict) -> dict | None:
+    """
+    Build the 13380-vertex MPFB2 (MakeHuman) mesh with phenotype deltas.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    meshes_dir = os.path.join(root, 'meshes')
+    
+    try:
+        verts = np.load(os.path.join(meshes_dir, 'template_verts.npy'))
+        faces = np.load(os.path.join(meshes_dir, 'template_faces.npy'))
+        uvs = np.load(os.path.join(meshes_dir, 'template_uvs.npy'))
+    except FileNotFoundError:
+        logger.warning("MPFB2 template files missing in meshes/")
+        return None
+
+    # Apply phenotype deltas
+    deltas_dir = os.path.join(meshes_dir, 'shape_deltas')
+    
+    # Calculate phenotype values from profile
+    height_cm = profile.get('height_cm', 168)
+    weight_kg = profile.get('weight_kg', 63)
+    gender = str(profile.get('gender', 'male')).lower()
+    
+    # Simple mapping for now: weight/muscle params based on BMI and chest-to-waist
+    bmi = weight_kg / ((height_cm / 100) ** 2)
+    weight_val = max(-1.0, min(1.0, (bmi - 22) / 10))  # 0.0 is average (BMI 22)
+    
+    chest = profile.get('chest_circumference_cm', 97)
+    waist = profile.get('waist_circumference_cm', 90)
+    muscle_val = max(-1.0, min(1.0, (chest / max(waist, 1) - 1.05) / 0.2))
+
+    # Load and apply deltas
+    def apply_delta(name, weight):
+        if abs(weight) < 0.01: return
+        path = os.path.join(deltas_dir, f"{name}.npy")
+        if os.path.exists(path):
+            delta = np.load(path)
+            nonlocal verts
+            verts += delta * weight
+
+    # Apply Gender (Male/Female deltas are relative to a neutral base)
+    if gender in ('male', 'm'):
+        apply_delta('md__ca__ma__yn', 1.0)
+    else:
+        apply_delta('md__ca__fe__yn', 1.0)
+
+    apply_delta('macro_muscle', muscle_val)
+    apply_delta('macro_weight', weight_val)
+
+    # Scale to height
+    h_range = verts[:, 2].max() - verts[:, 2].min()
+    target_mm = height_cm * 10.0
+    scale = target_mm / max(h_range, 0.01)
+    verts *= scale
+
+    # Floor at Z=0
+    verts[:, 2] -= verts[:, 2].min()
+
+    # Get body part IDs from texture factory cache or similar
+    from core.texture_factory import get_part_ids
+    part_ids = get_part_ids(len(verts))
+    if part_ids is None:
+        part_ids = np.zeros(len(verts), dtype=np.int32)
+
+    return {
+        'vertices': verts.astype(np.float32),
+        'faces': faces.astype(np.uint32),
+        'uvs': uvs.astype(np.float32),
+        'body_part_ids': part_ids,
+        'volume_cm3': 0.0, # Will be computed by caller
+        'num_vertices': len(verts),
+        'num_faces': len(faces),
+    }
 
 def _build_anny_mesh(profile: dict) -> dict | None:
     """
@@ -201,57 +278,96 @@ def _boolean_union(parts):
 
 
 def build_body_mesh(profile: dict = None, segments: int = 48,
-                    images: list = None, directions: list = None) -> dict:
+                    images: list = None, directions: list = None,
+                    image_paths: list = None) -> dict:
     """
-    Build a full body mesh from body profile measurements using ellipsoid
-    primitives merged via boolean union.
+    Build a full body mesh from body profile measurements.
+    Prioritizes MPFB2 template fitting, then Anny, then Ellipsoid fallback.
 
     Args:
         profile: dict with measurement keys (see DEFAULT_PROFILE).
         segments: ignored (kept for API compatibility).
-        images: optional list of (H,W,3) BGR arrays for HMR2.0 shape prediction.
-        directions: optional list of direction strings matching images.
+        images: optional list of (H,W,3) BGR arrays.
+        directions: optional list of direction strings ('front', 'left', etc.).
+        image_paths: optional list of strings (alternative to 'images').
 
     Returns:
-        dict with:
-          'vertices'      — np.float32 (N, 3), units = mm
-          'faces'         — np.uint32  (M, 3)
-          'body_part_ids' — np.int32   (N,)  (all zeros — single mesh)
-          'volume_cm3'    — float
-          'num_vertices'  — int
-          'num_faces'     — int
+        dict with vertices, faces, body_part_ids, and volume.
     """
     import logging
     _logger = logging.getLogger(__name__)
 
     p = {**DEFAULT_PROFILE, **(profile or {})}
 
-    # ── Try Anny first (realistic anatomical mesh) ─────────────────────────
-    anny_result = _build_anny_mesh(p)
-    if anny_result is not None:
-        # ── HMR2.0 shape refinement (when images available) ─────────────
-        if images:
-            try:
-                from core.hmr_shape import predict_shape, transfer_shape_to_anny
-                hmr_result = predict_shape(images, directions)
-                if hmr_result and hmr_result['vertices'] is not None:
-                    _logger.info(
-                        f"HMR shape prediction: backend={hmr_result['backend']}, "
-                        f"confidence={hmr_result['confidence']:.2f}"
-                    )
-                    verts = anny_result['vertices']
-                    verts = transfer_shape_to_anny(hmr_result['vertices'], verts)
-                    anny_result['vertices'] = verts
-                    anny_result['hmr_betas'] = hmr_result['betas']
-                    anny_result['hmr_confidence'] = hmr_result['confidence']
-                    anny_result['hmr_backend'] = hmr_result['backend']
-                else:
-                    _logger.info("HMR prediction returned no vertices, using phenotype shape")
-            except Exception as e:
-                _logger.warning(f"HMR shape transfer failed, using phenotype: {e}")
-        return anny_result
+    # ── 1. Try MPFB2 template (High fidelity) ──────────────────────────────
+    mesh = _build_mpfb2_mesh(p)
+    
+    if mesh is None:
+        # ── 2. Fallback to Anny ────────────────────────────────────────────
+        mesh = _build_anny_mesh(p)
 
-    # ── Fallback: Ellipsoid boolean union ──────────────────────────────────
+    if mesh is not None:
+        # ── 3. Silhouette refinement (if scan images provided) ─────────────
+        # Note: images/directions/image_paths allows deforming the template to fit photo
+        actual_images = image_paths if image_paths else images
+        if actual_images and directions:
+            try:
+                from core.silhouette_extractor import extract_silhouette
+                from core.silhouette_matcher import fit_mesh_to_silhouettes
+                
+                silhouette_views = []
+                for i, img_src in enumerate(actual_images):
+                    dir_name = directions[i]
+                    
+                    # If img_src is a path, extract_silhouette handles it. 
+                    # If it is a numpy array, we need a temp path for now or 
+                    # update extract_silhouette to handle arrays.
+                    temp_path = None
+                    if isinstance(img_src, np.ndarray):
+                        import cv2
+                        import tempfile
+                        fd, temp_path = tempfile.mkstemp(suffix=".jpg")
+                        os.close(fd)
+                        cv2.imwrite(temp_path, img_src)
+                        path_to_use = temp_path
+                    else:
+                        path_to_use = img_src
+                        
+                    # Extract silhouette
+                    # Assuming camera distance is stored in profile or use default 100cm
+                    dist_cm = p.get('camera_distance_cm', 100.0)
+                    contour_mm, mask, ratio = extract_silhouette(path_to_use, dist_cm)
+                    
+                    if temp_path: os.remove(temp_path)
+                    
+                    if contour_mm is not None:
+                        silhouette_views.append({
+                            'contour_mm': contour_mm,
+                            'direction': dir_name,
+                            'distance_mm': dist_cm * 10,
+                            'camera_height_mm': p.get('camera_height_cm', 65.0) * 10
+                        })
+                
+                if silhouette_views:
+                    _logger.info("Refining %s mesh with %d silhouette views", 
+                                "MPFB2" if mesh['num_vertices'] == 13380 else "Anny",
+                                len(silhouette_views))
+                    mesh['vertices'] = fit_mesh_to_silhouettes(
+                        mesh['vertices'], mesh['faces'], silhouette_views
+                    )
+            except Exception as e:
+                _logger.warning(f"Silhouette refinement failed: {e}")
+
+        # Compute volume of the final mesh
+        try:
+            m = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
+            mesh['volume_cm3'] = round(abs(m.volume) / 1000.0, 2) if m.is_volume else 0.0
+        except Exception:
+            mesh['volume_cm3'] = 0.0
+            
+        return mesh
+
+    # ── 4. Fallback: Ellipsoid boolean union (Basic) ───────────────────────
     def cm(key):
         return p[key] * 10  # cm → mm
 
