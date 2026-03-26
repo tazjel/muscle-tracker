@@ -491,6 +491,56 @@ def cloud_pbr_textures(albedo_bgr, uvs, vertices, faces,
         return None
 
 
+def cloud_train_splat(video_bytes):
+    """
+    Train a 3D Gaussian Splat from video on RunPod GPU.
+    Returns .spz bytes or None.
+    """
+    if not is_configured(): return None
+    
+    video_b64 = base64.b64encode(video_bytes).decode('ascii')
+    payload = {
+        'input': {
+            'action': 'train_splat',
+            'video_b64': video_b64
+        }
+    }
+    
+    headers = {'Authorization': f'Bearer {RUNPOD_API_KEY}', 'Content-Type': 'application/json'}
+    try:
+        # Splat training is long (7-10 mins) -> Must use async and longer timeout
+        logger.info("Starting long-running Splat training on RunPod...")
+        output = _run_async_raw(payload, headers)
+        if output and output.get('status') == 'success':
+            # Prototype returns a mock URL or base64
+            return output.get('splat_url') 
+    except Exception as e:
+        logger.error(f"Cloud Splat training failed: {e}")
+    return None
+
+
+def cloud_anchor_splat(splat_data, mesh_vertices):
+    """
+    Anchor a 3DGS splat to MPFB2 mesh vertices for parametric deformation.
+    """
+    if not is_configured(): return None
+    payload = {
+        'input': {
+            'action': 'anchor_splat',
+            'splat_data': splat_data, # Metadata or .spz ref
+            'vertices': base64.b64encode(mesh_vertices.astype(np.float32).tobytes()).decode('ascii'),
+            'vertices_shape': list(mesh_vertices.shape)
+        }
+    }
+    headers = {'Authorization': f'Bearer {RUNPOD_API_KEY}', 'Content-Type': 'application/json'}
+    try:
+        output = _run_async_raw(payload, headers)
+        return output if output and output.get('status') == 'success' else None
+    except Exception as e:
+        logger.error(f"Cloud Splat anchoring failed: {e}")
+    return None
+
+
 def is_configured():
     """Check if RunPod cloud GPU is configured."""
     return bool(RUNPOD_API_KEY and RUNPOD_ENDPOINT)

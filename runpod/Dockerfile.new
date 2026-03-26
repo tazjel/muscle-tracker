@@ -1,0 +1,41 @@
+# RunPod Cinematic 3DGS Engine (v6.0)
+# Base: CUDA 12.4 + PyTorch 2.4 (Optimized for Blackwell/Ada)
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+
+# 1. Install System Dependencies (Cinematic Scan Pipeline)
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    colmap \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 2. Install 2026-Standard Python Packages
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir \
+    runpod \
+    opencv-python \
+    rembg[gpu] \
+    mediapipe \
+    gsplat>=1.5.0 \
+    nerfstudio>=1.1.5 \
+    diffusers \
+    transformers \
+    accelerate \
+    controlnet_aux
+
+# 3. Pre-compile CUDA Kernels (Saves 2-5 minutes of cold-start cost)
+RUN python -c "import gsplat; print('gsplat CUDA kernels pre-compiled successfully')"
+
+# 4. Copy Code (Models will be lazy-loaded from /workspace Volume)
+COPY . .
+
+# Environment Variables for Performance
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_DEVICE_ORDER=PCI_BUS_ID
+ENV TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0 12.0" 
+
+# Start RunPod Handler
+CMD ["python", "-u", "runpod/handler.py"]
