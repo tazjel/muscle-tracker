@@ -6,11 +6,24 @@ Output: dict with 'betas' (10,), 'vertices' (6890,3), 'joints' (24,3), 'pose' (7
 
 Falls back to MediaPipe keypoint → SMPL optimization if HMR2.0 unavailable.
 """
-import numpy as np
 import logging
 import cv2
+import os
 
 logger = logging.getLogger(__name__)
+
+def _load_env():
+    """Manual .env loader to avoid new dependencies."""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env_path = os.path.join(base, '.env')
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    k, v = line.split('=', 1)
+                    os.environ[k.strip()] = v.strip().strip('"\'')
+_load_env()
 
 # Lazy-load heavy imports
 _hmr_model = None

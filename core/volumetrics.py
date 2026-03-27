@@ -163,3 +163,42 @@ def compare_volumes(vol_before, vol_after):
         "gain_pct": round(gain_pct, 2),
         "verdict": verdict,
     }
+
+
+def get_mpfb2_part_ids(n_verts=13380):
+    """
+    Load MPFB2 (13380 verts) segmentation and return as per-vertex part IDs.
+    """
+    import json
+    import os
+    
+    seg_path = os.path.join(os.path.dirname(__file__), 'smpl_vert_segmentation.json')
+    if not os.path.exists(seg_path):
+        return np.zeros(n_verts, dtype=np.int32)
+        
+    try:
+        with open(seg_path, 'r') as f:
+            seg = json.load(f)
+            
+        part_ids = np.zeros(n_verts, dtype=np.int32)
+        
+        # Mapping from JSON region names to internal SMPL-style part IDs (0-23)
+        # Using a subset of standard SMPL labels for compatibility
+        mapping = {
+            "hips": 0, "leftUpLeg": 1, "rightUpLeg": 2, "spine": 3, "leftLeg": 4, "rightLeg": 5,
+            "spine1": 6, "leftFoot": 7, "rightFoot": 8, "spine2": 9, "leftToeBase": 10, "rightToeBase": 11,
+            "neck": 12, "leftShoulder": 13, "rightShoulder": 14, "head": 15, "leftArm": 16, "rightArm": 17,
+            "leftForeArm": 18, "rightForeArm": 19, "leftHand": 20, "rightHand": 21, "leftToe_End": 22, "rightToe_End": 23
+        }
+        
+        for region, p_id in mapping.items():
+            if region in seg:
+                indices = seg[region]
+                # Clip indices to safety
+                valid_idx = [i for i in indices if i < n_verts]
+                part_ids[valid_idx] = p_id
+                
+        return part_ids
+    except Exception as e:
+        logger.error(f"Failed to load MPFB2 segmentation: {e}")
+        return np.zeros(n_verts, dtype=np.int32)

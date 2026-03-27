@@ -21,14 +21,12 @@ runpod.api_key = API_KEY
 
 # Create serverless endpoint
 endpoint = runpod.create_endpoint(
-    name="gtd3d-body-mesh",
-    template_name="gtd3d-body-mesh",
-    docker_image="ghcr.io/tazjel/gtd3d-gpu-worker:latest",
-    gpu_ids="AMPERE_24",  # 24GB GPUs (RTX 3090, L4, A5000)
+    name="gtd3d-cinematic-v6",
+    image_name="ghcr.io/tazjel/gtd3d-gpu-worker:latest",
+    gpu_ids="ADA_24",      # 24GB ADA GPUs (RTX 4090, L40) for fast 3DGS
     workers_min=0,         # Scale to zero when idle ($0/hr)
     workers_max=1,         # Max 1 worker (enough for testing)
-    idle_timeout=5,        # Shut down after 5 seconds idle
-    flash_boot=True,       # Fast cold starts
+    idle_timeout=10,       # 10s idle before scale down
 )
 
 endpoint_id = endpoint.get('id', 'unknown')

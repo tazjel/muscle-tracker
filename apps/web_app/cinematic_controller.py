@@ -68,22 +68,26 @@ def anchor_splat(customer_id):
 
     session_id = request.json.get('session_id')
     mesh_id = request.json.get('mesh_id')
-    
+
     session = db.video_scan_session(session_id)
     mesh = db.mesh_model(mesh_id)
-    
+
     if not session or not mesh:
         return dict(status='error', message='Session or Mesh not found')
 
     try:
-        # 1. Load mesh vertices (placeholder logic - usually from .glb or .obj)
-        # For prototype, we assume vertices are available or mapped.
-        import numpy as np
-        mock_verts = np.random.rand(13380, 3).astype(np.float32)
+        # 1. Load mesh vertices from real GLB
+        from core.mesh_reconstruction import load_glb_vertices
+        if not mesh.glb_path or not os.path.exists(mesh.glb_path):
+            return dict(status='error', message='GLB file missing')
+
+        verts = load_glb_vertices(mesh.glb_path)
+        if verts is None:
+            return dict(status='error', message='Failed to load vertices')
 
         # 2. Delegate to RunPod for alignment
-        logger.info(f"Anchoring Splat {session.splat_url} to Mesh {mesh_id}...")
-        result = cloud_anchor_splat(session.splat_url, mock_verts)
+        logger.info(f"Anchoring Splat {session.splat_url} to Mesh {mesh_id} ({len(verts)} verts)...")
+        result = cloud_anchor_splat(session.splat_url, verts)
 
         if result:
             return dict(status='success', anchors=result.get('anchors_count'))
@@ -93,3 +97,49 @@ def anchor_splat(customer_id):
     except Exception as e:
         logger.exception("Splat anchoring failed")
         return dict(status='error', message=str(e))
+
+
+@action('api/customer/<customer_id:int>/bake_cinematic', method=['POST'])
+@action.uses(db)
+def bake_cinematic(customer_id):
+    """
+    Bake photorealistic details from anchored Splat into PBR textures.
+    Delegates to RunPod (Action: bake_cinematic).
+    """
+    payload, err = _auth_check(customer_id)
+    if err: return err
+
+    session_id = request.json.get('session_id')
+    mesh_id = request.json.get('mesh_id')
+
+    session = db.video_scan_session(session_id)
+    mesh = db.mesh_model(mesh_id)
+
+    if not session or not mesh:
+        return dict(status='error', message='Session or Mesh not found')
+
+    try:
+        from core.mesh_reconstruction import load_glb_vertices
+        from core.cloud_gpu import cloud_bake_cinematic
+        import numpy as np
+
+        # 1. Prepare geometry data
+        verts = load_glb_vertices(mesh.glb_path)
+        faces = np.load('meshes/template_faces.npy') # MPFB2 constant
+        uvs = np.load('meshes/template_uvs.npy')     # MPFB2 constant
+
+        # 2. Delegate to RunPod for baking
+        logger.info(f"Baking Cinematic textures for Mesh {mesh_id}...")
+        textures = cloud_bake_cinematic(verts, faces, uvs, session.splat_url)
+
+        if textures:
+            # 3. Save baked textures and update GLB
+            # (Logic to update GLB with new maps would go here)
+            return dict(status='success', textures=list(textures.keys()))
+        else:
+            return dict(status='error', message='Baking failed')
+
+    except Exception as e:
+        logger.exception("Cinematic bake failed")
+        return dict(status='error', message=str(e))
+

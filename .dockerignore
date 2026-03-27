@@ -1,0 +1,58 @@
+# Ignore source control
+.git/
+.gitignore
+.gitattributes
+
+# Ignore IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Ignore Flutter/Mobile (not needed for Python backend)
+companion_app/
+.dart_tool/
+.pub-cache/
+
+# Ignore local Python environment
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+.pytest_cache/
+
+# Ignore large downloaded models & libs (should be in base image or volume)
+lib/
+models/
+
+# Ignore local assets and test data
+meshes/
+captures/
+uploads/
+data/
+
+# Ignore logs
+*.log
+server.log
+claude_server.log
+
+# Ignore env files
+.env
+
+# Ignore build artifacts
+build/
+dist/
+*.egg-info/
+
+# Ignore agent specific files
+.agent/
+.claude/
+.gemini/
+.playwright-mcp/
+.service/
+SESSION_SUMMARY.md
+GEMINI_STATUS.md
+database.db

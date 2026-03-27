@@ -416,12 +416,13 @@ def cmd_viewer3d(args):
     if model.startswith("http"):
         url = model
     else:
-        url = f"{base_url}/web_app/static/viewer3d/index.html?model={model}"
+        url = f"{base_url}/static/viewer3d/index.html?model={model}"
 
     pw, browser, context = _launch_browser()
 
     try:
         page = context.new_page()
+        page.on("console", lambda msg: print(f"  [BROWSER] {msg.text}"))
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         _wait_for_page_ready(page, "canvas", args.timeout)
 
@@ -1197,6 +1198,107 @@ def cmd_skin_check(args):
         pw.stop()
 
 
+def cmd_cinematic_check(args):
+    """
+    Verify photorealistic 'Cinematic Scan' features:
+    1. Load model in Skin mode
+    2. Enable HDRI (Studio) and SSAO
+    3. Set Muscle Definition to 80%
+    4. Wait for EWR (Edge Warmth Ratio) audit to stabilize
+    5. Screenshot + JSON report
+    """
+    model = args.model
+    base_url = args.base_url.rstrip("/")
+    url = f"{base_url}/static/viewer3d/index.html?model={model}"
+
+    pw, browser, context = _launch_browser()
+
+    try:
+        page = context.new_page()
+        page.on("console", lambda msg: print(f"  [BROWSER] {msg.text}"))
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        _wait_for_page_ready(page, "canvas", args.timeout)
+
+        # 1. Setup Cinematic State via UI interaction
+        page.evaluate("() => { if (window.setViewMode) window.setViewMode('skin'); }")
+        page.wait_for_timeout(500)
+        
+        # Click the Scene tab if it's not active
+        scene_tab = page.query_selector("button[data-tab='scene']")
+        if scene_tab:
+            scene_tab.click()
+            page.wait_for_timeout(300)
+
+        # Select HDRI via native Playwright method to trigger 'onchange'
+        page.select_option("#hdri-select", "/static/hdris/studio_small_09_2k.hdr")
+        
+        # Set definition via slider
+        def_slider = page.query_selector("#def-intensity")
+        if def_slider:
+            def_slider.fill("85") # 85%
+            page.evaluate("() => { document.getElementById('def-intensity').dispatchEvent(new Event('input')); }")
+
+        # Enable SSAO
+        ssao_chk = page.query_selector("#chk-ssao")
+        if ssao_chk:
+            ssao_chk.set_checked(True)
+
+        # Hide UI for clean capture
+        page.evaluate("""() => {
+            document.querySelectorAll('.card, #mobile-bar, .heatmap-legend, #card-toggle, #status')
+                .forEach(el => { if (el) el.style.display = 'none'; });
+        }""")
+        
+        # 2. Wait for HDRI and SSS Audit to settle
+        # Wait specifically for EWR to become non-zero (max 15 attempts)
+        ewr = 0
+        for _ in range(15):
+            ewr = page.evaluate("() => parseFloat(document.getElementById('audit-ewr-val')?.textContent || '0')")
+            if ewr > 0:
+                break
+            page.wait_for_timeout(1000)
+
+        # 3. Capture 2 angles (Front, 45deg)
+        shots = []
+        for angle in [0, 45]:
+            page.evaluate(f"""() => {{
+                if (window.controls || window.viewer?.controls) {{
+                    const ctrl = window.controls || window.viewer.controls;
+                    const rad = {angle} * Math.PI / 180;
+                    const dist = ctrl.object.position.length();
+                    ctrl.object.position.x = dist * Math.sin(rad);
+                    ctrl.object.position.z = dist * Math.cos(rad);
+                    ctrl.object.lookAt(ctrl.target || new THREE.Vector3());
+                    ctrl.update();
+                }}
+            }}""")
+            page.wait_for_timeout(1000)
+            path = str(CAPTURES_DIR / f"cinematic_{_timestamp()}_{angle}deg.png")
+            page.screenshot(path=path)
+            shots.append({"angle": angle, "path": path})
+
+        # 4. Extract Audit Metrics
+        audit = page.evaluate("""() => {
+            return {
+                ewr: parseFloat(document.getElementById('audit-ewr-val')?.textContent || '0'),
+                status: document.getElementById('audit-status')?.textContent || 'Unknown',
+                hdri: document.getElementById('hdri-select')?.value || 'None'
+            };
+        }""")
+
+        result = {
+            "verdict": "PASS" if (audit['ewr'] > 1.1 and audit['ewr'] < 1.5) else "WARN",
+            "audit": audit,
+            "screenshots": shots,
+            "suggestion": "SSS looking good" if audit['ewr'] > 1.1 else "SSS too low, check normal strength or attenuation"
+        }
+        print(json.dumps(result, indent=2))
+
+    finally:
+        browser.close()
+        pw.stop()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Agent browser tool — gives AI agents eyes via Playwright",
@@ -1323,6 +1425,13 @@ def main():
     p.add_argument("--base-url", default="http://192.168.100.16:8000", help="Server base URL")
     p.add_argument("--timeout", type=int, default=20, help="Page load timeout seconds")
     p.set_defaults(func=cmd_skin_check)
+
+    # -- cinematic-check --
+    p = sub.add_parser("cinematic-check", help="Verify Cinematic Scan: HDRI, SSS, Definition, EWR Audit")
+    p.add_argument("model", help="GLB filename or model name")
+    p.add_argument("--base-url", default="http://localhost:8000", help="Server base URL")
+    p.add_argument("--timeout", type=int, default=20)
+    p.set_defaults(func=cmd_cinematic_check)
 
     args = parser.parse_args()
     args.func(args)

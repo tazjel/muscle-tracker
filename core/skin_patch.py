@@ -205,26 +205,30 @@ def _find_best_patch(canvas, sample, y, x, patch_size, overlap,
 
 
 def _min_cut_vertical(error_2d):
-    """Dynamic programming min-cut through a vertical overlap region."""
+    """Vectorized DP min-cut through a vertical overlap region."""
     h, w = error_2d.shape
-    dp = error_2d.copy()
+    dp = error_2d.copy().astype(np.float32)
     bt = np.zeros_like(dp, dtype=np.int32)
 
-    for r in range(1, h):
-        for c in range(w):
-            candidates = [dp[r-1, c]]
-            offsets = [0]
-            if c > 0:
-                candidates.append(dp[r-1, c-1])
-                offsets.append(-1)
-            if c < w - 1:
-                candidates.append(dp[r-1, c+1])
-                offsets.append(1)
-            best = np.argmin(candidates)
-            dp[r, c] += candidates[best]
-            bt[r, c] = c + offsets[best]
+    # Padding to handle boundaries gracefully in vectorized min()
+    INF = 1e10
 
-    # Backtrace
+    for r in range(1, h):
+        prev = dp[r-1]
+        # Shifted versions for left, center, right neighbors
+        left = np.hstack(([INF], prev[:-1]))
+        center = prev
+        right = np.hstack((prev[1:], [INF]))
+        
+        # Stack and find min over the 3-neighbor window
+        stacked = np.stack([left, center, right], axis=0)
+        dp[r] += np.min(stacked, axis=0)
+        
+        # Relative offset: 0=-1 (left), 1=0 (center), 2=+1 (right)
+        offsets = np.argmin(stacked, axis=0) - 1
+        bt[r] = np.arange(w, dtype=np.int32) + offsets
+
+    # Backtrace remains sequential but is O(H) instead of O(H*W)
     cut = np.zeros(h, dtype=np.int32)
     cut[-1] = np.argmin(dp[-1])
     for r in range(h - 2, -1, -1):
@@ -247,25 +251,23 @@ def _paste_with_cut(canvas, patch, mask, y, x, patch_size):
 
 
 def _make_edges_seamless(texture, blend_width=32):
-    """Blend left↔right and top↔bottom edges for seamless tiling."""
+    """Vectorized blending of left↔right and top↔bottom edges for seamless tiling."""
     h, w = texture.shape[:2]
     result = texture.copy().astype(np.float32)
+    alpha = np.linspace(0, 1, blend_width).reshape(1, -1, 1)
 
     # Horizontal wrap (left ↔ right)
-    for i in range(blend_width):
-        alpha = i / blend_width
-        left_col = result[:, i].copy()
-        right_col = result[:, w - blend_width + i].copy()
-        result[:, i] = left_col * alpha + right_col * (1 - alpha)
-        result[:, w - blend_width + i] = right_col * alpha + left_col * (1 - alpha)
+    left_strip = result[:, :blend_width]
+    right_strip = result[:, w - blend_width:]
+    result[:, :blend_width] = left_strip * alpha + right_strip * (1 - alpha)
+    result[:, w - blend_width:] = right_strip * alpha + left_strip * (1 - alpha)
 
     # Vertical wrap (top ↔ bottom)
-    for i in range(blend_width):
-        alpha = i / blend_width
-        top_row = result[i, :].copy()
-        bot_row = result[h - blend_width + i, :].copy()
-        result[i, :] = top_row * alpha + bot_row * (1 - alpha)
-        result[h - blend_width + i, :] = bot_row * alpha + top_row * (1 - alpha)
+    alpha_v = alpha.transpose(1, 0, 2)
+    top_strip = result[:blend_width, :]
+    bot_strip = result[h - blend_width:, :]
+    result[:blend_width, :] = top_strip * alpha_v + bot_strip * (1 - alpha_v)
+    result[h - blend_width:, :] = bot_row_strip = bot_strip * alpha_v + top_strip * (1 - alpha_v)
 
     return result.astype(np.uint8)
 
@@ -505,25 +507,31 @@ def composite_skin_atlas(uvs, part_ids, faces, region_textures,
             logger.warning("Unknown region: %s", region_name)
             continue
 
-        # Rasterize region mask into UV space using triangle fill
+        # Rasterize region mask into UV space using batch triangle fill
         region_mask = np.zeros((atlas_size, atlas_size), dtype=np.float32)
-        for fi in range(len(faces)):
-            f = faces[fi]
-            # At least one vertex must be in this region
-            if not (vert_mask[f[0]] or vert_mask[f[1]] or vert_mask[f[2]]):
+        
+        # Identify faces that have at least one vertex in this region
+        face_in_region = vert_mask[faces].any(axis=1)
+        relevant_faces = faces[face_in_region]
+        
+        # Calculate weight per face (1/3, 2/3, or 1.0)
+        face_weights = vert_mask[relevant_faces].sum(axis=1) / 3.0
+        
+        # Skip wrap-around triangles (UV coordinates that cross the 0/1 seam)
+        # These are rare but can cause long horizontal streaks across the atlas
+        f_u = u_px[relevant_faces]
+        f_v = v_px[relevant_faces]
+        is_wrap = (np.ptp(f_u, axis=1) > atlas_size // 2) | (np.ptp(f_v, axis=1) > atlas_size // 2)
+        
+        # Batch fill by weight group
+        for weight_val in [1/3.0, 2/3.0, 1.0]:
+            mask_w = (face_weights == weight_val) & (~is_wrap)
+            if not mask_w.any():
                 continue
-            # Weight by how many vertices are in-region
-            w = (float(vert_mask[f[0]]) + float(vert_mask[f[1]]) +
-                 float(vert_mask[f[2]])) / 3.0
-
-            pts = np.array([[u_px[f[0]], v_px[f[0]]],
-                            [u_px[f[1]], v_px[f[1]]],
-                            [u_px[f[2]], v_px[f[2]]]], dtype=np.int32)
-            # Skip wrap-around triangles
-            if (pts[:, 0].max() - pts[:, 0].min() > atlas_size // 2 or
-                    pts[:, 1].max() - pts[:, 1].min() > atlas_size // 2):
-                continue
-            cv2.fillConvexPoly(region_mask, pts.reshape(-1, 1, 2), w)
+                
+            # Prepare points for cv2.fillPoly: (N, 3, 2)
+            pts_w = np.stack([f_u[mask_w], f_v[mask_w]], axis=-1)
+            cv2.fillPoly(region_mask, pts_w, weight_val)
 
         # Tile the texture across the entire atlas
         th, tw = tile_img.shape[:2]

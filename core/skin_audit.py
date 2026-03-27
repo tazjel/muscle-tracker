@@ -1,8 +1,7 @@
 """
-skin_audit.py — Analyze skin rendering quality.
-
-Implements the 'Edge Warmth Ratio' (EWR) metric to detect 'plastic' skin.
-Realistic skin has warmer (redder) edges due to subsurface scattering (SSS).
+skin_audit.py — Automated quality control for skin rendering realism.
+Calculates the Edge Warmth Ratio (EWR): the ratio of red-tinted light scattering
+vs specular reflection at mesh silhouette edges.
 """
 import cv2
 import numpy as np
@@ -10,57 +9,87 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def detect_plastic_skin(image_bgr):
+def calculate_ewr(image_bgr, body_mask):
     """
-    Computes the Edge Warmth Ratio (EWR).
+    Calculates the Edge Warmth Ratio (EWR) for a rendered image.
+    Real skin with SSS shows a subtle red glow at the edges (light scattering).
     
-    EWR = (Mean Redness of Edges) / (Mean Redness of Interior)
-    
-    Realistic Skin (SSS active): EWR > 1.10
-    Plastic Skin (Flat render): EWR < 1.05
-    """
-    if image_bgr is None:
-        return None
+    Args:
+        image_bgr: Rendered image (from viewer screenshot or Blender)
+        body_mask: Binary mask of the body area
         
-    h, w = image_bgr.shape[:2]
+    Returns:
+        float: EWR score (higher = better SSS effect). Realistic range: 1.15 - 1.40.
+    """
+    if image_bgr is None or body_mask is None:
+        return 0.0
+        
+    # 1. Identify Silhouette Edges
+    # Dilate mask slightly, then subtract original to get boundary pixels
+    kernel = np.ones((5, 5), np.uint8)
+    dilated = cv2.dilate(body_mask, kernel, iterations=1)
+    edges = cv2.bitwise_and(dilated, cv2.bitwise_not(body_mask))
     
-    # 1. Isolate skin using a rough range
-    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-    lower_skin = np.array([0, 20, 70], dtype=np.uint8)
-    upper_skin = np.array([20, 255, 255], dtype=np.uint8)
-    skin_mask = cv2.inRange(hsv, lower_skin, upper_skin)
+    if np.sum(edges) == 0:
+        return 0.0
+        
+    # 2. Extract Edge Pixels
+    edge_pixels = image_bgr[edges > 0]
     
-    if cv2.countNonZero(skin_mask) < (h * w * 0.05):
-        return {"ewr": 1.0, "status": "no_skin_detected"}
+    # 3. Calculate Warmth (Red vs Blue/Green ratio)
+    # Skin scattering is typically red-shifted
+    red = edge_pixels[:, 2].astype(np.float32)
+    green = edge_pixels[:, 1].astype(np.float32)
+    blue = edge_pixels[:, 0].astype(np.float32)
+    
+    # Average warmth ratio at the edge
+    # Avoid division by zero
+    warmth = red / (np.maximum(green, 1.0) * 0.5 + np.maximum(blue, 1.0) * 0.5)
+    avg_ewr = np.mean(warmth)
+    
+    # 4. Reference comparison
+    # Calculate warmth of the interior body area for baseline
+    body_pixels = image_bgr[body_mask > 0]
+    red_b = body_pixels[:, 2].astype(np.float32)
+    green_b = body_pixels[:, 1].astype(np.float32)
+    blue_b = body_pixels[:, 0].astype(np.float32)
+    baseline_warmth = np.mean(red_b / (np.maximum(green_b, 1.0) * 0.5 + np.maximum(blue_b, 1.0) * 0.5))
+    
+    # Normalized EWR (Edge Warmth vs Body Warmth)
+    normalized_ewr = avg_ewr / (baseline_warmth + 1e-8)
+    
+    logger.info("Skin Audit: EWR = %.3f (Baseline: %.3f)", normalized_ewr, baseline_warmth)
+    return normalized_ewr
 
-    # 2. Get edges within skin mask
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
-    # Mask edges to skin only
-    skin_edges = cv2.bitwise_and(edges, edges, mask=skin_mask)
+def audit_pbr_parameters(ewr_score):
+    """
+    Suggests adjustments to Three.js PBR parameters based on EWR score.
+    """
+    status = "Ideal"
+    adjustments = {}
     
-    # Dilate edges slightly to capture the 'warm glow' area
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    skin_edges_dilated = cv2.dilate(skin_edges, kernel, iterations=1)
-    
-    # 3. Get interior (skin mask minus edges)
-    skin_interior = cv2.subtract(skin_mask, skin_edges_dilated)
-    
-    # 4. Compute Redness (R channel intensity or R/G ratio)
-    # Using R/(G+B) for normalized redness
-    b, g, r = cv2.split(image_bgr.astype(np.float32))
-    redness = r / (g + b + 1e-6)
-    
-    mean_red_edge = np.mean(redness[skin_edges_dilated > 0]) if np.any(skin_edges_dilated > 0) else 0
-    mean_red_interior = np.mean(redness[skin_interior > 0]) if np.any(skin_interior > 0) else 1
-    
-    ewr = mean_red_edge / (mean_red_interior + 1e-6)
-    
-    status = "realistic" if ewr > 1.10 else "plastic" if ewr < 1.05 else "borderline"
-    
+    if ewr_score < 1.05:
+        status = "Flat / Plastic"
+        adjustments = {
+            'attenuationDistance': 0.05, # Increase scattering distance
+            'thickness': 2.0,            # Increase volume depth
+            'attenuationColor': '#ff3300' # Saturated red
+        }
+    elif ewr_score < 1.15:
+        status = "Sub-optimal"
+        adjustments = {
+            'attenuationDistance': 0.03,
+            'thickness': 1.5
+        }
+    elif ewr_score > 1.50:
+        status = "Too Red / Wax-like"
+        adjustments = {
+            'attenuationDistance': 0.01,
+            'thickness': 0.5
+        }
+        
     return {
-        "ewr": round(float(ewr), 3),
-        "mean_red_edge": round(float(mean_red_edge), 3),
-        "mean_red_interior": round(float(mean_red_interior), 3),
-        "status": status
+        'status': status,
+        'ewr': round(float(ewr_score), 3),
+        'suggested_pbr': adjustments
     }

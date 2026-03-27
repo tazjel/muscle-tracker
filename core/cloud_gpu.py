@@ -534,11 +534,49 @@ def cloud_anchor_splat(splat_data, mesh_vertices):
     }
     headers = {'Authorization': f'Bearer {RUNPOD_API_KEY}', 'Content-Type': 'application/json'}
     try:
-        output = _run_async_raw(payload, headers)
+        output = _poll_result_raw(_submit_async(payload, headers), headers)
         return output if output and output.get('status') == 'success' else None
     except Exception as e:
         logger.error(f"Cloud Splat anchoring failed: {e}")
     return None
+
+
+def cloud_bake_cinematic(vertices, faces, uvs, splat_data):
+    """
+    Bake neural detail from 3DGS splat into 4K PBR textures for MPFB2 mesh.
+    """
+    if not is_configured(): return None
+    payload = {
+        'input': {
+            'action': 'bake_cinematic',
+            'vertices': base64.b64encode(vertices.astype(np.float32).tobytes()).decode('ascii'),
+            'vertices_shape': list(vertices.shape),
+            'faces': base64.b64encode(faces.astype(np.int32).tobytes()).decode('ascii'),
+            'faces_shape': list(faces.shape),
+            'uvs': base64.b64encode(uvs.astype(np.float32).tobytes()).decode('ascii'),
+            'uvs_shape': list(uvs.shape),
+            'splat_data': splat_data
+        }
+    }
+    headers = {'Authorization': f'Bearer {RUNPOD_API_KEY}', 'Content-Type': 'application/json'}
+    try:
+        logger.info("Starting Cinematic PBR Baking on RunPod...")
+        output = _poll_result_raw(_submit_async(payload, headers), headers)
+        return output.get('textures') if output and output.get('status') == 'success' else None
+    except Exception as e:
+        logger.error(f"Cloud Cinematic Baking failed: {e}")
+    return None
+
+
+def _submit_async(payload, headers):
+    """Internal: submit job and return ID."""
+    import urllib.request
+    url = f"{RUNPOD_BASE_URL}/{RUNPOD_ENDPOINT}/run"
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read().decode())
+    return result.get('id')
 
 
 def is_configured():
