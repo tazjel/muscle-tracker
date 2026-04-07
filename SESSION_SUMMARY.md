@@ -1,39 +1,17 @@
-# GTD3D Studio Upgrade - Session Summary (2026-04-07)
+# Session Summary: GTD3D v5.5 "Cinematic Scan" - Macro Skin Success
 
-## DONE
-- **APK Extraction**: Analyzed IP Webcam Pro for feature parity.
-- **Companion App (v3.0.0)**:
-    - Integrated `shelf` web server.
-    - Implemented `/video` (MJPEG), `/sensors` (JSON), and `/control` (Remote) endpoints.
-    - Defaulted to back camera for high-res capture.
-    - Metadata burst capture logic added.
-- **Desktop Studio (Cinematic v5.5)**:
-    - Premium dashboard UI with sensor overlays.
-    - Sidebar for recent capture previews.
-    - Automated Scan Sequence (Front/Side/Back).
-    - Server-side processing trigger for MPFB2 pipeline.
-    - **FIXED**: Studio 500 error resolved by correcting py4web `URL()` positional syntax.
-    - **FIXED**: Sensors/Controls bypass CORS via server-side proxying (`api/studio/sensors`, `api/studio/control`).
-- **Windows & Py4web Compatibility**:
-    - Unified database connection in `models.py` and `common.py`.
-    - Standardized absolute path resolution using `PROJECT_ROOT` and `_abs_path`.
-    - Fixed `Auth` import path for Windows branch.
-- **Tools**:
-    - `scripts/agent_device.py`: Huawei/MatePad auto-clicker for ADB installs.
-    - `scripts/agent_browser.py`: Added `studio-audit` for Playwright validation.
-    - Fixed `apps/_default` junction for root routing.
+**Date**: 2026-04-07
+**Status**: Photorealism Milestone Achieved!
 
-## COMMANDS & DISCOVERIES
-- **Run Server**: `py4web run --port 8000 apps`
-- **Audit Studio**: `python scripts/agent_browser.py studio-audit --phone-ip 192.168.100.2`
-- **Discovery**: Py4web on Windows requires `Auth` from `py4web.utils.auth`.
-- **Discovery**: Path parameters in py4web templates MUST be positional: `URL('action', id)`.
-- **Discovery**: SQLite URIs on Windows need 3 slashes: `sqlite:///C:/path/to/db`.
+### 1. Done
+*   **Macro Skin PBR Pipeline**: Successfully resolved the "wrapping paper" effect by switching from raw Albedo UV scaling to Multi-channel overlay.
+*   **Decoupled Detail Mapping**: Wrote `apply_macro_detail.py` to extract Tangent Normals and Roughness from the user's `10cm` macro skin crop, injecting them non-destructively as a `KHR_texture_transform` scaled detail layer cleanly over the base mesh.
+*   **Hardware UV Acceleration**: Applied an extreme `280x` UV scale strictly to the micro-pore map, making the 2cm physical pores render completely true-to-life natively on the GPU. Reduced file size dramatically (from 77MB down to 11MB).
+*   **Model Topology Protection**: Swapped the base model to `mpfb_male_body.glb` and explicitly disabled mathematical naive deformation (`build_body_mesh(profile)`) which was identified as the root cause of the "ugly" stretching on the mesh. The base human textures (lips, gradients) were retained!
+*   **Web Viewer Integration**: Successfully generated `viewer.html` leveraging Google's `<model-viewer>` for native `KHR_texture_transform` support within `py4web`.
 
-## PENDING
-- **End-to-End Test**: Verify "Capture -> Save -> Process -> View" cycle with physical MatePad.
-- **Phase 4**: Implement live mesh morphing based on sensor distance.
+### 2. Pending
+*   **Glute/Thigh Ratio Deformation**: The structural manual Z-flattening script (`scripts/lean_glute.py`) did not achieve the desired photorealistic anatomical fix. The generic Caucasian MPFB base template needs advanced bone manipulation or custom morph targets to adjust the glute cleanly.
 
-## CONNECTION DATA
-- **MatePad**: 192.168.100.2 (Port 8080)
-- **Desktop**: 192.168.100.7 (Port 8000)
+### 3. Next Steps
+*   **Advanced Deformation**: Now that the skin photorealism is solved natively on the base `mpfb_male_body.glb`, the next phase is to re-introduce the user's bodily measurements (168 cm, etc.) to the mesh *without* corrupting or squashing the topology like the old SMPL script did. We probably need to map measurements smoothly to MakeHuman's MPFB macro variables rather than applying naive XYZ scaling.

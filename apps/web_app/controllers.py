@@ -3758,3 +3758,8 @@ def studio_control():
     except Exception as e:
         logger.error("Control proxy failed: %s", e)
         return dict(status='error', message=str(e))
+
+@action('viewer')
+@action.uses('viewer.html')
+def viewer():
+    return dict()
