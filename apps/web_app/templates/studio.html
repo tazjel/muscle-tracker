@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GTD3D Studio</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        :root { --primary: #009688; --bg: #0d1117; --card: #161b22; --text: #c9d1d9; --accent: #ffc107; }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; padding: 20px; text-align: center; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        h1 { color: var(--primary); letter-spacing: 2px; text-shadow: 0 0 10px rgba(0, 150, 136, 0.3); margin: 0; }
+        .viewer-card { background: var(--card); border: 1px solid #30363d; border-radius: 12px; padding: 10px; margin-bottom: 20px; box-shadow: 0 8px 32px rgba(0,0,0,0.8); position: relative; overflow: hidden; }
+        #viewer { width: 100%; height: auto; border-radius: 8px; background: #000; min-height: 480px; object-fit: contain; }
+        .sensor-overlay { position: absolute; top: 20px; left: 20px; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 8px; border: 1px solid rgba(0,150,136,0.4); font-family: monospace; font-size: 12px; color: var(--primary); text-align: left; pointer-events: none; z-index: 10; }
+        .sensor-item { margin-bottom: 6px; display: flex; gap: 10px; justify-content: space-between; min-width: 120px; }
+        .sensor-val { color: #fff; font-weight: bold; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 15px; }
+        .btn { background: var(--primary); color: #000; border: none; padding: 12px 15px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: all 0.2s; text-transform: uppercase; letter-spacing: 1px; font-size: 11px; }
+        .btn:hover { background: #00bfa5; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0, 150, 136, 0.4); }
+        .btn-outline { background: transparent; color: var(--primary); border: 1px solid var(--primary); }
+        .btn-outline:hover { background: rgba(0, 150, 136, 0.1); }
+        .btn-warning { background: var(--accent); color: #000; }
+        .btn-warning:hover { background: #ffca28; }
+        .status { margin-top: 10px; font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
+        .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; background: var(--card); padding: 15px 25px; border-radius: 12px; border: 1px solid #30363d; }
+        .main-layout { display: flex; gap: 20px; }
+        .viewer-side { flex: 1; }
+        .sidebar { width: 240px; background: var(--card); border: 1px solid #30363d; border-radius: 12px; padding: 15px; display: flex; flex-direction: column; gap: 10px; }
+        .console-panel { background: #000; color: #69f0ae; font-family: monospace; font-size: 10px; padding: 10px; border-radius: 8px; border: 1px solid #333; margin-top: 15px; height: 150px; overflow-y: auto; text-align: left; }
+        .console-entry { border-bottom: 1px solid #111; padding: 2px 0; }
+        .console-error { color: #ff5252; }
+        .capture-thumb { width: 100%; height: 120px; background: #000; border-radius: 6px; border: 1px solid #30363d; overflow: hidden; cursor: pointer; transition: border-color 0.2s; }
+        .capture-thumb:hover { border-color: var(--primary); }
+        .capture-thumb img { width: 100%; height: 100%; object-fit: cover; }
+        .sidebar-title { font-size: 12px; font-weight: bold; color: var(--primary); letter-spacing: 1px; margin-bottom: 5px; text-align: left; }
+        .ip-bar { display: flex; gap: 10px; }
+        input { background: #0d1117; color: #fff; border: 1px solid #30363d; padding: 10px 15px; border-radius: 6px; width: 160px; font-family: monospace; }
+        .version { font-size: 10px; color: #555; vertical-align: middle; margin-left: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header-bar">
+            <h1>GTD3D STUDIO <span class="version">v5.5 CINEMATIC</span></h1>
+            <div class="ip-bar">
+                <input type="text" id="phone_ip" value="[[=phone_ip]]" placeholder="Phone IP">
+                <button class="btn btn-outline" onclick="connect()">CONNECT</button>
+            </div>
+        </div>
+
+        <div class="main-layout">
+            <div class="viewer-side">
+                <div class="viewer-card">
+                    <div class="sensor-overlay" id="sensor_panel">
+                        <div class="sensor-item">PITCH: <span class="sensor-val" id="val_pitch">--</span></div>
+                        <div class="sensor-item">ROLL: <span class="sensor-val" id="val_roll">--</span></div>
+                        <div class="sensor-item">DIST: <span class="sensor-val" id="val_dist">--</span></div>
+                        <div class="sensor-item">MODE: <span class="sensor-val" id="val_muscle">--</span></div>
+                    </div>
+                    <img id="viewer" src="" alt="LIVE FEED DISCONNECTED">
+                    <div id="conn_status" class="status">Waiting for connection...</div>
+                </div>
+
+                <div class="grid">
+                    <button class="btn" onclick="sendControl('camera', 'back')">BACK CAMERA</button>
+                    <button class="btn" onclick="sendControl('camera', 'front')">FRONT CAMERA</button>
+                    <button class="btn btn-outline" onclick="sendControl('flash', 'on')">FLASH ON</button>
+                    <button class="btn btn-outline" onclick="sendControl('flash', 'off')">FLASH OFF</button>
+                    <button class="btn btn-outline" onclick="sendControl('zoom', 1.0)">1.0X</button>
+                    <button class="btn btn-outline" onclick="sendControl('zoom', 2.0)">2.0X</button>
+                    <button class="btn btn-outline" onclick="sendControl('zoom', 4.0)">4.0X</button>
+                    <button class="btn btn-warning" onclick="startSequence()">START SCAN SEQ</button>
+                    <button id="btn_process" class="btn" style="background: #673ab7; color: #fff; display: none;" onclick="process3D()">PROCESS 3D MESH</button>
+                </div>
+            </div>
+
+            <div class="sidebar">
+                <div class="sidebar-title">RECENT CAPTURES</div>
+                <div id="capture_list" style="display: flex; flex-direction: column; gap: 10px; overflow-y: auto; max-height: 400px;">
+                    <!-- Thumbs injected here -->
+                </div>
+                <div class="sidebar-title" style="margin-top: 20px;">CONSOLE AUDIT</div>
+                <div id="console_log" class="console-panel">
+                    <div class="console-entry">Studio Engine Initialized...</div>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 20px; background: var(--card); padding: 15px; border-radius: 12px; border: 1px dashed #30363d;">
+            <div id="sequence_status" class="status" style="font-weight: bold; color: var(--primary);">System Ready</div>
+        </div>
+    </div>
+
+    <script>
+        let pollInterval;
+        let dashInterval;
+        const customerId = 1; // Default for demo
+
+        // Intercept console for Audit Panel
+        (function() {
+            const oldLog = console.log;
+            const oldError = console.error;
+            const logPanel = document.getElementById('console_log');
+
+            function addLog(msg, isError = false) {
+                const entry = document.createElement('div');
+                entry.className = 'console-entry' + (isError ? ' console-error' : '');
+                entry.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
+                logPanel.appendChild(entry);
+                logPanel.scrollTop = logPanel.scrollHeight;
+                if (logPanel.childNodes.length > 50) logPanel.removeChild(logPanel.firstChild);
+            }
+
+            console.log = function(msg) { addLog(msg); oldLog.apply(console, arguments); };
+            console.error = function(msg) { addLog(msg, true); oldError.apply(console, arguments); };
+            window.addEventListener('error', (e) => addLog(e.message, true));
+        })();
+
+        function connect() {
+            const ip = document.getElementById('phone_ip').value;
+            if (!ip) return;
+            const viewer = document.getElementById('viewer');
+            const status = document.getElementById('conn_status');
+            
+            status.innerText = 'Connecting...';
+            viewer.onload = () => { 
+                status.innerText = 'Streaming Active: ' + ip; 
+                status.style.color = '#69f0ae'; 
+                startPolling(ip);
+            };
+            viewer.onerror = () => { 
+                status.innerText = 'Stream Offline'; 
+                status.style.color = '#ff5252'; 
+                if (pollInterval) clearInterval(pollInterval);
+            };
+            
+            viewer.src = 'http://' + ip + ':8080/video';
+            startDashboardPolling();
+        }
+
+        async function startDashboardPolling() {
+            if (dashInterval) clearInterval(dashInterval);
+            updateDashboard();
+            dashInterval = setInterval(updateDashboard, 5000);
+        }
+
+        async function updateDashboard() {
+            try {
+                const res = await fetch('[[=URL("studio/dashboard", customer_id=1)]]');
+                const data = await res.json();
+                const list = document.getElementById('capture_list');
+                list.innerHTML = '';
+                
+                let hasFront = false, hasSide = false;
+                data.captures.forEach(c => {
+                    if (c.filename.startsWith('front')) hasFront = true;
+                    if (c.filename.startsWith('side')) hasSide = true;
+                    
+                    const div = document.createElement('div');
+                    div.className = 'capture-thumb';
+                    div.onclick = () => window.open(c.url, '_blank');
+                    div.innerHTML = `<img src="${c.url}" alt="${c.filename}"><div class="status" style="font-size: 9px; margin-top: 2px;">${c.filename}</div>`;
+                    list.appendChild(div);
+                });
+
+                if (hasFront && hasSide) {
+                    document.getElementById('btn_process').style.display = 'block';
+                }
+            } catch (e) {}
+        }
+
+        async function process3D() {
+            const status = document.getElementById('sequence_status');
+            const btn = document.getElementById('btn_process');
+            
+            btn.disabled = true;
+            btn.innerText = 'PROCESSING PIPELINE...';
+            status.innerText = 'RUNNING MPFB2 FITTING PIPELINE...';
+            status.style.color = '#ffc107';
+            
+            try {
+                const res = await fetch('[[=URL("studio/process", customer_id=1)]]', { method: 'POST' });
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    status.innerText = 'MESH GENERATED: ' + data.metrics.volume_cm3.toFixed(1) + ' cm³';
+                    status.style.color = '#69f0ae';
+                    btn.innerText = 'VIEW 3D MODEL';
+                    btn.onclick = () => window.open('[[=URL("static/viewer3d/index.html")]]?model=/api/mesh/' + data.mesh_id + '.glb&customer=1', '_blank');
+                } else {
+                    status.innerText = 'PIPELINE ERROR: ' + data.message;
+                    status.style.color = '#ff5252';
+                    btn.innerText = 'RETRY PROCESSING';
+                    btn.disabled = false;
+                }
+            } catch (e) {
+                status.innerText = 'CONNECTION ERROR';
+                btn.disabled = false;
+            }
+        }
+
+        async function startPolling(ip) {
+            if (pollInterval) clearInterval(pollInterval);
+            pollInterval = setInterval(async () => {
+                try {
+                    const res = await fetch('http://' + ip + ':8080/sensors');
+                    const data = await res.json();
+                    document.getElementById('val_pitch').innerText = data.pitch + '°';
+                    document.getElementById('val_roll').innerText = data.roll + '°';
+                    document.getElementById('val_dist').innerText = data.distance + ' cm';
+                    document.getElementById('val_muscle').innerText = data.muscle.toUpperCase();
+                    
+                    if (data.is_capturing) {
+                        document.getElementById('sequence_status').innerText = 'PHONE CAPTURING...';
+                        document.getElementById('sequence_status').style.color = '#ffc107';
+                    }
+                } catch (e) {
+                    console.log('Sensor poll error');
+                }
+            }, 1000);
+        }
+
+        async function sendControl(action, value) {
+            const ip = document.getElementById('phone_ip').value;
+            if (!ip) return;
+            const url = 'http://' + ip + ':8080/control';
+            
+            try {
+                await fetch(url, {
+                    method: 'POST',
+                    mode: 'no-cors',
+                    body: JSON.stringify({ action: action, value: value })
+                });
+                console.log('Sent:', action, value);
+            } catch (e) {
+                console.error('Control error:', e);
+            }
+        }
+
+        async function startSequence() {
+            const status = document.getElementById('sequence_status');
+            const phases = ['front', 'side', 'back'];
+            
+            for (let phase of phases) {
+                status.innerText = 'Capturing ' + phase.toUpperCase() + '...';
+                status.style.color = '#ffc107';
+                
+                await sendControl('capture', phase);
+                
+                // Wait for phone to process and upload (Phase 2 high-res takes time)
+                await new Promise(r => setTimeout(r, 6000));
+            }
+            
+            status.innerText = 'SEQUENCE COMPLETE. Captured images saved to server.';
+            status.style.color = '#69f0ae';
+        }
+
+        // Auto-connect if IP is present
+        window.onload = () => {
+            if (document.getElementById('phone_ip').value) connect();
+        };
+    </script>
+</body>
+</html>

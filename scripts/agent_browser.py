@@ -1299,6 +1299,67 @@ def cmd_cinematic_check(args):
         pw.stop()
 
 
+def cmd_studio_audit(args):
+    """
+    Automated Studio health check:
+    1. Open Studio URL
+    2. Set Phone IP and Click Connect
+    3. Wait for sensor data to populate
+    4. Screenshot the dashboard
+    5. Report console errors
+    """
+    base_url = args.base_url.rstrip("/")
+    url = f"{base_url}/web_app/studio"
+    phone_ip = args.phone_ip
+
+    pw, browser, context = _launch_browser()
+    logs = []
+
+    try:
+        page = context.new_page()
+        page.on("console", lambda msg: logs.append({"type": msg.type, "text": msg.text[:200]})
+                if msg.type in ("error", "warning") else None)
+
+        print(f"Opening Studio: {url}")
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        
+        # Interact with the IP input and Connect button
+        page.fill("#phone_ip", phone_ip)
+        page.click("button:has-text('CONNECT')")
+        
+        print(f"Connecting to {phone_ip}...")
+        page.wait_for_timeout(3000) # Wait for initial stream connect
+
+        # Wait for real sensor data (non-zero or changed from --)
+        sensor_active = False
+        for _ in range(10):
+            val = page.evaluate("() => document.getElementById('val_pitch').textContent")
+            if val and "--" not in val:
+                sensor_active = True
+                break
+            page.wait_for_timeout(1000)
+
+        # Final state check
+        status_text = page.evaluate("() => document.getElementById('conn_status').textContent")
+        
+        shot_path = str(CAPTURES_DIR / f"studio_audit_{_timestamp()}.png")
+        page.screenshot(path=shot_path)
+
+        result = {
+            "studio_url": url,
+            "phone_ip": phone_ip,
+            "connection_status": status_text,
+            "sensors_active": sensor_active,
+            "screenshot": shot_path,
+            "console_errors": logs[:5]
+        }
+        print(json.dumps(result, indent=2))
+
+    finally:
+        browser.close()
+        pw.stop()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Agent browser tool — gives AI agents eyes via Playwright",
@@ -1432,6 +1493,13 @@ def main():
     p.add_argument("--base-url", default="http://localhost:8000", help="Server base URL")
     p.add_argument("--timeout", type=int, default=20)
     p.set_defaults(func=cmd_cinematic_check)
+
+    # -- studio-audit --
+    p = sub.add_parser("studio-audit", help="Audit GTD3D Studio: stream status, sensor sync, UI state")
+    p.add_argument("--base-url", default="http://localhost:8000", help="Server base URL")
+    p.add_argument("--phone-ip", default="192.168.100.2", help="Phone/MatePad IP")
+    p.add_argument("--timeout", type=int, default=20)
+    p.set_defaults(func=cmd_studio_audit)
 
     args = parser.parse_args()
     args.func(args)

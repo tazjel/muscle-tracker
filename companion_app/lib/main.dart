@@ -10,13 +10,14 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:share_plus/share_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'studio_server.dart';
 
 late List<CameraDescription> _cameras;
 
 // --- CONFIG & THEME ---
 
 class AppConfig {
-  static const String serverBaseUrl = 'http://192.168.100.16:8000/web_app';
+  static const String serverBaseUrl = 'http://192.168.100.7:8000/web_app';
   static const String appVersion = '3.0.0';
 
   // ── DEV MODE ─────────────────────────────────────────────────────────────
@@ -641,6 +642,7 @@ class CameraLevelScreen extends StatefulWidget {
 
 class _CameraLevelScreenState extends State<CameraLevelScreen> {
   CameraController? _controller;
+  StudioWebServer? _studioServer;
   StreamSubscription<AccelerometerEvent>? _sensorSubscription;
   double _pitch = 0.0, _roll = 0.0;
   final double _levelTolerance = 0.5;
@@ -710,10 +712,121 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   };
 
   @override
-  void initState() { super.initState(); _loadDualRole().then((_) => _initCamera()); _initSensors(); }
-  
+  void initState() { 
+    super.initState(); 
+    _loadDualRole().then((_) => _initCamera()); 
+    _initSensors(); 
+    _startStudioServer();
+  }
+
+  void _startStudioServer() {
+    _studioServer = StudioWebServer(
+      onFrameRequest: _getLatestFrame,
+      onSensorRequest: _getLatestSensors,
+      onControl: _handleStudioControl,
+    );
+    _studioServer!.start(8080);
+  }
+
+  Map<String, dynamic> _getLatestSensors() {
+    return {
+      'pitch': _pitch.toStringAsFixed(1),
+      'roll': _roll.toStringAsFixed(1),
+      'distance': _cameraDistanceCm.round(),
+      'muscle': _selectedMuscleGroup,
+      'is_capturing': _isCapturing,
+    };
+  }
+
+  Future<Uint8List?> _getLatestFrame() async {
+    if (_controller == null || !_controller!.value.isInitialized) return null;
+    try {
+      // For MJPEG we take a picture — this is not ideal for high FPS but works for a prototype
+      // Real apps would use onImageAvailable and convert YUV to JPEG
+      final XFile image = await _controller!.takePicture();
+      return await image.readAsBytes();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _handleStudioControl(String action, dynamic value) async {
+    print('Studio Control: $action = $value');
+    try {
+      final data = jsonDecode(value as String);
+      final cmd = data['action'];
+      final val = data['value'];
+
+      if (cmd == 'zoom') {
+        await _controller?.setZoomLevel((val as num).toDouble());
+      } else if (cmd == 'flash') {
+        await _controller?.setFlashMode(val == 'on' ? FlashMode.torch : FlashMode.off);
+        setState(() => _torchOn = val == 'on');
+      } else if (cmd == 'camera') {
+        // Toggle front/back
+        final newDir = val == 'front' ? CameraLensDirection.front : CameraLensDirection.back;
+        final cam = _cameras.firstWhere((c) => c.lensDirection == newDir, orElse: () => _cameras.first);
+        await _controller?.dispose();
+        _controller = CameraController(cam, ResolutionPreset.max, enableAudio: false);
+        await _controller!.initialize();
+      } else if (cmd == 'capture') {
+        // Phase 2: High-res capture with sensors
+        _studioCapture(val as String); // val is target phase (front/side/etc)
+      }
+      setState(() {});
+    } catch (e) {
+      print('Control error: $e');
+    }
+  }
+
+  Future<void> _studioCapture(String phase) async {
+    if (_controller == null || !_controller!.value.isInitialized || _isCapturing) return;
+    setState(() { _isCapturing = true; _statusMessage = 'STUDIO CAPTURE: $phase'; });
+    try {
+      // 1. Capture high-res image
+      final XFile image = await _controller!.takePicture();
+      
+      // 2. Prepare payload with sensors
+      final sensorData = {
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'phase': phase,
+        'pitch': _pitch,
+        'roll': _roll,
+        'accel': [_latestSensor['accel_x'], _latestSensor['accel_y'], _latestSensor['accel_z']],
+        'gyro': [_latestSensor['gyro_x'], _latestSensor['gyro_y'], _latestSensor['gyro_z']],
+        'mag': [_latestSensor['mag_x'], _latestSensor['mag_y'], _latestSensor['mag_z']],
+        'camera_distance_cm': _cameraDistanceCm,
+        'muscle_group': _selectedMuscleGroup,
+      };
+
+      // 3. Upload to desktop studio
+      // We use the serverBaseUrl from AppConfig
+      var request = http.MultipartRequest(
+        'POST', 
+        Uri.parse('${AppConfig.serverBaseUrl}/api/studio/upload_frame/$_customerId')
+      );
+      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? 'demo'}';
+      request.files.add(await http.MultipartFile.fromPath('frame', image.path));
+      request.fields['metadata'] = jsonEncode(sensorData);
+      
+      var streamedResponse = await request.send().timeout(const Duration(seconds: 15));
+      var response = await http.Response.fromStream(streamedResponse);
+      
+      if (response.statusCode == 200) {
+        setState(() { _statusMessage = 'CAPTURE SUCCESS'; _isCapturing = false; });
+      } else {
+        setState(() { _statusMessage = 'CAPTURE FAILED'; _isCapturing = false; });
+      }
+    } catch (e) {
+      setState(() { _statusMessage = 'CAPTURE ERROR: $e'; _isCapturing = false; });
+    }
+    await Future.delayed(const Duration(seconds: 2));
+    if (mounted) setState(() => _statusMessage = null);
+  }
+
   Future<void> _initCamera() async {
     if (_cameras.isEmpty) { setState(() => _statusMessage = 'No cameras'); return; }
+    // Default to BACK camera for Phase 2 (more power/resolution)
     final cam = _cameras.firstWhere(
       (c) => c.lensDirection == CameraLensDirection.back,
       orElse: () => _cameras.first,
