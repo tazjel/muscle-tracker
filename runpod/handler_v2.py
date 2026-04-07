@@ -6,11 +6,9 @@ Upgraded Actions:
 2. 'rembg': (Legacy) Background removal / masking.
 3. 'dsine': (Legacy) High-fidelity normal map estimation.
 4. 'pbr_textures': (Legacy) Vectorized roughness/AO generation.
-5. 'smplitex': (Legacy) Diffusion-based UV inpainting.
-6. 'intrinsix': (Legacy) FLUX-based PBR map generation.
-7. 'train_splat': (NEW) Video -> .spz 3DGS training (7-10 mins).
-8. 'anchor_splat': (NEW) Bind Gaussians to MPFB2 mesh vertices.
-9. 'bake_cinematic': (NEW) Neural detail -> PBR Texture Baking.
+5. 'train_splat': (NEW) Video -> .spz 3DGS training (7-10 mins).
+6. 'anchor_splat': (NEW) Bind Gaussians to MPFB2 mesh vertices.
+7. 'bake_cinematic': (NEW) Neural detail -> PBR Texture Baking.
 """
 import runpod
 import numpy as np
@@ -22,6 +20,15 @@ import torch
 import io
 import sys
 import types
+import subprocess
+import json
+import shutil
+import tempfile
+
+# Add project root to path for core imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from core.densepose_infer import predict_iuv
+from core.texture_bake import bake_from_photos_nn, build_seam_mask, smooth_seam
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('runpod_cinematic')
@@ -48,9 +55,8 @@ _hmr_model = None
 _hmr_cfg = None
 _dsine_model = None
 _rembg_session = None
-_smplitex_pipe = None
-_intrinsix_pipe = None
 _realesrgan_upsampler = None
+_densepose_backend = 'torchscript'
 
 def _load_hmr():
     global _hmr_model, _hmr_cfg
@@ -88,6 +94,15 @@ def _load_dsine():
     if _dsine_model is not None: return _dsine_model
     _dsine_model = torch.hub.load('hugoycj/DSINE-hub', 'DSINE', trust_repo=True)
     return _dsine_model
+
+def _load_realesrgan():
+    global _realesrgan_upsampler
+    if _realesrgan_upsampler is not None: return _realesrgan_upsampler
+    from realesrgan import RealESRGANer
+    from basicsr.archs.rrdbnet_arch import RRDBNet
+    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+    _realesrgan_upsampler = RealESRGANer(scale=4, model_path='RealESRGAN_x4plus.pth', model=model, tile=0, tile_pad=10, pre_pad=0, half=True)
+    return _realesrgan_upsampler
 
 # ── Utils ────────────────────────────────────────────────────────────────
 
@@ -197,20 +212,183 @@ def _run_dsine(images_b64, directions):
 
 # ── New Cinematic Actions ────────────────────────────────────────────────
 
+def _run_densepose(images_b64, directions):
+    """Run DensePose to get IUV maps."""
+    iuvs = {}
+    for i, b64 in enumerate(images_b64):
+        img = _decode_image(b64)
+        iuv = predict_iuv(img, backend=_densepose_backend)
+        if iuv is not None:
+            iuvs[directions[i]] = _encode_mask(iuv) # Use PNG for IUV
+    return iuvs
+
+def _extract_frames(video_path, output_dir, fps=5):
+    """Extract frames from video using FFmpeg."""
+    os.makedirs(output_dir, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-i", video_path,
+        "-vf", f"fps={fps}",
+        os.path.join(output_dir, "frame_%04d.jpg")
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return sorted([os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.endswith(".jpg")])
+
+def _run_colmap(frames_dir, workspace_dir):
+    """Run COLMAP SfM to estimate camera poses."""
+    logger.info("Running COLMAP Camera Estimation...")
+    db_path = os.path.join(workspace_dir, "database.db")
+    sparse_path = os.path.join(workspace_dir, "sparse")
+    os.makedirs(sparse_path, exist_ok=True)
+
+    # 1. Feature Extraction
+    subprocess.run(["colmap", "feature_extractor", "--database_path", db_path, "--image_path", frames_dir, "--ImageReader.single_camera", "1"], check=True)
+    # 2. Exhaustive Matching
+    subprocess.run(["colmap", "exhaustive_matcher", "--database_path", db_path], check=True)
+    # 3. Mapper
+    subprocess.run(["colmap", "mapper", "--database_path", db_path, "--image_path", frames_dir, "--output_path", sparse_path], check=True)
+
+    # Convert binary to text
+    subprocess.run(["colmap", "model_converter", "--input_path", os.path.join(sparse_path, "0"), "--output_path", sparse_path, "--output_type", "TXT"], check=True)
+    return sparse_path
+
 def _train_splat(inp):
-    """Placeholder for 3DGS training via gsplat/nerfstudio."""
-    logger.info("Training Cinematic 3DGS Splat...")
-    return {'status': 'success', 'message': 'Splat training logic active (v6.0)'}
+    """
+    Train a 3D Gaussian Splatting volume from video or image frames.
+    Uses gsplat 1.5.0+ for high-speed convergence.
+    """
+    logger.info("Initializing 3DGS Training (v6.0 Cinematic)...")
+    temp_dir = tempfile.mkdtemp()
+    try:
+        from gsplat import Trainer, SplatModel
+        
+        video_b64 = inp.get('video_b64')
+        images_b64 = inp.get('images', [])
+        
+        frames_dir = os.path.join(temp_dir, "frames")
+        if video_b64:
+            video_path = os.path.join(temp_dir, "input_video.mp4")
+            with open(video_path, "wb") as f:
+                f.write(base64.b64decode(video_b64))
+            frame_paths = _extract_frames(video_path, frames_dir)
+        elif images_b64:
+            os.makedirs(frames_dir, exist_ok=True)
+            frame_paths = []
+            for i, b64 in enumerate(images_b64):
+                p = os.path.join(frames_dir, f"frame_{i:04d}.jpg")
+                with open(p, "wb") as f: f.write(base64.b64decode(b64))
+                frame_paths.append(p)
+        else:
+            return {'status': 'error', 'message': 'No training data provided'}
+
+        # 1. Pose Estimation
+        colmap_dir = _run_colmap(frames_dir, temp_dir)
+        
+        # 2. Setup gsplat Trainer
+        model = SplatModel.load_colmap(colmap_dir).cuda()
+        trainer = Trainer(model=model, lr=0.01)
+        
+        logger.info(f"Training on {len(frame_paths)} frames...")
+        trainer.train(iterations=2000, images_dir=frames_dir)
+        
+        # 3. Export to Compressed Splat (.spz)
+        buffer = io.BytesIO()
+        model.save_spz(buffer)
+        spz_b64 = base64.b64encode(buffer.getvalue()).decode('ascii')
+        
+        return {
+            'status': 'success',
+            'splat_b64': spz_b64,
+            'gaussians': len(model.gaussians),
+            'format': 'spz'
+        }
+    except Exception as e:
+        logger.error(f"Splat training failed: {e}")
+        return {'status': 'error', 'message': str(e)}
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 def _anchor_splat(inp):
-    """Anchor neural splat Gaussians to MPFB2 mesh vertices."""
+    """
+    Bind Gaussian centroids to MPFB2 mesh vertices for animation.
+    """
     logger.info("Calculating Mesh-Guided Anchors...")
-    return {'status': 'success', 'anchors': 13380}
+    try:
+        verts_b64 = inp.get('vertices_b64')
+        splat_b64 = inp.get('splat_b64')
+        
+        if not verts_b64 or not splat_b64:
+            return {'status': 'error', 'message': 'Missing vertices or splat data'}
+            
+        vertices = torch.from_numpy(np.frombuffer(base64.b64decode(verts_b64), dtype=np.float32).reshape(-1, 3)).cuda()
+        
+        from gsplat import SplatModel
+        splat_bytes = base64.b64decode(splat_b64)
+        model = SplatModel.load_spz(io.BytesIO(splat_bytes)).cuda()
+        centroids = model.means
+        
+        batch_size = 10000
+        n_gaussians = centroids.shape[0]
+        anchor_indices = torch.zeros(n_gaussians, dtype=torch.long, device='cuda')
+        offsets = torch.zeros((n_gaussians, 3), dtype=torch.float32, device='cuda')
+        
+        for i in range(0, n_gaussians, batch_size):
+            end = min(i + batch_size, n_gaussians)
+            chunk = centroids[i:end]
+            dists = torch.cdist(chunk, vertices)
+            indices = torch.argmin(dists, dim=1)
+            anchor_indices[i:end] = indices
+            offsets[i:end] = chunk - vertices[indices]
+        
+        return {
+            'status': 'success',
+            'anchor_indices_b64': _encode_array(anchor_indices.cpu().numpy(), dtype='int32'),
+            'offsets_b64': _encode_array(offsets.cpu().numpy()),
+            'gaussians': n_gaussians,
+            'message': 'Splat successfully anchored to MPFB2 mesh'
+        }
+    except Exception as e:
+        logger.error(f"Splat anchoring failed: {e}")
+        return {'status': 'error', 'message': str(e)}
 
 def _bake_cinematic(inp):
     """Neural baking for PBR normal/albedo enhancement."""
     logger.info("Baking Neural Detail to 4K PBR...")
-    return {'status': 'success', 'textures': ['albedo_4k', 'normal_4k']}
+    try:
+        images_b64 = inp.get('images', [])
+        directions = inp.get('directions', ['front', 'back', 'left', 'right'])
+        verts_b64 = inp.get('vertices_b64')
+        faces_b64 = inp.get('faces_b64')
+        uvs_b64 = inp.get('uvs_b64')
+        
+        if not all([images_b64, verts_b64, faces_b64, uvs_b64]):
+            return {'status': 'error', 'message': 'Missing mesh or image data'}
+            
+        vertices = np.frombuffer(base64.b64decode(verts_b64), dtype=np.float32).reshape(-1, 3)
+        faces = np.frombuffer(base64.b64decode(faces_b64), dtype=np.int32).reshape(-1, 3)
+        uvs = np.frombuffer(base64.b64decode(uvs_b64), dtype=np.float32).reshape(-1, 2)
+        
+        photo_dict = {d: _decode_image(images_b64[i]) for i, d in enumerate(directions) if i < len(images_b64)}
+        iuv_dict = {d: predict_iuv(img, backend=_densepose_backend) for d, img in photo_dict.items()}
+        iuv_dict = {k: v for k, v in iuv_dict.items() if v is not None}
+        
+        if not iuv_dict:
+            return {'status': 'error', 'message': 'DensePose failed on all views'}
+            
+        # Perform Baking
+        tex, weight = bake_from_photos_nn(vertices, faces, uvs, photo_dict, iuv_dict, texture_size=4096)
+        
+        # Seam Smoothing
+        seam_mask = build_seam_mask(vertices, faces, uvs, texture_size=4096)
+        tex_smooth = smooth_seam(tex, seam_mask)
+        
+        return {
+            'status': 'success',
+            'albedo_4k_b64': _encode_image(tex_smooth, quality=95),
+            'coverage': float((weight > 0).mean())
+        }
+    except Exception as e:
+        logger.error(f"Cinematic baking failed: {e}")
+        return {'status': 'error', 'message': str(e)}
 
 # ── Main Handler ──────────────────────────────────────────────────────────
 
@@ -226,6 +404,8 @@ def handler(job):
             return {'status': 'success', 'masks': _run_rembg(inp.get('images', []), inp.get('directions', ['front']))}
         elif action == 'dsine':
             return {'status': 'success', 'normals': _run_dsine(inp.get('images', []), inp.get('directions', ['front']))}
+        elif action == 'densepose':
+            return {'status': 'success', 'iuvs': _run_densepose(inp.get('images', []), inp.get('directions', ['front']))}
         elif action == 'train_splat':
             return _train_splat(inp)
         elif action == 'anchor_splat':

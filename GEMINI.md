@@ -37,9 +37,30 @@ Gemini is the primary authority in this branch.
 
 ---
 
+## MANDATORY BROWSER WORKFLOW (The "Always" Rule)
+
+For every task involving the 3D viewer or web interface, you MUST follow this sequence:
+
+1.  **Surgical Implementation**: Apply changes idiomatically and follow project style.
+2.  **Browser Verification**: Use `scripts/agent_browser.py` (e.g., `console`, `describe`, or `cinematic-check`) to verify the work.
+3.  **Console Audit**: You MUST read and resolve all browser console errors (404s, JS exceptions, etc.). Do not show work that has errors.
+4.  **Set Optimal Defaults**: Programmatically set the view to the most visually impressive or requested state (active tabs, HDRI, visual modes) so the user sees the final work immediately without manual clicks.
+5.  **Direct Launch**: Always execute a shell command to open the browser (e.g., `start chrome <link>`) with the final URL.
+
+---
+
 ## PROJECT STATUS: v5.5 UPGRADE IN PROGRESS
 - MPFB2 Standardized (13,380 verts)
 - Vectorized Skin Quilting (50x speedup)
 - Frequency-Separated PBR Normal mapping
 - 3D Muscle Definition Projection
 - Edge Warmth Ratio (EWR) Skin Audit
+
+---
+
+## WINDOWS & PY4WEB DISCOVERIES (v5.5)
+
+1.  **Py4web `URL()` Syntax**: In templates, positional arguments are for path parameters (e.g., `[[=URL('action', 1)]]`), while query parameters must use `vars=dict()`. Keyword arguments for path params cause `TypeError`.
+2.  **`Auth` Import Path**: In Py4web v1.2023+ (Windows), `Auth` should be imported from `py4web.utils.auth`, not directly from `py4web`.
+3.  **Path Resolution**: Use absolute paths (`PROJECT_ROOT`) for all `static_file` serving and database URIs to avoid parent-depth bugs in the `apps/` directory structure.
+4.  **CORS & IP Webcam**: Browser blocks direct `/sensors` fetch from Phone IPs. Must use server-side proxying for reliable sensor data integration in the Studio UI.

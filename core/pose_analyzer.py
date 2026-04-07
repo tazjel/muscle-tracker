@@ -59,9 +59,17 @@ _LM = {
 }
 
 POSE_RULES = {
-    "bicep": [
+    # Bicep Front Double (standard bodybuilding pose)
+    "bicep_front": [
         ("right_shoulder", "right_elbow", "right_wrist", 90.0, 15.0, "elbow flexion"),
-        ("right_hip", "right_shoulder", "right_elbow", 45.0, 20.0, "shoulder abduction"),
+        ("right_hip", "right_shoulder", "right_elbow", 90.0, 20.0, "shoulder abduction"),
+        ("left_shoulder", "left_elbow", "left_wrist", 90.0, 15.0, "elbow flexion"),
+        ("left_hip", "left_shoulder", "left_elbow", 90.0, 20.0, "shoulder abduction"),
+    ],
+    # Bicep Side (focused on one side)
+    "bicep_side": [
+        ("right_shoulder", "right_elbow", "right_wrist", 90.0, 15.0, "elbow flexion"),
+        ("right_hip", "right_shoulder", "right_elbow", 15.0, 10.0, "arm position"),
     ],
     "tricep": [
         ("right_shoulder", "right_elbow", "right_wrist", 170.0, 15.0, "elbow extension"),
@@ -78,11 +86,19 @@ POSE_RULES = {
         ("right_hip", "right_shoulder", "right_elbow", 15.0, 15.0, "shoulder abduction"),
         ("right_shoulder", "right_elbow", "right_wrist", 160.0, 20.0, "elbow angle"),
     ],
-    "lat": [
-        ("right_hip", "right_shoulder", "right_elbow", 90.0, 15.0, "shoulder abduction"),
-        ("left_hip", "left_shoulder", "left_elbow", 90.0, 15.0, "shoulder abduction"),
+    "lat_front": [
+        ("right_hip", "right_shoulder", "right_elbow", 45.0, 15.0, "shoulder abduction"),
+        ("left_hip", "left_shoulder", "left_elbow", 45.0, 15.0, "shoulder abduction"),
+    ],
+    "lat_back": [
+        ("right_hip", "right_shoulder", "right_elbow", 60.0, 15.0, "shoulder abduction"),
+        ("left_hip", "left_shoulder", "left_elbow", 60.0, 15.0, "shoulder abduction"),
     ],
 }
+
+# Add aliases for legacy/simple usage
+POSE_RULES["bicep"] = POSE_RULES["bicep_front"]
+POSE_RULES["lat"] = POSE_RULES["lat_front"]
 
 
 def _angle_between(a, b, c):

@@ -16,6 +16,8 @@ sys.modules['mediapipe'] = mock_mp
 from core.pose_analyzer import (
     _angle_between, _correction_instruction, POSE_RULES, _LM, analyze_pose
 )
+import core.pose_analyzer as pa
+pa.HAVE_MEDIAPIPE = True
 
 
 class TestAngleBetween(unittest.TestCase):
@@ -91,7 +93,8 @@ class TestPoseRules(unittest.TestCase):
     """Test that pose rules are well-formed."""
 
     def test_all_groups_have_rules(self):
-        expected = {"bicep", "tricep", "quad", "calf", "delt", "lat"}
+        # Including new multi-view rules and aliases
+        expected = {"bicep", "bicep_front", "bicep_side", "tricep", "quad", "calf", "delt", "lat", "lat_front", "lat_back"}
         self.assertEqual(set(POSE_RULES.keys()), expected)
 
     def test_rules_have_valid_structure(self):

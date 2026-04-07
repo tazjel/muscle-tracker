@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 def serve_mesh(filename):
     """Serve models from the root meshes/ directory."""
     logger.info("Serving mesh: %s", filename)
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'meshes'))
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'meshes'))
     return static_file(filename, root=root)
 
 
@@ -26,14 +26,19 @@ def serve_mesh(filename):
 def serve_asset(filename):
     """Serve HDRI/textures from the root assets/ directory."""
     logger.info("Serving asset: %s", filename)
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'assets'))
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'assets'))
     return static_file(filename, root=root)
 
 # Initialize CORS
 cors = CORS()
 
 # Add project root to path for core imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, PROJECT_ROOT)
+
+def _abs_path(*parts):
+    """Return an absolute path relative to the project root."""
+    return os.path.join(PROJECT_ROOT, *parts)
 from core.auth import create_token, verify_token as verify_jwt, hash_password, verify_password
 from core.vision_medical import analyze_muscle_growth
 from core.volumetrics import estimate_muscle_volume, compare_volumes
@@ -268,8 +273,8 @@ def upload_scan(customer_id):
     front_filename = db.muscle_scan.img_front.store(front.file, front.filename)
     side_filename = db.muscle_scan.img_side.store(side.file, side.filename)
 
-    front_path = os.path.join('uploads', front_filename)
-    side_path = os.path.join('uploads', side_filename)
+    front_path = _abs_path('uploads', front_filename)
+    side_path = _abs_path('uploads', side_filename)
 
     res = _process_and_save_scan(customer, customer_id, front_path, side_path, front_filename, side_filename, muscle_group, scan_side, marker_size, volume_model, shape_template, camera_distance_cm=camera_distance_cm)
     
@@ -330,10 +335,10 @@ def upload_quad_scan(customer_id):
     back_fn = db.muscle_scan.img_front.store(back.file, back.filename)
     right_fn = db.muscle_scan.img_side.store(right_side.file, right_side.filename)
 
-    front_path = os.path.join('uploads', front_fn)
-    left_path = os.path.join('uploads', left_fn)
-    back_path = os.path.join('uploads', back_fn)
-    right_path = os.path.join('uploads', right_fn)
+    front_path = _abs_path('uploads', front_fn)
+    left_path = _abs_path('uploads', left_fn)
+    back_path = _abs_path('uploads', back_fn)
+    right_path = _abs_path('uploads', right_fn)
 
     # Process Pair A: front + left_side
     res_a = _process_and_save_scan(customer, customer_id, front_path, left_path,
@@ -406,13 +411,13 @@ def upload_video(customer_id):
         return dict(status='error', message=f'Invalid video type: {ext}')
 
     video_filename = db.muscle_scan.img_front.store(video.file, video.filename)
-    video_path = os.path.join('uploads', video_filename)
+    video_path = _abs_path('uploads', video_filename)
 
     frames = extract_keyframes(video_path, num_frames=3)
     if len(frames) < 2:
         return dict(status='error', message='Failed to extract enough keyframes from video')
 
-    uploads_dir = 'uploads'
+    uploads_dir = _abs_path('uploads')
     kf_paths = save_keyframes(frames, uploads_dir)
     
     front_path = kf_paths[0]
@@ -1150,16 +1155,16 @@ def reconstruct_3d(customer_id):
             mesh_data['volume_cm3'] = precise_vol
 
         # Save OBJ
-        os.makedirs('meshes', exist_ok=True)
+        os.makedirs(_abs_path('meshes'), exist_ok=True)
         import time
         base_name  = f'mesh_{customer_id}_{int(time.time())}'
-        obj_path   = os.path.join('meshes', base_name + '.obj')
-        prev_path  = os.path.join('meshes', base_name + '_preview.png')
+        obj_path   = _abs_path('meshes', base_name + '.obj')
+        prev_path  = _abs_path('meshes', base_name + '_preview.png')
 
         export_obj(mesh_data['vertices'], mesh_data['faces'], obj_path)
 
         # GLB export (preferred format for 3D viewer)
-        glb_path = os.path.join('meshes', base_name + '.glb')
+        glb_path = _abs_path('meshes', base_name + '.glb')
         glb_url  = None
         try:
             export_glb(mesh_data['vertices'], mesh_data['faces'], glb_path)
@@ -1300,7 +1305,7 @@ def upload_room_texture(customer_id):
     upload = request.files.get('image')
     if not upload:
         return dict(status='error', message='No image file provided')
-    uploads_dir = os.path.join(os.path.dirname(__file__), '..', 'uploads', 'room')
+    uploads_dir = _abs_path('uploads', 'room')
     os.makedirs(uploads_dir, exist_ok=True)
     fname = f'room_{customer_id}_{surface}{os.path.splitext(upload.filename)[1]}'
     fpath = os.path.join(uploads_dir, fname)
@@ -3710,6 +3715,46 @@ def studio_upload_frame(customer_id):
         
     return dict(status='success', filepath=filepath)
 
+@action('api/studio/sensors')
+def studio_sensors():
+    """Proxy sensor data from the phone to avoid CORS issues."""
+    import urllib.request
+    ip = request.query.get('ip')
+    if not ip: return dict(status='error', message='No IP provided')
+    
+    try:
+        url = f"http://{ip}:8080/sensors"
+        with urllib.request.urlopen(url, timeout=2) as response:
+            return json.loads(response.read().decode())
+    except Exception as e:
+        logger.warning("Sensor proxy failed for %s: %s", ip, e)
+        return dict(status='error', message=str(e))
+
 @action('api/studio/control', method=['POST'])
 def studio_control():
-    return dict(status='ok')
+    """Proxy control commands to the phone."""
+    import urllib.request
+    data = request.json or {}
+    ip = data.get('ip')
+    cmd = data.get('action')
+    val = data.get('value')
+    
+    if not ip or not cmd:
+        return dict(status='error', message='Missing IP or command')
+    
+    try:
+        url = f"http://{ip}:8080/control"
+        # IP Webcam Pro usually expects GET or form-data for controls, but let's try JSON if that's what's sent
+        # Standard IP Webcam: /settings/fflash?set=on or similar.
+        # But if the companion app/IP webcam pro uses a custom /control endpoint, we match that.
+        
+        req = urllib.request.Request(
+            url, 
+            data=json.dumps({'action': cmd, 'value': val}).encode(),
+            headers={'Content-Type': 'application/json'}
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            return dict(status='success', detail=response.read().decode())
+    except Exception as e:
+        logger.error("Control proxy failed: %s", e)
+        return dict(status='error', message=str(e))

@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # 2. Install 2026-Standard Python Packages
-RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir \
     runpod \
     opencv-python-headless \
     rembg[gpu] \
@@ -31,10 +31,10 @@ RUN pip install --no-cache-dir \
     yacs \
     omegaconf \
     pytorch-lightning \
-    chumpy \
     geffnet \
     realesrgan \
-    basicsr
+    basicsr && \
+    pip install --no-cache-dir --no-build-isolation chumpy
 
 # 3. Clone and install 4D-Humans (HMR2.0)
 RUN pip install --no-cache-dir git+https://github.com/shubham-goel/4D-Humans.git
@@ -49,7 +49,7 @@ RUN python -c "import gsplat; print('gsplat CUDA kernels pre-compiled successful
 COPY . .
 # Ensure SMPL weights are in the cache path
 RUN mkdir -p /root/.cache/4DHumans/data/smpl && \
-    cp runpod/SMPL_NEUTRAL.pkl /root/.cache/4DHumans/data/smpl/SMPL_NEUTRAL.pkl
+    cp SMPL_NEUTRAL.pkl /root/.cache/4DHumans/data/smpl/SMPL_NEUTRAL.pkl
 
 # Environment Variables for Performance
 ENV PYTHONUNBUFFERED=1
@@ -57,4 +57,4 @@ ENV CUDA_DEVICE_ORDER=PCI_BUS_ID
 ENV TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0 12.0" 
 
 # Start RunPod Handler (v2 for Cinematic support)
-CMD ["python", "-u", "runpod/handler_v2.py"]
+CMD ["python", "-u", "handler_v2.py"]

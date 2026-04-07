@@ -95,20 +95,22 @@
         let dashInterval;
         const customerId = 1; // Default for demo
 
+        // Globally accessible logging
+        function addLog(msg, isError = false) {
+            const logPanel = document.getElementById('console_log');
+            if (!logPanel) return;
+            const entry = document.createElement('div');
+            entry.className = 'console-entry' + (isError ? ' console-error' : '');
+            entry.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logPanel.appendChild(entry);
+            logPanel.scrollTop = logPanel.scrollHeight;
+            if (logPanel.childNodes.length > 50) logPanel.removeChild(logPanel.firstChild);
+        }
+
         // Intercept console for Audit Panel
         (function() {
             const oldLog = console.log;
             const oldError = console.error;
-            const logPanel = document.getElementById('console_log');
-
-            function addLog(msg, isError = false) {
-                const entry = document.createElement('div');
-                entry.className = 'console-entry' + (isError ? ' console-error' : '');
-                entry.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
-                logPanel.appendChild(entry);
-                logPanel.scrollTop = logPanel.scrollHeight;
-                if (logPanel.childNodes.length > 50) logPanel.removeChild(logPanel.firstChild);
-            }
 
             console.log = function(msg) { addLog(msg); oldLog.apply(console, arguments); };
             console.error = function(msg) { addLog(msg, true); oldError.apply(console, arguments); };
@@ -145,7 +147,7 @@
 
         async function updateDashboard() {
             try {
-                const res = await fetch('[[=URL("studio/dashboard", customer_id=1)]]');
+                const res = await fetch('[[=URL("studio/dashboard", 1)]]');
                 const data = await res.json();
                 const list = document.getElementById('capture_list');
                 list.innerHTML = '';
@@ -178,14 +180,14 @@
             status.style.color = '#ffc107';
             
             try {
-                const res = await fetch('[[=URL("studio/process", customer_id=1)]]', { method: 'POST' });
+                const res = await fetch('[[=URL("studio/process", 1)]]', { method: 'POST' });
                 const data = await res.json();
                 
                 if (data.status === 'success') {
                     status.innerText = 'MESH GENERATED: ' + data.metrics.volume_cm3.toFixed(1) + ' cm³';
                     status.style.color = '#69f0ae';
                     btn.innerText = 'VIEW 3D MODEL';
-                    btn.onclick = () => window.open('[[=URL("static/viewer3d/index.html")]]?model=/api/mesh/' + data.mesh_id + '.glb&customer=1', '_blank');
+                    btn.onclick = () => window.open('[[=URL('static', 'viewer3d/index.html')]]?model=/api/mesh/' + data.mesh_id + '.glb&customer=1', '_blank');
                 } else {
                     status.innerText = 'PIPELINE ERROR: ' + data.message;
                     status.style.color = '#ff5252';
@@ -202,19 +204,21 @@
             if (pollInterval) clearInterval(pollInterval);
             pollInterval = setInterval(async () => {
                 try {
-                    const res = await fetch('http://' + ip + ':8080/sensors');
+                    const res = await fetch('[[=URL("api/studio/sensors")]]?ip=' + ip);
                     const data = await res.json();
+                    if (data.status === 'error') throw new Error(data.message);
+
                     document.getElementById('val_pitch').innerText = data.pitch + '°';
                     document.getElementById('val_roll').innerText = data.roll + '°';
                     document.getElementById('val_dist').innerText = data.distance + ' cm';
                     document.getElementById('val_muscle').innerText = data.muscle.toUpperCase();
-                    
+
                     if (data.is_capturing) {
                         document.getElementById('sequence_status').innerText = 'PHONE CAPTURING...';
                         document.getElementById('sequence_status').style.color = '#ffc107';
                     }
                 } catch (e) {
-                    console.log('Sensor poll error');
+                    console.log('Sensor poll error:', e.message);
                 }
             }, 1000);
         }
@@ -222,20 +226,22 @@
         async function sendControl(action, value) {
             const ip = document.getElementById('phone_ip').value;
             if (!ip) return;
-            const url = 'http://' + ip + ':8080/control';
-            
+            const url = '[[=URL("api/studio/control")]]';
+
             try {
-                await fetch(url, {
+                const res = await fetch(url, {
                     method: 'POST',
-                    mode: 'no-cors',
-                    body: JSON.stringify({ action: action, value: value })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip: ip, action: action, value: value })
                 });
-                console.log('Sent:', action, value);
+                const data = await res.json();
+                console.log('Control Result:', data);
+                addLog('Sent ' + action + ': ' + value + ' (' + data.status + ')');
             } catch (e) {
                 console.error('Control error:', e);
+                addLog('Control Failed: ' + e.message);
             }
         }
-
         async function startSequence() {
             const status = document.getElementById('sequence_status');
             const phases = ['front', 'side', 'back'];

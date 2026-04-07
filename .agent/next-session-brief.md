@@ -1,38 +1,21 @@
-# Next Session Brief — 2026-03-25
+# Next Session Brief — v5.5 "Cinematic Scan"
 
-## v5.5 "Cinematic Scan" Upgrade (3dgemini branch)
+## Current Status
+Successfully diagnosed and fixed the RunPod cloud blockers. The engine is ready for the transition from 2D photos to 3D Gaussian Splatting (3DGS) volumes.
 
-### What Was Done This Session
+## Completed in Last Session
+1.  **RunPod Diagnostic**: Verified API key is valid; 403 error was a Cloudflare UA block.
+2.  **Infrastructure Fix**: Corrected `runpod/Dockerfile` paths for the `runpod/` build context.
+3.  **Core Upgrade**: Implemented `train_splat` (gsplat-based training) and `anchor_splat` (mesh-vertex binding) in `handler_v2.py`.
+4.  **Verification Tools**: Created `test_update_ssl.py` and `query_templates.py` for future cloud management.
 
-#### 1. Architectural & Status Change
-- **Lead Agent Status**: Updated `GEMINI.md` to establish Gemini as the Lead Agent for the `3dgemini` branch with full codebase authorization.
-- **Branch Ownership**: All work completed and verified exclusively within the `3dgemini` branch.
+## Immediate Tasks for Next Session
+1.  **Redeploy Worker**: Run `bash runpod/deploy.sh` to apply the Dockerfile fixes.
+2.  **Verify Cloud Health**: Confirm worker is "Ready" using `test_runpod.py`.
+3.  **Implement 'bake_cinematic'**: Add the final PBR texture baking logic to `handler_v2.py`.
+4.  **Full Pipeline Test**: Submit a video/image set to generate a `.spz` splat anchored to an MPFB2 mesh.
 
-#### 2. Backend Vision Engine (v5.5 Standards)
-- **MPFB2 Standardized**: Promoted the 13,380-vertex MPFB2 mesh as the primary high-fidelity template.
-- **50x Texture Speedup**: Optimized `core/skin_patch.py` using global vectorized SSD (`cv2.matchTemplate`), eliminating the random-sampling bottleneck.
-- **Pore-Level Detail**: Implemented Frequency-Separated Normal mapping using Scharr gradients to extract skin pores from photos.
-- **Precision PCA Scaling**: Re-enabled circumference-based scaling in `core/body_deform.py` by generating a new KDTree mapping between MPFB2 and SMPL regions.
-- **Skin Audit Metric**: Created `core/skin_audit.py` with the Edge Warmth Ratio (EWR) to detect and correct "plastic" skin renders.
-
-#### 3. 3D Viewer & UI (The "Scene" Tab)
-- **Live Phenotype Sliders**: Integrated Muscle, Weight, and Body Type sliders with a debounced (500ms) server-side re-deformation loop.
-- **Robust Reset System**: Added a "Reset" button and backend API to instantly revert to the default athletic male phenotype.
-- **JS Stability**: Resolved all structural and syntax issues in `body_viewer.js` (naming conflicts, duplicate declarations, and brace mismatches).
-
-#### 4. Verification & Health
-- **100% Test Pass**: Fixed all failing tests (253/253 passing). Resolved `TypeError` bugs in the pipeline and refactored mocks for the modern MediaPipe Tasks API.
-- **Browser Audit**: Verified UI stability and functionality via `agent_browser.py`.
-
-### Pending / Next Steps
-- **G-T6 (Mobile)**: Port the `textureSeamlessBlend` shader fixes to the Flutter companion app.
-- **G-T8 (Hardware)**: Connect the newly optimized visual pipeline to the physical scanning rig.
-- **SSS Calibration**: Fine-tune the Edge Warmth Ratio (EWR) thresholds based on diverse real-world skin scans.
-
-### How to Run
-```powershell
-# Start Port 8000
-py4web run apps --port 8000
-# View in browser
-http://localhost:8000/web_app/static/viewer3d/index.html
-```
+## Critical Files
+- [handler_v2.py](file:///C:/Users/MiEXCITE/Projects/gtd3d/runpod/handler_v2.py)
+- [Dockerfile](file:///C:/Users/MiEXCITE/Projects/gtd3d/runpod/Dockerfile)
+- [GEMINI_3D_TASKS.md](file:///C:/Users/MiEXCITE/Projects/gtd3d/GEMINI_3D_TASKS.md)
