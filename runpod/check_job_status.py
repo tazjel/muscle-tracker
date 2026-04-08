@@ -3,7 +3,7 @@ import os
 import ssl
 import sys
 
-API_KEY = "***REMOVED***"
+API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 ENDPOINT_ID = "1lbdnj99ui3fe4"
 JOB_ID = sys.argv[1] if len(sys.argv) > 1 else "2e634ae8-4ef1-47c4-9840-331dbd68f010-e2"
 

@@ -3,7 +3,7 @@ import os
 import ssl
 
 # Use the key from the existing scripts
-API_KEY = "***REMOVED***"
+API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 ENDPOINT_ID = "1lbdnj99ui3fe4"
 url = f"https://api.runpod.io/graphql?api_key={API_KEY}"
 

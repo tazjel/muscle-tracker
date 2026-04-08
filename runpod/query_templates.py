@@ -2,7 +2,7 @@ import urllib.request, json
 import os
 import ssl
 
-API_KEY = "***REMOVED***"
+API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 url = f"https://api.runpod.io/graphql?api_key={API_KEY}"
 
 query = """

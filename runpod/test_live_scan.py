@@ -6,7 +6,7 @@ Usage: python test_live_scan.py [session_dir]
 import os, sys, json, base64, time, glob
 import requests
 
-API_KEY = os.environ.get('RUNPOD_API_KEY', '***REMOVED***')
+API_KEY = os.environ.get('RUNPOD_API_KEY', '')
 ENDPOINT = os.environ.get('RUNPOD_ENDPOINT', '')
 
 def main():
