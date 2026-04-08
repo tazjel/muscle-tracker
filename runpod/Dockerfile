@@ -1,49 +1,100 @@
-# RunPod GPU Worker v7 — Live Scan Bake (HMR2.0 + Texture + GLB)
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+# RunPod GPU Worker — LHM++ 3D Human Reconstruction Pipeline
+# Replaces: HMR2.0 + DensePose
+# Base: pytorch/pytorch 2.3.0 + CUDA 12.1 + cuDNN 8 devel
+#   - Python 3.10 ships with this image
+#   - PyTorch 2.3.0 + torchvision 0.18.0 ship with this image
+#   - CUDA *devel* variant required for compiling LHM++ pointops C++ extension
+FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
 
-# 1. System deps
-RUN apt-get update && apt-get install -y \
-    ffmpeg colmap libgl1-mesa-glx libglib2.0-0 \
+# ── 1. System dependencies ──────────────────────────────────────────────────
+# git        : clone LHM++ repo
+# build-essential / ninja-build : compile pointops + diff-gaussian-rasterization
+# libgl1-mesa-glx / libglib2.0-0 : headless OpenCV / Open3D
+# wget       : fetch pre-built wheel files
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    ninja-build \
+    wget \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# 2. Core Python packages (split to isolate failures)
+# ── 2. Upgrade pip ──────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir --upgrade pip
+
+# ── 3. xformers (cu121 build, must match PyTorch 2.3.0) ────────────────────
+RUN pip install --no-cache-dir -U \
+    xformers==0.0.26.post1 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# ── 4. spconv for sparse 3D convolutions ───────────────────────────────────
+RUN pip install --no-cache-dir spconv-cu121
+
+# ── 5. PyTorch3D (pre-built wheel for py310 + cu121 + pt2.3.0) ─────────────
 RUN pip install --no-cache-dir \
-    runpod \
-    opencv-python-headless \
-    smplx \
-    einops \
-    timm \
-    yacs \
-    omegaconf \
-    pytorch-lightning \
-    geffnet \
-    pygltflib \
-    scipy \
-    mediapipe
+    --no-index \
+    pytorch3d \
+    -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt230/download.html
 
-# 3. rembg (ignore blinker conflict from base image)
-RUN pip install --no-cache-dir --ignore-installed blinker && \
-    pip install --no-cache-dir rembg[gpu]
+# ── 6. Gaussian-Splatting dependencies ─────────────────────────────────────
+# diff-gaussian-rasterization and simple-knn must be built from source
+# (no compatible pre-built wheels for this exact CUDA/torch combo)
+RUN pip install --no-cache-dir \
+    git+https://github.com/ashawkey/diff-gaussian-rasterization/ \
+    git+https://github.com/camenduru/simple-knn/
 
-# 4. chumpy first (4D-Humans needs it), then HMR2.0
-RUN pip install --no-cache-dir --no-build-isolation chumpy && \
-    pip install --no-cache-dir git+https://github.com/shubham-goel/4D-Humans.git
+# ── 7. Pre-built wheels: torch_scatter + gsplat ────────────────────────────
+# LHM++ requires exact versions; fetch cp310 linux cu121 wheels from official
+# torch_scatter release page and LHM++ CI artifacts.
+RUN wget -q -O /tmp/torch_scatter.whl \
+    "https://data.pyg.org/whl/torch-2.3.0%2Bcu121/torch_scatter-2.1.2%2Bpt23cu121-cp310-cp310-linux_x86_64.whl" && \
+    pip install --no-cache-dir /tmp/torch_scatter.whl && \
+    rm /tmp/torch_scatter.whl
 
-# 5. Force numpy 1.x (torch compat)
-RUN pip install --no-cache-dir --force-reinstall "numpy==1.26.4"
+# gsplat 1.4.0 pre-built wheel (used by LHM++ for Gaussian primitives)
+RUN pip install --no-cache-dir \
+    "gsplat==1.4.0" \
+    --index-url https://download.pytorch.org/whl/cu121 \
+    || pip install --no-cache-dir \
+       git+https://github.com/nerfstudio-project/gsplat.git@v1.4.0
 
-# 6. Copy code
-COPY core/ /app/core/
-COPY runpod/ /app/
+# ── 8. rembg (CPU variant — GPU ONNX conflict with cu121 stack avoided) ─────
+RUN pip install --no-cache-dir "rembg[cpu]"
 
-# 7. SMPL weights
-RUN mkdir -p /root/.cache/4DHumans/data/smpl && \
-    cp /app/SMPL_NEUTRAL.pkl /root/.cache/4DHumans/data/smpl/SMPL_NEUTRAL.pkl
+# ── 9. RunPod serverless SDK ────────────────────────────────────────────────
+RUN pip install --no-cache-dir runpod
 
+# ── 10. Clone LHM++ repository ─────────────────────────────────────────────
+RUN git clone --depth 1 https://github.com/aigc3d/LHM-plusplus.git /app/lhm
+
+# ── 11. Install LHM++ Python requirements ──────────────────────────────────
+# trimesh, pygltflib, open3d are included in requirements.txt
+RUN pip install --no-cache-dir -r /app/lhm/requirements.txt
+
+# ── 12. Build pointops C++ CUDA extension ──────────────────────────────────
+# Must run AFTER all Python deps are installed; requires CUDA devel headers.
+RUN cd /app/lhm/lib/pointops && \
+    TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0" \
+    python setup.py install
+
+# ── 13. Bake model weights into image ──────────────────────────────────────
+# Avoids downloading at cold-start (critical for fast serverless spin-up).
+# download_all.py fetches: LHM-1B base model + SMPL-X + motion prior weights.
+RUN python /app/lhm/scripts/download_all.py
+
+# ── 14. Copy handler ────────────────────────────────────────────────────────
+COPY runpod/handler_v2.py /app/handler_v2.py
+
+# ── Environment ─────────────────────────────────────────────────────────────
 ENV PYTHONUNBUFFERED=1
 ENV CUDA_DEVICE_ORDER=PCI_BUS_ID
-ENV TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0 12.0"
+# Cover all RunPod GPU generations: A100, A10G, H100, RTX 4090
+ENV TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0"
+# Tell LHM++ where its weights live (default is relative to repo root)
+ENV LHM_MODEL_PATH=/app/lhm/pretrained_models
 
-CMD ["python", "-u", "handler_v2.py"]
+CMD ["python", "-u", "/app/handler_v2.py"]
