@@ -2,7 +2,8 @@
  * Manages panel navigation, API communication, and global state.
  */
 const Studio = {
-    API_BASE: '/web_app',
+    // Auto-detect base path: /gtd3d when served via GTD Studio proxy, /web_app when direct py4web
+    API_BASE: window.location.pathname.startsWith('/gtd3d') ? '/gtd3d' : '/web_app',
     customer: null,      // Currently selected customer object
     customerId: null,     // Currently selected customer ID
     panels: {},          // Registered panel modules
@@ -11,10 +12,18 @@ const Studio = {
     async init() {
         this._setupTabs();
         this._setupPanelToggles();
+        this._setupKeyboardShortcuts();
         this._pollDevices();
         this._pollGPU();
-        // Load customer panel on start
+        // Load panel modules
         if (window.CustomerPanel) CustomerPanel.init();
+        if (window.ScanPanel) ScanPanel.init();
+        if (window.ViewportPanel) ViewportPanel.init();
+        if (window.BodyScanPanel) BodyScanPanel.init();
+        if (window.TexturePanel) TexturePanel.init();
+        if (window.RenderPanel) RenderPanel.init();
+        if (window.ProgressPanel) ProgressPanel.init();
+        if (window.ReportPanel) ReportPanel.init();
         this.log('Studio initialized');
     },
 
@@ -125,6 +134,45 @@ const Studio = {
     // --- Viewport helpers ---
     showInViewport(type, url) {
         document.dispatchEvent(new CustomEvent('viewport-load', { detail: { type, url } }));
+    },
+
+    // --- Keyboard shortcuts ---
+    _setupKeyboardShortcuts() {
+        document.addEventListener('keydown', (e) => {
+            // Don't capture when typing in inputs
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+
+            const key = e.key.toLowerCase();
+            if (e.ctrlKey || e.metaKey) {
+                switch (key) {
+                    case 's': e.preventDefault(); this.log('Ctrl+S: nothing to save'); break;
+                    case 'e': e.preventDefault(); this._exportQuick(); break;
+                }
+                return;
+            }
+            switch (key) {
+                case '1': this._activateNav('scan'); break;
+                case '2': this._activateNav('body-scan'); break;
+                case '3': this._activateNav('texture'); break;
+                case '4': this._activateNav('render'); break;
+                case '5': this._activateNav('progress'); break;
+                case 'r': if (window.ViewportPanel) ViewportPanel.resetView(); break;
+                case 'w': if (window.ViewportPanel) ViewportPanel.toggleWireframe(); break;
+                case '/': document.getElementById('customer-search')?.focus(); e.preventDefault(); break;
+            }
+        });
+    },
+
+    _activateNav(section) {
+        document.querySelectorAll('.nav-links a').forEach(a => {
+            a.classList.toggle('active', a.dataset.nav === section);
+        });
+        this.log(`Switched to ${section}`);
+    },
+
+    async _exportQuick() {
+        if (!this.customerId) { this.log('No customer selected', 'error'); return; }
+        if (window.ProgressPanel) ProgressPanel.exportData(this.customerId);
     },
 };
 
