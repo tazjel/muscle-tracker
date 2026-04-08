@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GTD3D Body Viewer</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body, html {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background: #0a0a0f;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #e0e0e0;
+        }
+
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+        }
+
+        /* ── Control Panel (top-right) ── */
+        #control-panel {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            width: 220px;
+            background: rgba(20, 20, 30, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 16px;
+            backdrop-filter: blur(12px);
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        #control-panel h3 {
+            font-size: 13px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #8888aa;
+            border-bottom: 1px solid rgba(255,255,255,0.07);
+            padding-bottom: 8px;
+            margin-bottom: 2px;
+        }
+
+        .ctrl-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+        }
+
+        .ctrl-row input[type="checkbox"] {
+            accent-color: #6688ff;
+            width: 14px;
+            height: 14px;
+            cursor: pointer;
+        }
+
+        .ctrl-row label {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .ctrl-row select {
+            flex: 1;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 4px;
+            color: #e0e0e0;
+            font-size: 12px;
+            padding: 4px 6px;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .ctrl-row select:hover {
+            border-color: rgba(255,255,255,0.25);
+        }
+
+        .ctrl-btn {
+            flex: 1;
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 5px;
+            color: #e0e0e0;
+            font-size: 12px;
+            padding: 6px 8px;
+            cursor: pointer;
+            text-align: center;
+            transition: background 0.15s, border-color 0.15s;
+            user-select: none;
+        }
+
+        .ctrl-btn:hover {
+            background: rgba(255,255,255,0.14);
+            border-color: rgba(255,255,255,0.25);
+        }
+
+        .ctrl-btn:active {
+            background: rgba(100, 130, 255, 0.25);
+        }
+
+        /* ── Info Panel (bottom-left) ── */
+        #info-panel {
+            position: fixed;
+            bottom: 16px;
+            left: 16px;
+            width: 240px;
+            background: rgba(20, 20, 30, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 14px 16px;
+            backdrop-filter: blur(12px);
+            z-index: 10;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        #info-panel h3 {
+            font-size: 13px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #8888aa;
+            border-bottom: 1px solid rgba(255,255,255,0.07);
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 2px 0;
+        }
+
+        .info-label {
+            color: #8888aa;
+        }
+
+        .info-value {
+            font-family: ui-monospace, 'Cascadia Code', monospace;
+            color: #ccddff;
+        }
+
+        /* Coverage bar */
+        #coverage-bar-wrap {
+            margin-top: 8px;
+        }
+
+        #coverage-bar-bg {
+            height: 6px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+
+        #coverage-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s ease;
+            background: #44bb66;
+        }
+
+        /* ── Loading Overlay ── */
+        #loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: #0a0a0f;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            gap: 20px;
+            transition: opacity 0.4s ease;
+        }
+
+        #loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .spinner {
+            width: 44px;
+            height: 44px;
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top-color: #6688ff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        #loading-msg {
+            font-size: 14px;
+            color: #8888aa;
+            letter-spacing: 0.05em;
+        }
+
+        #error-banner {
+            position: fixed;
+            top: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(180, 40, 40, 0.9);
+            border: 1px solid rgba(255, 80, 80, 0.4);
+            border-radius: 6px;
+            padding: 10px 20px;
+            font-size: 13px;
+            z-index: 200;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<!-- Loading Overlay -->
+<div id="loading-overlay">
+    <div class="spinner"></div>
+    <div id="loading-msg">Initialising viewer…</div>
+</div>
+
+<!-- Error Banner -->
+<div id="error-banner"></div>
+
+<!-- Control Panel -->
+<div id="control-panel">
+    <h3>Controls</h3>
+
+    <div class="ctrl-row">
+        <input type="checkbox" id="chk-wireframe">
+        <label for="chk-wireframe">Wireframe</label>
+    </div>
+
+    <div class="ctrl-row">
+        <input type="checkbox" id="chk-autorotate" checked>
+        <label for="chk-autorotate">Auto-rotate</label>
+    </div>
+
+    <div class="ctrl-row">
+        <label style="color:#8888aa;font-size:12px;white-space:nowrap">Lighting</label>
+        <select id="sel-lighting">
+            <option value="studio">Studio</option>
+            <option value="natural">Natural</option>
+            <option value="dramatic">Dramatic</option>
+        </select>
+    </div>
+
+    <div class="ctrl-row">
+        <button class="ctrl-btn" id="btn-screenshot">Screenshot</button>
+        <button class="ctrl-btn" id="btn-fullscreen">Fullscreen</button>
+    </div>
+</div>
+
+<!-- Info Panel -->
+<div id="info-panel">
+    <h3>Session Info</h3>
+    <div class="info-row">
+        <span class="info-label">Session</span>
+        <span class="info-value" id="inf-session">—</span>
+    </div>
+    <div class="info-row">
+        <span class="info-label">Vertices</span>
+        <span class="info-value" id="inf-vertices">—</span>
+    </div>
+    <div class="info-row">
+        <span class="info-label">Faces</span>
+        <span class="info-value" id="inf-faces">—</span>
+    </div>
+    <div class="info-row">
+        <span class="info-label">Built</span>
+        <span class="info-value" id="inf-built">—</span>
+    </div>
+    <div id="coverage-bar-wrap">
+        <div class="info-row">
+            <span class="info-label">Coverage</span>
+            <span class="info-value" id="inf-coverage">—</span>
+        </div>
+        <div id="coverage-bar-bg">
+            <div id="coverage-bar-fill" style="width:0%"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Three.js via classic (non-module) script tags — same approach as scan_lab_dashboard -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/GLTFLoader.js"></script>
+
+<script>
+(function () {
+    'use strict';
+
+    // ── DOM refs ──────────────────────────────────────────────────────────────
+    const container     = document.getElementById('canvas-container');
+    const overlay       = document.getElementById('loading-overlay');
+    const loadingMsg    = document.getElementById('loading-msg');
+    const errorBanner   = document.getElementById('error-banner');
+
+    const chkWireframe  = document.getElementById('chk-wireframe');
+    const chkAutorotate = document.getElementById('chk-autorotate');
+    const selLighting   = document.getElementById('sel-lighting');
+    const btnScreenshot = document.getElementById('btn-screenshot');
+    const btnFullscreen = document.getElementById('btn-fullscreen');
+
+    const infSession    = document.getElementById('inf-session');
+    const infVertices   = document.getElementById('inf-vertices');
+    const infFaces      = document.getElementById('inf-faces');
+    const infBuilt      = document.getElementById('inf-built');
+    const infCoverage   = document.getElementById('inf-coverage');
+    const coverageFill  = document.getElementById('coverage-bar-fill');
+
+    // ── Scene objects ─────────────────────────────────────────────────────────
+    let scene, camera, renderer, controls;
+    let ambientLight, keyLight, fillLight, rimLight;
+    let currentModel = null;
+
+    // ── Lighting presets ──────────────────────────────────────────────────────
+    const PRESETS = {
+        studio:   { key: 1.0, fill: 0.5, rim: 0.3, ambient: 0.3 },
+        natural:  { key: 0.7, fill: 0.3, rim: 0.1, ambient: 0.5 },
+        dramatic: { key: 1.5, fill: 0.1, rim: 0.8, ambient: 0.1 },
+    };
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function showError(msg) {
+        errorBanner.textContent = msg;
+        errorBanner.style.display = 'block';
+        loadingMsg.textContent = msg;
+    }
+
+    function hideOverlay() {
+        overlay.classList.add('hidden');
+    }
+
+    function setLoadingMsg(msg) {
+        loadingMsg.textContent = msg;
+    }
+
+    function formatNumber(n) {
+        if (n == null || n === 0) return '—';
+        return Number(n).toLocaleString();
+    }
+
+    function coverageColor(pct) {
+        if (pct >= 75) return '#44bb66';
+        if (pct >= 50) return '#ddaa22';
+        return '#cc4444';
+    }
+
+    // ── Init Three.js scene ───────────────────────────────────────────────────
+    function initScene() {
+        const w = container.clientWidth;
+        const h = container.clientHeight;
+
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a0a0f);
+
+        camera = new THREE.PerspectiveCamera(40, w / h, 0.01, 100);
+        camera.position.set(0, 0.9, 2.5);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+        renderer.setSize(w, h);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 0.85, 0);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 1.0;
+        controls.update();
+
+        // Lights
+        ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+        scene.add(ambientLight);
+
+        keyLight = new THREE.DirectionalLight(0xffeedd, 1.0);
+        keyLight.position.set(2, 3, 2);
+        scene.add(keyLight);
+
+        fillLight = new THREE.DirectionalLight(0xaaccff, 0.5);
+        fillLight.position.set(-2, 1, -1);
+        scene.add(fillLight);
+
+        rimLight = new THREE.DirectionalLight(0xffffff, 0.3);
+        rimLight.position.set(0, 2, -3);
+        scene.add(rimLight);
+
+        // Grid reference
+        const grid = new THREE.GridHelper(4, 20, 0x222233, 0x111122);
+        scene.add(grid);
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            const w2 = container.clientWidth;
+            const h2 = container.clientHeight;
+            camera.aspect = w2 / h2;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w2, h2);
+        });
+
+        // Render loop
+        (function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        })();
+    }
+
+    // ── Load GLB ──────────────────────────────────────────────────────────────
+    function loadGLB(url) {
+        setLoadingMsg('Loading 3D model…');
+        const loader = new THREE.GLTFLoader();
+        loader.load(
+            url + '?t=' + Date.now(),
+            (gltf) => {
+                if (currentModel) scene.remove(currentModel);
+                currentModel = gltf.scene;
+
+                // Auto-scale and center
+                const box = new THREE.Box3().setFromObject(currentModel);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 1.8 / maxDim;
+                currentModel.scale.setScalar(scale);
+                currentModel.position.sub(center.multiplyScalar(scale));
+                currentModel.position.y += 0.02;
+
+                // Count geometry
+                let verts = 0, faces = 0;
+                currentModel.traverse((node) => {
+                    if (node.isMesh) {
+                        const geo = node.geometry;
+                        verts += geo.attributes.position ? geo.attributes.position.count : 0;
+                        faces += geo.index ? geo.index.count / 3 : (geo.attributes.position ? geo.attributes.position.count / 3 : 0);
+
+                        // Apply fallback skin material if no texture
+                        if (!node.material.map) {
+                            node.material = new THREE.MeshStandardMaterial({
+                                color: 0xc4956a,
+                                roughness: 0.65,
+                                metalness: 0.02,
+                            });
+                        }
+                        node.material.side = THREE.DoubleSide;
+                    }
+                });
+
+                // Update info panel geometry stats if not provided by API
+                if (infVertices.textContent === '—') infVertices.textContent = formatNumber(verts);
+                if (infFaces.textContent === '—')    infFaces.textContent    = formatNumber(Math.round(faces));
+
+                scene.add(currentModel);
+                applyWireframe(chkWireframe.checked);
+                hideOverlay();
+            },
+            undefined,
+            (err) => {
+                showError('GLB load failed: ' + (err.message || err));
+            }
+        );
+    }
+
+    // ── Apply wireframe to all meshes ─────────────────────────────────────────
+    function applyWireframe(enabled) {
+        if (!currentModel) return;
+        currentModel.traverse((node) => {
+            if (node.isMesh) node.material.wireframe = enabled;
+        });
+    }
+
+    // ── Apply lighting preset ─────────────────────────────────────────────────
+    function applyPreset(name) {
+        const p = PRESETS[name] || PRESETS.studio;
+        if (ambientLight) ambientLight.intensity = p.ambient;
+        if (keyLight)     keyLight.intensity     = p.key;
+        if (fillLight)    fillLight.intensity    = p.fill;
+        if (rimLight)     rimLight.intensity     = p.rim;
+    }
+
+    // ── Control event wiring ──────────────────────────────────────────────────
+    chkWireframe.addEventListener('change', () => applyWireframe(chkWireframe.checked));
+
+    chkAutorotate.addEventListener('change', () => {
+        if (controls) controls.autoRotate = chkAutorotate.checked;
+    });
+
+    selLighting.addEventListener('change', () => applyPreset(selLighting.value));
+
+    btnScreenshot.addEventListener('click', () => {
+        if (!renderer) return;
+        // Force a render so preserveDrawingBuffer captures current frame
+        renderer.render(scene, camera);
+        const dataUrl = renderer.domElement.toDataURL('image/png');
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = 'gtd3d_body_' + Date.now() + '.png';
+        a.click();
+    });
+
+    btnFullscreen.addEventListener('click', () => {
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen().catch(() => {});
+        } else {
+            document.exitFullscreen().catch(() => {});
+        }
+    });
+
+    // ── Data loading ──────────────────────────────────────────────────────────
+    async function loadSessionData(sessionId) {
+        setLoadingMsg('Fetching session data…');
+        try {
+            const res = await fetch('/web_app/api/body_scan_result?session=' + encodeURIComponent(sessionId));
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                showError('API error: ' + (err.error || res.statusText));
+                return null;
+            }
+            return await res.json();
+        } catch (e) {
+            showError('Network error: ' + e.message);
+            return null;
+        }
+    }
+
+    function updateInfoPanel(data) {
+        // Session ID (truncated for display)
+        const sid = data.session_id || '—';
+        infSession.textContent = sid.length > 12 ? sid.slice(0, 12) + '…' : sid;
+        infSession.title = sid;
+
+        if (data.vertex_count) infVertices.textContent = formatNumber(data.vertex_count);
+        if (data.face_count)   infFaces.textContent    = formatNumber(data.face_count);
+
+        // Build timestamp
+        if (data.created_on) {
+            const d = new Date(data.created_on);
+            infBuilt.textContent = isNaN(d) ? data.created_on : d.toLocaleDateString();
+        }
+
+        // Coverage
+        const pct = data.coverage_pct != null ? data.coverage_pct : null;
+        if (pct !== null) {
+            infCoverage.textContent = pct.toFixed(1) + '%';
+            coverageFill.style.width = Math.min(100, pct) + '%';
+            coverageFill.style.background = coverageColor(pct);
+        }
+    }
+
+    // ── Boot ──────────────────────────────────────────────────────────────────
+    async function boot() {
+        initScene();
+
+        const params = new URLSearchParams(window.location.search);
+        const sessionId = params.get('session');
+
+        if (!sessionId) {
+            // No session: show empty viewer with placeholder message
+            setLoadingMsg('No session specified. Add ?session=<id> to the URL.');
+            return;
+        }
+
+        const data = await loadSessionData(sessionId);
+        if (!data) return;
+
+        updateInfoPanel(data);
+
+        if (data.glb_url) {
+            loadGLB(data.glb_url);
+        } else {
+            setLoadingMsg('No GLB available for this session (status: ' + (data.status || 'unknown') + ')');
+        }
+    }
+
+    boot();
+})();
+</script>
+</body>
+</html>

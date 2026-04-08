@@ -210,6 +210,38 @@ db.define_table('video_scan_session',
     Field('splat_url', 'string', length=512),   # URL/Path to trained 3DGS (.spz)
     Field('created_on', 'datetime', default=lambda: datetime.now()),
     )
+# 10b. BODY SCAN SESSIONS
+db.define_table('body_scan_session',
+    Field('customer_id', 'reference customer'),
+    Field('session_id', 'string', length=64),
+    Field('status', 'string', length=32, default='UPLOADED'),
+    Field('num_frames', 'integer'),
+    Field('frames_dir', 'string', length=512),
+    Field('sensor_log_path', 'string', length=512),
+    Field('pass_config', 'text'),
+    Field('coverage_report', 'text'),
+    Field('mesh_path', 'string', length=512),
+    Field('texture_path', 'string', length=512),
+    Field('glb_path', 'string', length=512),
+    Field('quality_score', 'double'),
+    Field('created_on', 'datetime', default=lambda: datetime.now()),
+)
+# 10c. BODY PART ASSIGNMENTS
+db.define_table('body_part_assignment',
+    Field('session_id', 'reference body_scan_session'),
+    Field('frame_index', 'integer'),
+    Field('frame_path', 'string', length=512),
+    Field('pass_number', 'integer'),
+    Field('distance_m', 'double'),
+    Field('compass_deg', 'double'),
+    Field('body_parts_detected', 'text'),
+    Field('primary_body_region', 'string', length=32),
+    Field('coverage_score', 'double'),
+    Field('sharpness_score', 'double'),
+    Field('user_confirmed', 'boolean', default=None),
+    Field('user_correction', 'string', length=32),
+    Field('thumbnail_path', 'string', length=512),
+)
 # 11. ROOM TEXTURES (photo surfaces for 3D viewer room)
 db.define_table('room_texture',
     Field('customer_id', 'reference customer'),
@@ -227,6 +259,8 @@ for sql in [
     'CREATE INDEX IF NOT EXISTS idx_health_log_customer ON health_log(customer_id)',
     'CREATE INDEX IF NOT EXISTS idx_body_comp_customer ON body_composition_log(customer_id)',
     'CREATE INDEX IF NOT EXISTS idx_audit_log_customer ON audit_log(customer_id)',
+    'CREATE INDEX IF NOT EXISTS idx_body_scan_customer ON body_scan_session(customer_id)',
+    'CREATE INDEX IF NOT EXISTS idx_body_part_session ON body_part_assignment(session_id)',
 ]:
     try:
         db.executesql(sql)

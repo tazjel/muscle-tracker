@@ -3763,3 +3763,472 @@ def studio_control():
 @action.uses('viewer.html')
 def viewer():
     return dict()
+
+
+@action('body_viewer', method=['GET'])
+@action.uses('body_viewer.html')
+def body_viewer():
+    """Serve the enhanced body scan 3D viewer."""
+    return dict()
+
+
+@action('api/body_scan_result', method=['GET'])
+@action.uses(db)
+def body_scan_result():
+    """Return session result data for the 3D viewer."""
+    session_id = request.query.get('session')
+    if not session_id:
+        response.status = 400
+        return dict(error='Missing session parameter')
+
+    session = db(db.body_scan_session.session_id == session_id).select().first()
+    if not session:
+        response.status = 404
+        return dict(error='Session not found')
+
+    coverage = json.loads(session.coverage_report or '{}')
+    regions = coverage.get('regions', {})
+    total_regions = len(regions)
+    good_regions = sum(
+        1 for r in regions.values()
+        if r.get('grade') in ('excellent', 'good')
+    )
+    coverage_pct = (good_regions / total_regions * 100) if total_regions > 0 else 0
+
+    glb_url = ''
+    vertex_count = 0
+    face_count = 0
+    if session.glb_path and os.path.exists(session.glb_path):
+        glb_url = '/web_app/static/' + os.path.basename(session.glb_path)
+
+    return dict(
+        session_id=session_id,
+        status=session.status,
+        glb_url=glb_url,
+        coverage_pct=round(coverage_pct, 1),
+        vertex_count=vertex_count,
+        face_count=face_count,
+        created_on=str(session.created_on) if session.created_on else '',
+        coverage_report=coverage,
+    )
+
+
+# --- BODY SCAN ENDPOINTS ---
+
+@action('api/customer/<customer_id:int>/body_scan', method=['POST'])
+@action.uses(db)
+def upload_body_scan(customer_id):
+    """Upload multi-pass body scan frames with sensor data."""
+    import uuid as _uuid
+    from core.body_scan_pipeline import process_body_scan
+
+    customer = db.customer(customer_id)
+    if not customer:
+        return dict(status='error', message='Customer not found')
+
+    session_id = str(_uuid.uuid4())[:8]
+
+    # Create storage directory
+    frames_dir = os.path.join('uploads', 'body_scans', f'{customer_id}_{session_id}')
+    os.makedirs(frames_dir, exist_ok=True)
+
+    # Save uploaded frames
+    frame_count = 0
+    for key in sorted(request.vars):
+        if key.startswith('frame_'):
+            file_data = request.vars[key]
+            if hasattr(file_data, 'file'):
+                frame_path = os.path.join(frames_dir, f'{key}.jpg')
+                with open(frame_path, 'wb') as f:
+                    f.write(file_data.file.read())
+                frame_count += 1
+
+    if frame_count == 0:
+        return dict(status='error', message='No frames uploaded')
+
+    # Parse metadata
+    sensor_log = json.loads(request.vars.get('sensor_log', '[]'))
+    pass_config = json.loads(request.vars.get('pass_config', '[]'))
+
+    # Save sensor log
+    sensor_path = os.path.join(frames_dir, 'sensor_log.json')
+    with open(sensor_path, 'w') as f:
+        json.dump(sensor_log, f)
+
+    # Create session record
+    session_row_id = db.body_scan_session.insert(
+        customer_id=customer_id,
+        session_id=session_id,
+        status='UPLOADED',
+        num_frames=frame_count,
+        frames_dir=frames_dir,
+        sensor_log_path=sensor_path,
+        pass_config=json.dumps(pass_config),
+    )
+    db.commit()
+
+    # Get customer profile for processing
+    profile = {
+        'height_cm': float(customer.get('height_cm') or 170),
+        'weight_kg': float(customer.get('weight_kg') or 70),
+        'gender': customer.get('gender') or 'male',
+    }
+
+    # Run processing pipeline
+    try:
+        db(db.body_scan_session.id == session_row_id).update(status='PROCESSING')
+        db.commit()
+
+        output_dir = os.path.join(frames_dir, 'output')
+        os.makedirs(output_dir, exist_ok=True)
+
+        result = process_body_scan(frames_dir, sensor_log, pass_config, profile, output_dir)
+
+        # Save frame assignments to DB
+        for fa in result.get('frame_assignments', []):
+            db.body_part_assignment.insert(
+                session_id=session_row_id,
+                frame_index=fa.get('frame_index', 0),
+                frame_path=fa.get('frame_path', ''),
+                pass_number=fa.get('pass_number', 1),
+                distance_m=fa.get('distance_m', 2.5),
+                compass_deg=fa.get('compass_deg', 0),
+                body_parts_detected=json.dumps(fa.get('body_parts_detected', [])),
+                primary_body_region=fa.get('primary_body_region', ''),
+                coverage_score=fa.get('coverage_score', 0),
+                sharpness_score=fa.get('sharpness_score', 0),
+            )
+
+        coverage_json = json.dumps(result.get('coverage_report', {}))
+        db(db.body_scan_session.id == session_row_id).update(
+            status='COVERAGE_ANALYZED',
+            coverage_report=coverage_json,
+        )
+        db.commit()
+
+        return dict(
+            session_id=session_id,
+            status='COVERAGE_ANALYZED',
+            num_frames=frame_count,
+            coverage_report=result.get('coverage_report', {}),
+            task_list=result.get('task_list', []),
+        )
+    except Exception as e:
+        logger.exception('Body scan processing failed')
+        db(db.body_scan_session.id == session_row_id).update(status='UPLOADED')
+        db.commit()
+        return dict(status='error', message=str(e), session_id=session_id)
+
+
+@action('api/customer/<customer_id:int>/body_scan/<session_id>/tasks', method=['GET'])
+@action.uses(db)
+def get_body_scan_tasks(customer_id, session_id):
+    """Get coverage report and task list for a body scan session."""
+    session = db(
+        (db.body_scan_session.customer_id == customer_id) &
+        (db.body_scan_session.session_id == session_id)
+    ).select().first()
+
+    if not session:
+        abort(404, 'Session not found')
+
+    coverage_report = json.loads(session.coverage_report or '{}')
+
+    # Build task list from coverage report
+    task_list = []
+    regions = coverage_report.get('regions', {})
+    for region_name, info in regions.items():
+        task_list.append({
+            'region': region_name,
+            'grade': info.get('grade', 'unknown'),
+            'action': info.get('action', 'confirm'),
+            'thumbnail_idx': info.get('thumbnail_idx', 0),
+            'message': info.get('message', ''),
+            'pixel_count': info.get('pixel_count', 0),
+            'frames_seen': info.get('frames_seen', 0),
+        })
+
+    # Get per-frame assignments
+    assignments = db(db.body_part_assignment.session_id == session.id).select(
+        orderby=db.body_part_assignment.frame_index
+    )
+    frames = [{
+        'index': a.frame_index,
+        'region': a.primary_body_region,
+        'grade': 'confirmed' if a.user_confirmed else ('rejected' if a.user_confirmed is False else 'pending'),
+        'sharpness': a.sharpness_score,
+    } for a in assignments]
+
+    return dict(
+        session_id=session_id,
+        status=session.status,
+        coverage_report=coverage_report,
+        task_list=task_list,
+        frames=frames,
+    )
+
+
+@action('api/customer/<customer_id:int>/body_scan/<session_id>/thumbnail/<frame_idx:int>', method=['GET'])
+@action.uses(db)
+def get_body_scan_thumbnail(customer_id, session_id, frame_idx):
+    """Return a downscaled thumbnail of a scan frame."""
+    session = db(
+        (db.body_scan_session.customer_id == customer_id) &
+        (db.body_scan_session.session_id == session_id)
+    ).select().first()
+
+    if not session:
+        abort(404, 'Session not found')
+
+    frame_path = os.path.join(session.frames_dir, f'frame_{str(frame_idx).zfill(3)}.jpg')
+    if not os.path.exists(frame_path):
+        abort(404, 'Frame not found')
+
+    # Resize to 320px wide thumbnail
+    img = cv2.imread(frame_path)
+    if img is not None:
+        h, w = img.shape[:2]
+        if w > 320:
+            scale = 320 / w
+            img = cv2.resize(img, (320, int(h * scale)))
+        _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        response.headers['Content-Type'] = 'image/jpeg'
+        return buf.tobytes()
+
+    # Fallback: serve original
+    response.headers['Content-Type'] = 'image/jpeg'
+    with open(frame_path, 'rb') as f:
+        return f.read()
+
+
+@action('api/customer/<customer_id:int>/body_scan/<session_id>/confirm', method=['POST'])
+@action.uses(db)
+def confirm_body_scan(customer_id, session_id):
+    """Accept per-region user confirmations and update body_part_assignment records."""
+    session = db(
+        (db.body_scan_session.customer_id == customer_id) &
+        (db.body_scan_session.session_id == session_id)
+    ).select().first()
+
+    if not session:
+        abort(404, 'Session not found')
+
+    try:
+        payload = json.loads(request.body.read() or b'{}')
+    except Exception:
+        return dict(status='error', message='Invalid JSON body')
+
+    confirmations = payload.get('confirmations', [])
+    if not isinstance(confirmations, list):
+        return dict(status='error', message='confirmations must be an array')
+
+    try:
+        for conf in confirmations:
+            region = conf.get('region')
+            confirmed = conf.get('confirmed')
+            correction = conf.get('user_correction') or conf.get('action')
+
+            if region is None or confirmed is None:
+                continue
+
+            updates = {'user_confirmed': bool(confirmed)}
+            if not confirmed and correction:
+                updates['user_correction'] = str(correction)[:32]
+
+            db(
+                (db.body_part_assignment.session_id == session.id) &
+                (db.body_part_assignment.primary_body_region == region)
+            ).update(**updates)
+
+        db.commit()
+
+        # Rebuild task list from coverage report
+        coverage_report = json.loads(session.coverage_report or '{}')
+        task_list = []
+        for region_name, info in coverage_report.get('regions', {}).items():
+            task_list.append({
+                'region': region_name,
+                'grade': info.get('grade', 'unknown'),
+                'action': info.get('action', 'confirm'),
+                'message': info.get('message', ''),
+            })
+
+        return dict(
+            session_id=session_id,
+            status=session.status,
+            task_list=task_list,
+        )
+    except Exception as e:
+        logger.exception('confirm_body_scan failed')
+        return dict(status='error', message=str(e))
+
+
+@action('api/customer/<customer_id:int>/body_scan/<session_id>/re_capture', method=['POST'])
+@action.uses(db)
+def re_capture_body_scan(customer_id, session_id):
+    """Accept new frames for a specific region and merge them into the session."""
+    from core.body_scan_pipeline import merge_recapture
+
+    session = db(
+        (db.body_scan_session.customer_id == customer_id) &
+        (db.body_scan_session.session_id == session_id)
+    ).select().first()
+
+    if not session:
+        abort(404, 'Session not found')
+
+    region = request.vars.get('region', '').strip()
+    if not region:
+        return dict(status='error', message='region field is required')
+
+    # Save incoming frames into a recapture sub-directory
+    new_frames_dir = os.path.join(session.frames_dir, f'recapture_{region}')
+    os.makedirs(new_frames_dir, exist_ok=True)
+
+    frame_count = 0
+    for key in sorted(request.vars):
+        if key.startswith('frame_'):
+            file_data = request.vars[key]
+            if hasattr(file_data, 'file'):
+                frame_path = os.path.join(new_frames_dir, f'{key}.jpg')
+                with open(frame_path, 'wb') as f:
+                    f.write(file_data.file.read())
+                frame_count += 1
+
+    if frame_count == 0:
+        return dict(status='error', message='No frames uploaded')
+
+    try:
+        # Build existing assignment list from DB
+        existing_rows = db(db.body_part_assignment.session_id == session.id).select(
+            orderby=db.body_part_assignment.frame_index
+        )
+        existing_assignments = [{
+            'frame_index': r.frame_index,
+            'frame_path': r.frame_path,
+            'pass_number': r.pass_number,
+            'distance_m': r.distance_m,
+            'compass_deg': r.compass_deg,
+            'body_parts_detected': json.loads(r.body_parts_detected or '[]'),
+            'primary_body_region': r.primary_body_region,
+            'coverage_score': r.coverage_score,
+            'sharpness_score': r.sharpness_score,
+            'status': 'ok',
+        } for r in existing_rows]
+
+        result = merge_recapture(session.frames_dir, new_frames_dir, region, existing_assignments)
+
+        # Replace DB assignments with merged result
+        db(db.body_part_assignment.session_id == session.id).delete()
+        for fa in result.get('frame_assignments', []):
+            db.body_part_assignment.insert(
+                session_id=session.id,
+                frame_index=fa.get('frame_index', 0),
+                frame_path=fa.get('frame_path', ''),
+                pass_number=fa.get('pass_number', 1),
+                distance_m=fa.get('distance_m', 2.5),
+                compass_deg=fa.get('compass_deg', 0),
+                body_parts_detected=json.dumps(fa.get('body_parts_detected', [])),
+                primary_body_region=fa.get('primary_body_region', ''),
+                coverage_score=fa.get('coverage_score', 0),
+                sharpness_score=fa.get('sharpness_score', 0),
+            )
+
+        coverage_json = json.dumps(result.get('coverage_report', {}))
+        db(db.body_scan_session.id == session.id).update(
+            status='COVERAGE_ANALYZED',
+            coverage_report=coverage_json,
+        )
+        db.commit()
+
+        return dict(
+            session_id=session_id,
+            coverage_report=result.get('coverage_report', {}),
+            task_list=result.get('task_list', []),
+        )
+    except Exception as e:
+        logger.exception('re_capture_body_scan failed')
+        return dict(status='error', message=str(e))
+
+
+@action('api/customer/<customer_id:int>/body_scan/<session_id>/finalize', method=['POST'])
+@action.uses(db)
+def finalize_body_scan(customer_id, session_id):
+    """Bake final GLB model from confirmed frame assignments."""
+    from core.body_scan_pipeline import bake_final_model
+
+    session = db(
+        (db.body_scan_session.customer_id == customer_id) &
+        (db.body_scan_session.session_id == session_id)
+    ).select().first()
+
+    if not session:
+        abort(404, 'Session not found')
+
+    try:
+        db(db.body_scan_session.id == session.id).update(status='BAKING')
+        db.commit()
+
+        # Collect confirmed frame assignments (fall back to all if none confirmed)
+        confirmed_rows = db(
+            (db.body_part_assignment.session_id == session.id) &
+            (db.body_part_assignment.user_confirmed == True)
+        ).select(orderby=db.body_part_assignment.frame_index)
+
+        if not confirmed_rows:
+            confirmed_rows = db(
+                db.body_part_assignment.session_id == session.id
+            ).select(orderby=db.body_part_assignment.frame_index)
+
+        frame_assignments = [{
+            'frame_index': r.frame_index,
+            'frame_path': r.frame_path,
+            'pass_number': r.pass_number,
+            'distance_m': r.distance_m,
+            'compass_deg': r.compass_deg,
+            'body_parts_detected': json.loads(r.body_parts_detected or '[]'),
+            'primary_body_region': r.primary_body_region,
+            'coverage_score': r.coverage_score,
+            'sharpness_score': r.sharpness_score,
+            'status': 'ok',
+        } for r in confirmed_rows]
+
+        # Get customer profile
+        customer = db.customer(customer_id)
+        profile = {
+            'height_cm': float((customer and customer.get('height_cm')) or 170),
+            'weight_kg': float((customer and customer.get('weight_kg')) or 70),
+            'gender': (customer and customer.get('gender')) or 'male',
+        }
+
+        output_dir = os.path.join(session.frames_dir, 'output')
+        os.makedirs(output_dir, exist_ok=True)
+
+        result = bake_final_model(session.frames_dir, frame_assignments, profile, output_dir)
+
+        glb_path = result.get('glb_path', '')
+        texture_path = result.get('texture_path', '')
+
+        db(db.body_scan_session.id == session.id).update(
+            status='COMPLETE',
+            glb_path=glb_path,
+            texture_path=texture_path,
+            mesh_path=glb_path,
+        )
+        db.commit()
+
+        glb_url = ''
+        if glb_path and os.path.exists(glb_path):
+            glb_url = '/web_app/static/' + os.path.basename(glb_path)
+
+        return dict(
+            session_id=session_id,
+            status='COMPLETE',
+            glb_url=glb_url,
+            viewer_url=f'/web_app/body_viewer?session={session_id}',
+        )
+    except Exception as e:
+        logger.exception('finalize_body_scan failed')
+        db(db.body_scan_session.id == session.id).update(status='ERROR')
+        db.commit()
+        return dict(status='error', message=str(e))
