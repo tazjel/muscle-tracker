@@ -1,0 +1,11 @@
+{
+  "project": "gtd3d",
+  "codename": "muscle",
+  "path": "C:/Users/MiEXCITE/Projects/gtd3d",
+  "gtddebug_profile": "muscle-debug",
+  "capabilities": ["body-scan", "3d-mesh", "blender-pipeline", "gemini-vision", "cloud-deploy"],
+  "tools": ["gtddebug", "flutter", "py4web", "blender"],
+  "cloud": {"service": "gtd3d-server", "region": "me-central1"},
+  "studio": {"port": 8000, "path": "apps/web_app/"},
+  "llm_agents": ["claude", "gemini"]
+}
