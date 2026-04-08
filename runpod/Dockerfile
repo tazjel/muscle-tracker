@@ -36,7 +36,6 @@ RUN pip install --no-cache-dir spconv-cu121
 
 # ── 5. PyTorch3D (pre-built wheel for py310 + cu121 + pt2.3.0) ─────────────
 RUN pip install --no-cache-dir \
-    --no-index \
     pytorch3d \
     -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt230/download.html
 
