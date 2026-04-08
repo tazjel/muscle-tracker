@@ -50,10 +50,8 @@ RUN TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0" \
 # ── 7. Pre-built wheels: torch_scatter + gsplat ────────────────────────────
 # LHM++ requires exact versions; fetch cp310 linux cu121 wheels from official
 # torch_scatter release page and LHM++ CI artifacts.
-RUN wget -q -O /tmp/torch_scatter.whl \
-    "https://data.pyg.org/whl/torch-2.3.0%2Bcu121/torch_scatter-2.1.2%2Bpt23cu121-cp310-cp310-linux_x86_64.whl" && \
-    pip install --no-cache-dir /tmp/torch_scatter.whl && \
-    rm /tmp/torch_scatter.whl
+RUN pip install --no-cache-dir \
+    "https://data.pyg.org/whl/torch-2.3.0%2Bcu121/torch_scatter-2.1.2%2Bpt23cu121-cp310-cp310-linux_x86_64.whl"
 
 # gsplat 1.4.0 pre-built wheel (used by LHM++ for Gaussian primitives)
 RUN pip install --no-cache-dir \
