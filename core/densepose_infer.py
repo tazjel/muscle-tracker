@@ -29,7 +29,7 @@ def _ensure_models_dir():
 
 
 def detect_backend():
-    """Detect which DensePose backend is available."""
+    """Detect which DensePose backend is available. Local-first, cloud only if explicit."""
     # Try TorchScript first (lightweight)
     ts_path = os.path.join(_PROJECT_ROOT, 'third_party', 'DensePose-TorchScript')
     if os.path.exists(ts_path):
@@ -46,13 +46,14 @@ def detect_backend():
     except ImportError:
         pass
 
-    # Check for cloud GPU
-    try:
-        from core.cloud_gpu import is_configured
-        if is_configured():
-            return 'cloud'
-    except Exception:
-        pass
+    # Cloud GPU — ONLY if explicitly enabled via USE_CLOUD_GPU=true
+    if os.environ.get('USE_CLOUD_GPU', '').lower() == 'true':
+        try:
+            from core.cloud_gpu import is_configured
+            if is_configured():
+                return 'cloud'
+        except Exception:
+            pass
 
     return None
 

@@ -1,17 +1,41 @@
-# Session Summary: GTD3D v5.5 "Cinematic Scan" - Macro Skin Success
+# GTD3D Session Summary — 2026-04-07
 
-**Date**: 2026-04-07
-**Status**: Photorealism Milestone Achieved!
+## Done
 
-### 1. Done
-*   **Macro Skin PBR Pipeline**: Successfully resolved the "wrapping paper" effect by switching from raw Albedo UV scaling to Multi-channel overlay.
-*   **Decoupled Detail Mapping**: Wrote `apply_macro_detail.py` to extract Tangent Normals and Roughness from the user's `10cm` macro skin crop, injecting them non-destructively as a `KHR_texture_transform` scaled detail layer cleanly over the base mesh.
-*   **Hardware UV Acceleration**: Applied an extreme `280x` UV scale strictly to the micro-pore map, making the 2cm physical pores render completely true-to-life natively on the GPU. Reduced file size dramatically (from 77MB down to 11MB).
-*   **Model Topology Protection**: Swapped the base model to `mpfb_male_body.glb` and explicitly disabled mathematical naive deformation (`build_body_mesh(profile)`) which was identified as the root cause of the "ugly" stretching on the mesh. The base human textures (lips, gradients) were retained!
-*   **Web Viewer Integration**: Successfully generated `viewer.html` leveraging Google's `<model-viewer>` for native `KHR_texture_transform` support within `py4web`.
+### Rivals Research (10 Repos Analyzed)
+Searched GitHub for repositories doing photorealistic 3D humans in JavaScript/WebGL. Identified and documented 10 relevant projects with pros/cons:
 
-### 2. Pending
-*   **Glute/Thigh Ratio Deformation**: The structural manual Z-flattening script (`scripts/lean_glute.py`) did not achieve the desired photorealistic anatomical fix. The generic Caucasian MPFB base template needs advanced bone manipulation or custom morph targets to adjust the glute cleanly.
+| # | Repository | Stars | Relevance |
+|---|-----------|-------|-----------|
+| 1 | **mrdoob/three.js** (SSS examples) | 100k+ | Gold-standard WebGL engine, has SSS skin shaders |
+| 2 | **pixiv/three-vrm** | ~5k | VRM avatar loading, bone/blendshape handling |
+| 3 | **readyplayerme/visage** | — | Drop-in avatar rendering, stylized (not photorealistic) |
+| 4 | **google/mediapipe** (JS) | 30k+ | Body/face tracking, no 3D rendering |
+| 5 | **yeemachine/kalidokit** | ~5k | IK math bridge for MediaPipe → Three.js |
+| 6 | **BabylonJS/Babylon.js** | 25k+ | Strong PBR pipeline, heavier than Three.js |
+| 7 | **EpicGames/PixelStreaming** | — | Unreal MetaHuman via WebRTC, GPU-server dependent |
+| 8 | **duixcom/Duix-Avatar** | 12k+ | AI avatar cloning, 2D neural rendering |
+| 9 | **egemenertugrul/wolf3d-readyplayerme-threejs-boilerplate** | ~50 | RPM + Mixamo animation reference architecture |
+| 10 | **makehumancommunity/makehuman-js** | — | Closest philosophy to GTD3d, mostly abandoned |
 
-### 3. Next Steps
-*   **Advanced Deformation**: Now that the skin photorealism is solved natively on the base `mpfb_male_body.glb`, the next phase is to re-introduce the user's bodily measurements (168 cm, etc.) to the mesh *without* corrupting or squashing the topology like the old SMPL script did. We probably need to map measurements smoothly to MakeHuman's MPFB macro variables rather than applying naive XYZ scaling.
+### Rivals Cloned into `/rivals/`
+1. **wolf3d-readyplayerme-threejs-boilerplate** — Cloned, installed, ran on port 8081. **Verdict: Not realistic** (stylized metaverse look).
+2. **threejs_rival** (mrdoob/three.js full repo) — Cloned, served on port 8082.
+   - `webgl_materials_subsurface_scattering.html` — ✅ 0 console errors, but renders a bunny (not human).
+   - `webgl_materials_normalmap.html` — ✅ Photorealistic Lee Perry-Smith head scan with diffuse/specular/normal maps. **User liked the realism but noted it's only upper head, not full body.**
+3. **pixiv/three-vrm** — Cloned, `npm install --legacy-peer-deps` started but session ended before build/run.
+
+## Pending
+- **three-vrm**: Finish install, build, run dev server, verify with `agent_browser.py`, open in Chrome.
+- Remaining rivals to clone and test (BabylonJS, Kalidokit, etc.).
+- Deep investigation of the **Lee Perry-Smith normal map pipeline** — user flagged this as an interesting technique to study for GTD3d's MPFB2 skin upgrade.
+
+## Next Steps
+1. Continue cloning and testing remaining rival repos from the list.
+2. For each: `agent_browser.py console` first → fix errors → `start chrome` only if clean.
+3. Create a comparative report of all rivals vs GTD3d's current viewer capabilities.
+4. Extract actionable shader/material techniques (SSS, normal maps, PBR) that can be ported to GTD3d's MPFB2 pipeline.
+
+## Key User Preferences (This Session)
+- **Auto-run everything** — user strongly dislikes clicking "Run" buttons. Use `SafeToAutoRun: true` for all safe commands.
+- **Always use `agent_browser.py console`** before opening Chrome — never send a URL to the user without verifying 0 console errors first.

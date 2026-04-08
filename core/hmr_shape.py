@@ -63,7 +63,7 @@ def _load_hmr():
     logger.info("HMR2.0 not installed — using MediaPipe keypoint fallback for shape estimation")
 
 
-def predict_shape(images, directions=None, prefer_gpu='auto'):
+def predict_shape(images, directions=None, prefer_gpu='local'):
     """
     Predict SMPL body shape from 1-4 images.
 
@@ -71,8 +71,9 @@ def predict_shape(images, directions=None, prefer_gpu='auto'):
         images: list of (H,W,3) uint8 BGR arrays
         directions: list of str ('front','back','left','right'), same len as images
                     If None, assumes ['front'] for 1 image, etc.
-        prefer_gpu: 'auto' (try RunPod CameraHMR first, fallback to local),
-                    'runpod' (force RunPod), 'local' (force local HMR2.0/keypoint)
+        prefer_gpu: 'local' (default — use local HMR2.0/keypoint, never RunPod),
+                    'runpod' (force RunPod CameraHMR),
+                    'auto' (try local first, RunPod only if local fails)
 
     Returns:
         dict with keys:
@@ -84,21 +85,28 @@ def predict_shape(images, directions=None, prefer_gpu='auto'):
             'backend': str — which method was used
         or None on failure
     """
-    # Try RunPod CameraHMR first (better accuracy: 30.2mm V2V vs HMR2's ~47mm)
-    if prefer_gpu in ('auto', 'runpod'):
+    # LOCAL FIRST: Only use RunPod when explicitly requested
+    if prefer_gpu == 'runpod':
         result = _predict_runpod_hmr(images, directions)
         if result is not None:
             return result
-        if prefer_gpu == 'runpod':
-            logger.warning("RunPod CameraHMR failed and prefer_gpu='runpod', returning None")
-            return None
+        logger.warning("RunPod CameraHMR failed and prefer_gpu='runpod', returning None")
+        return None
 
-    # Local fallback
+
+    # Local inference (default path)
     _load_hmr()
     if _hmr_backend in ('hmr2', 'tokenhmr'):
-        return _predict_hmr(images, directions)
+        result = _predict_hmr(images, directions)
     else:
-        return _predict_keypoint(images, directions)
+        result = _predict_keypoint(images, directions)
+
+    # Auto mode: if local failed, try RunPod as last resort
+    if result is None and prefer_gpu == 'auto':
+        logger.info("Local HMR failed, trying RunPod as last resort...")
+        result = _predict_runpod_hmr(images, directions)
+
+    return result
 
 
 def _predict_runpod_hmr(images, directions):

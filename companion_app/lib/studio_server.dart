@@ -63,6 +63,22 @@ class StudioWebServer {
       return Response.ok('OK');
     });
 
+    // Single high-res capture endpoint (full camera resolution)
+    router.get('/capture', (Request request) async {
+      final frame = await onFrameRequest();
+      if (frame == null) {
+        return Response.internalServerError(body: 'Camera not ready');
+      }
+      return Response.ok(
+        frame,
+        headers: {
+          'Content-Type': 'image/jpeg',
+          'Content-Length': '${frame.length}',
+          'Cache-Control': 'no-cache',
+        },
+      );
+    });
+
     // Sensors endpoint
     router.get('/sensors', (Request request) async {
       final data = onSensorRequest();

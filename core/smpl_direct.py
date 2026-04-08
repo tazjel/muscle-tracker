@@ -318,31 +318,33 @@ def generate_direct_smpl(images_dict, profile=None,
         cam_h_mm = float(profile.get('camera_height_from_ground_cm', 65)) * 10.0
 
     # ── 1. HMR2.0 shape prediction ──────────────────────────────────────────
-    # Try cloud GPU first (RunPod), fall back to local GPU/CPU
+    # LOCAL FIRST: Use local GPU/CPU. Cloud only if USE_CLOUD_GPU=true
     cloud_result = None
-    try:
-        from core.cloud_gpu import is_configured, cloud_inference
-        if is_configured():
-            logger.info("Using RunPod cloud GPU for inference...")
-            cloud_result = cloud_inference(images_dict, tasks=['hmr', 'rembg', 'dsine'])
-            if cloud_result and 'hmr' in cloud_result:
-                logger.info("Cloud GPU inference succeeded")
-    except Exception as e:
-        logger.warning("Cloud GPU unavailable, using local: %s", e)
+    _cloud_masks = None
+    _cloud_normals = None
+    use_cloud = os.environ.get('USE_CLOUD_GPU', '').lower() == 'true'
 
-    if cloud_result and 'hmr' in cloud_result:
-        result = cloud_result['hmr']
-        # Cloud also returned masks and normals — store for later steps
-        _cloud_masks = cloud_result.get('masks')
-        _cloud_normals = cloud_result.get('normals')
-    else:
-        _cloud_masks = None
-        _cloud_normals = None
-        from core.hmr_shape import predict_shape
-        images = list(images_dict.values())
-        directions = list(images_dict.keys())
-        logger.info("Running HMR2.0 locally on %d images...", len(images))
-        result = predict_shape(images, directions)
+    # Always try local first
+    from core.hmr_shape import predict_shape
+    images = list(images_dict.values())
+    directions = list(images_dict.keys())
+    logger.info("Running HMR2.0 locally on %d images...", len(images))
+    result = predict_shape(images, directions, prefer_gpu='local')
+
+    # Only fall back to cloud if local failed AND cloud is explicitly enabled
+    if result is None and use_cloud:
+        try:
+            from core.cloud_gpu import is_configured, cloud_inference
+            if is_configured():
+                logger.info("Local HMR failed, falling back to RunPod cloud GPU...")
+                cloud_result = cloud_inference(images_dict, tasks=['hmr', 'rembg', 'dsine'])
+                if cloud_result and 'hmr' in cloud_result:
+                    result = cloud_result['hmr']
+                    _cloud_masks = cloud_result.get('masks')
+                    _cloud_normals = cloud_result.get('normals')
+                    logger.info("Cloud GPU inference succeeded")
+        except Exception as e:
+            logger.warning("Cloud GPU also failed: %s", e)
 
     if result is None or result['vertices'] is None:
         logger.error("HMR2.0 shape prediction failed")
