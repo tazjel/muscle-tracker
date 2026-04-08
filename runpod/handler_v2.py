@@ -350,6 +350,117 @@ def _anchor_splat(inp):
         logger.error(f"Splat anchoring failed: {e}")
         return {'status': 'error', 'message': str(e)}
 
+def _live_scan_bake(inp):
+    """
+    Full live-scan pipeline: HMR2.0 mesh fit + DensePose texture bake + GLB export.
+    Input:
+        frames: [{image_b64, iuv_b64, region, sharpness}]
+        profile: {height_cm, weight_kg, chest_circumference_cm, ...}
+    Returns:
+        {glb_b64, vertex_count, face_count, texture_coverage}
+    """
+    logger.info("=== LIVE SCAN BAKE START ===")
+    temp_dir = tempfile.mkdtemp()
+    try:
+        frames_data = inp.get('frames', [])
+        profile = inp.get('profile', {})
+        if not frames_data:
+            return {'status': 'error', 'message': 'No frames provided'}
+
+        # Decode frames and IUVs
+        photo_dict = {}
+        iuv_dict = {}
+        image_paths = []
+        for i, fd in enumerate(frames_data):
+            img = _decode_image(fd['image_b64'])
+            region = fd.get('region', f'view_{i}')
+            photo_dict[region] = img
+            # Save image to disk for build_body_mesh
+            img_path = os.path.join(temp_dir, f'frame_{i:03d}.jpg')
+            cv2.imwrite(img_path, img)
+            image_paths.append(img_path)
+            if fd.get('iuv_b64'):
+                iuv_bytes = base64.b64decode(fd['iuv_b64'])
+                iuv_arr = cv2.imdecode(np.frombuffer(iuv_bytes, np.uint8), cv2.IMREAD_COLOR)
+                if iuv_arr is not None:
+                    iuv_dict[region] = iuv_arr
+
+        logger.info(f"Decoded {len(photo_dict)} photos, {len(iuv_dict)} IUV maps")
+
+        # Step 1: HMR2.0 mesh fitting from photos
+        images_b64 = [fd['image_b64'] for fd in frames_data]
+        directions = [fd.get('region', f'view_{i}') for i, fd in enumerate(frames_data)]
+        hmr_result = _run_hmr(images_b64, directions)
+
+        if hmr_result:
+            # Use HMR2.0 SMPL mesh (6890 verts, proper body shape)
+            vertices = np.frombuffer(base64.b64decode(hmr_result['vertices_b64']), dtype=np.float32).reshape(-1, 3)
+            logger.info(f"HMR2.0 mesh: {vertices.shape[0]} vertices")
+            # Get SMPL faces and UVs
+            (model, device), _ = _load_hmr()
+            faces = model.smpl.faces.astype(np.int32)
+            # SMPL doesn't have built-in UVs — generate simple spherical UVs
+            center = vertices.mean(axis=0)
+            v_centered = vertices - center
+            theta = np.arctan2(v_centered[:, 0], v_centered[:, 2])
+            phi = np.arcsin(np.clip(v_centered[:, 1] / (np.linalg.norm(v_centered, axis=1) + 1e-8), -1, 1))
+            uvs = np.stack([0.5 + theta / (2 * np.pi), 0.5 + phi / np.pi], axis=1).astype(np.float32)
+        else:
+            # Fallback: use local mesh builder
+            logger.warning("HMR2.0 failed, falling back to parametric mesh")
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from core.smpl_fitting import build_body_mesh
+            mesh = build_body_mesh(profile=profile, image_paths=image_paths)
+            vertices = mesh['vertices']
+            faces = mesh['faces']
+            uvs = mesh.get('uvs')
+
+        if uvs is None:
+            return {'status': 'error', 'message': 'Mesh has no UVs, cannot bake texture'}
+
+        vertex_count = len(vertices)
+        face_count = len(faces)
+
+        # Step 2: Texture bake (2K resolution on GPU)
+        texture_size = 2048
+        if iuv_dict:
+            logger.info(f"Baking texture at {texture_size}x{texture_size}...")
+            tex, weight = bake_from_photos_nn(
+                vertices, faces, uvs, photo_dict, iuv_dict,
+                texture_size=texture_size,
+            )
+            seam_mask = build_seam_mask(vertices, faces, uvs, texture_size=texture_size)
+            tex = smooth_seam(tex, seam_mask)
+            coverage = float((weight > 0).mean())
+            logger.info(f"Texture baked: {coverage*100:.1f}% coverage")
+        else:
+            logger.warning("No IUV data — generating blank texture")
+            tex = np.full((texture_size, texture_size, 3), 200, dtype=np.uint8)
+            coverage = 0.0
+
+        # Step 3: Export GLB
+        from core.mesh_reconstruction import export_glb
+        glb_path = os.path.join(temp_dir, 'body_scan.glb')
+        export_glb(vertices, faces, glb_path, normals=True, uvs=uvs, texture_image=tex)
+
+        with open(glb_path, 'rb') as f:
+            glb_b64 = base64.b64encode(f.read()).decode('ascii')
+
+        logger.info(f"=== LIVE SCAN BAKE DONE: {vertex_count} verts, {face_count} faces, {coverage*100:.1f}% coverage ===")
+        return {
+            'status': 'success',
+            'glb_b64': glb_b64,
+            'vertex_count': vertex_count,
+            'face_count': face_count,
+            'texture_coverage': coverage,
+            'hmr_used': hmr_result is not None,
+        }
+    except Exception as e:
+        logger.error(f"Live scan bake failed: {e}", exc_info=True)
+        return {'status': 'error', 'message': str(e)}
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 def _bake_cinematic(inp):
     """Neural baking for PBR normal/albedo enhancement."""
     logger.info("Baking Neural Detail to 4K PBR...")
@@ -412,6 +523,8 @@ def handler(job):
             return _anchor_splat(inp)
         elif action == 'bake_cinematic':
             return _bake_cinematic(inp)
+        elif action == 'live_scan_bake':
+            return _live_scan_bake(inp)
         else:
             return {'status': 'error', 'message': f'Unknown action: {action}'}
     except Exception as e:

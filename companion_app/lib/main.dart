@@ -722,6 +722,22 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   String _fullScanInstruction = '';
   AudioPlayer? _scanAudioPlayer;
 
+  // Live scan state
+  bool _liveScanRunning = false;
+  bool _liveScanStarting = false; // guard against duplicate taps
+  String _liveScanSessionId = '';
+  int _liveScanFrameCount = 0;
+  double _liveScanCoveragePct = 0.0;
+  Map<String, dynamic> _liveScanCoverage = {};
+  List<Map<String, dynamic>> _liveScanGuidance = [];
+  bool _liveScanReadyToFinalize = false;
+  String _liveScanInstruction = '';
+  Timer? _liveScanPollTimer;
+  Timer? _liveScanCaptureTimer;
+  double _liveScanDistanceMin = 0.1;
+  double _liveScanDistanceMax = 2.5;
+  double _liveScanCurrentDistance = 2.5;
+
   @override
   void initState() { 
     super.initState(); 
@@ -979,6 +995,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     _countdownTimer?.cancel();
     _profileTimer?.cancel();
     _triggerPollTimer?.cancel();
+    _liveScanCaptureTimer?.cancel();
+    _liveScanPollTimer?.cancel();
     _scanAudioPlayer?.dispose();
     super.dispose();
   }
@@ -1429,6 +1447,225 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     });
   }
 
+  // ── LIVE SCAN ─────────────────────────────────────────────────────────────
+
+  Future<void> _showLiveScanDialog() async {
+    double minDist = _liveScanDistanceMin;
+    double maxDist = _liveScanDistanceMax;
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setDlg) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: const Text('Live Scan Setup', style: TextStyle(color: Colors.white)),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Set distance range (meters):', style: TextStyle(color: Colors.white70)),
+          const SizedBox(height: 16),
+          Row(children: [
+            const Text('Min:', style: TextStyle(color: Colors.white70, fontSize: 12)),
+            Expanded(child: Slider(value: minDist, min: 0.1, max: 1.0, divisions: 9,
+              label: '${minDist.toStringAsFixed(1)}m',
+              onChanged: (v) => setDlg(() => minDist = v))),
+            Text('${minDist.toStringAsFixed(1)}m', style: const TextStyle(color: Colors.white)),
+          ]),
+          Row(children: [
+            const Text('Max:', style: TextStyle(color: Colors.white70, fontSize: 12)),
+            Expanded(child: Slider(value: maxDist, min: 1.0, max: 3.0, divisions: 20,
+              label: '${maxDist.toStringAsFixed(1)}m',
+              onChanged: (v) => setDlg(() => maxDist = v))),
+            Text('${maxDist.toStringAsFixed(1)}m', style: const TextStyle(color: Colors.white)),
+          ]),
+          const SizedBox(height: 8),
+          const Text('Start far (full body), then move closer for detail.\nRotate 360° slowly.',
+            textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12)),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('CANCEL')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.tealAccent.shade700),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _liveScanDistanceMin = minDist;
+              _liveScanDistanceMax = maxDist;
+              _liveScanCurrentDistance = maxDist;
+              _startLiveScan();
+            },
+            child: const Text('START SCAN'),
+          ),
+        ],
+      )),
+    );
+  }
+
+  Future<void> _startLiveScan() async {
+    if (_liveScanRunning || _liveScanStarting || _isCapturing) {
+      print('[LIVESCAN] Already running/starting/capturing, ignoring start');
+      return;
+    }
+    _liveScanStarting = true;
+
+    print('[LIVESCAN] Starting... customerId=$_customerId distMin=$_liveScanDistanceMin distMax=$_liveScanDistanceMax');
+    final uri = Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/live_scan/start');
+    try {
+      final resp = await http.post(uri,
+        headers: {'Content-Type': 'application/json', if (_jwtToken != null) 'Authorization': 'Bearer $_jwtToken'},
+        body: jsonEncode({'distance_min_m': _liveScanDistanceMin, 'distance_max_m': _liveScanDistanceMax}),
+      );
+      print('[LIVESCAN] Start response: ${resp.statusCode} ${resp.body.substring(0, resp.body.length.clamp(0, 200))}');
+      final result = jsonDecode(resp.body);
+      if (result['status'] != 'ok') {
+        print('[LIVESCAN] Start FAILED: ${result['message']}');
+        return;
+      }
+
+      setState(() {
+        _liveScanRunning = true;
+        _liveScanStarting = false;
+        _liveScanSessionId = result['session_id'];
+        _liveScanFrameCount = 0;
+        _liveScanCoveragePct = 0;
+        _liveScanReadyToFinalize = false;
+        _liveScanGuidance = [];
+        _liveScanInstruction = 'ROTATE SLOWLY — CAPTURING...';
+      });
+      print('[LIVESCAN] ACTIVE session=${result['session_id']} — timers starting');
+
+      _liveScanCaptureTimer = Timer.periodic(const Duration(seconds: 2), (_) => _captureLiveFrame());
+      _liveScanPollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _pollLiveScanStatus());
+    } catch (e) {
+      print('[LIVESCAN] Start EXCEPTION: $e');
+      _liveScanStarting = false;
+    }
+  }
+
+  Future<void> _captureLiveFrame() async {
+    if (!_liveScanRunning || !mounted) return;
+    if (_controller?.value.isInitialized != true) { print('[LIVESCAN] Camera not ready'); return; }
+    if (_controller!.value.isTakingPicture) return;
+
+    try {
+      final XFile img = await _controller!.takePicture();
+
+      double compassDeg = 0;
+      if (_latestSensor.containsKey('mag_x') && _latestSensor.containsKey('mag_y')) {
+        final mx = (_latestSensor['mag_x'] as num?)?.toDouble() ?? 0;
+        final my = (_latestSensor['mag_y'] as num?)?.toDouble() ?? 0;
+        compassDeg = (atan2(my, mx) * 180 / pi) % 360;
+      }
+
+      final uri = Uri.parse(
+        '${AppConfig.serverBaseUrl}/api/customer/$_customerId/live_scan/$_liveScanSessionId/frame');
+      final request = http.MultipartRequest('POST', uri);
+      if (_jwtToken != null) request.headers['Authorization'] = 'Bearer $_jwtToken';
+      request.files.add(await http.MultipartFile.fromPath('frame', img.path));
+      request.fields['metadata'] = jsonEncode({
+        'compass_deg': compassDeg,
+        'pitch_deg': _pitch,
+        'roll_deg': _roll,
+        'distance_m': _liveScanCurrentDistance,
+        'timestamp_ms': DateTime.now().millisecondsSinceEpoch,
+      });
+
+      final resp = await request.send();
+      if (resp.statusCode == 200) {
+        setState(() => _liveScanFrameCount++);
+        if (_liveScanFrameCount % 5 == 0) print('[LIVESCAN] Uploaded frame #$_liveScanFrameCount');
+      } else {
+        print('[LIVESCAN] Frame upload failed: ${resp.statusCode}');
+      }
+    } catch (e) {
+      print('[LIVESCAN] Frame EXCEPTION: $e');
+    }
+  }
+
+  Future<void> _pollLiveScanStatus() async {
+    if (!_liveScanRunning || !mounted) return;
+    try {
+      final uri = Uri.parse(
+        '${AppConfig.serverBaseUrl}/api/customer/$_customerId/live_scan/$_liveScanSessionId/status');
+      final resp = await http.get(uri, headers: {
+        if (_jwtToken != null) 'Authorization': 'Bearer $_jwtToken',
+      });
+      final data = jsonDecode(resp.body);
+      final pct = (data['coverage_pct'] as num?)?.toDouble() ?? 0;
+      final ready = data['ready_to_finalize'] == true;
+      print('[LIVESCAN] Poll: ${data['num_frames']} frames, ${pct.toStringAsFixed(0)}% coverage, ready=$ready');
+      setState(() {
+        _liveScanCoveragePct = pct;
+        _liveScanCoverage = (data['coverage_report'] as Map<String, dynamic>?) ?? {};
+        _liveScanGuidance = List<Map<String, dynamic>>.from(data['guidance'] ?? []);
+        _liveScanReadyToFinalize = ready;
+
+        if (_liveScanReadyToFinalize) {
+          _liveScanInstruction = 'ALL REGIONS COVERED — AUTO-FINALIZING...';
+          _liveScanCaptureTimer?.cancel();
+          _liveScanPollTimer?.cancel();
+          print('[LIVESCAN] ALL REGIONS COVERED — auto-finalizing now');
+          // Auto-finalize after setState completes
+          Future.microtask(() => _finalizeLiveScan());
+        } else if (_liveScanGuidance.isNotEmpty) {
+          _liveScanInstruction = _liveScanGuidance.first['message'] ?? 'KEEP ROTATING';
+        }
+      });
+    } catch (e) {
+      print('[LIVESCAN] Poll EXCEPTION: $e');
+    }
+  }
+
+  Future<void> _finalizeLiveScan() async {
+    print('[LIVESCAN] FINALIZE tapped — session=$_liveScanSessionId');
+    setState(() => _liveScanInstruction = 'BUILDING 3D MODEL...');
+    _liveScanPollTimer?.cancel();
+    _liveScanCaptureTimer?.cancel();
+
+    try {
+      final uri = Uri.parse(
+        '${AppConfig.serverBaseUrl}/api/customer/$_customerId/live_scan/$_liveScanSessionId/finalize');
+      final client = http.Client();
+      final request = http.Request('POST', uri);
+      request.headers['Content-Type'] = 'application/json';
+      if (_jwtToken != null) request.headers['Authorization'] = 'Bearer $_jwtToken';
+      final streamed = await client.send(request).timeout(const Duration(minutes: 5));
+      final resp = await http.Response.fromStream(streamed);
+      final data = jsonDecode(resp.body);
+      print('[LIVESCAN] Finalize response: ${resp.statusCode} status=${data['status']} viewer=${data['viewer_url']}');
+
+      setState(() { _liveScanRunning = false; _liveScanInstruction = ''; });
+
+      if (data['viewer_url'] != null) {
+        final viewerUrl = 'http://192.168.100.7:8000${data['viewer_url']}';
+        Navigator.push(context, MaterialPageRoute(
+          builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('3D Body Viewer'), backgroundColor: Colors.deepPurple),
+            body: WebViewWidget(
+              controller: WebViewController()
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..loadRequest(Uri.parse(viewerUrl)),
+            ),
+          ),
+        ));
+      }
+    } catch (e) {
+      debugPrint('Live scan finalize error: $e');
+      setState(() { _liveScanRunning = false; _liveScanInstruction = ''; });
+    }
+  }
+
+  void _cancelLiveScan() {
+    print('[LIVESCAN] CANCELLED by user');
+    _liveScanCaptureTimer?.cancel();
+    _liveScanPollTimer?.cancel();
+    setState(() {
+      _liveScanRunning = false;
+      _liveScanStarting = false;
+      _liveScanSessionId = '';
+      _liveScanInstruction = '';
+      _liveScanFrameCount = 0;
+      _liveScanCoveragePct = 0;
+      _liveScanReadyToFinalize = false;
+      _liveScanGuidance = [];
+    });
+  }
+
   Future<void> _startProfileCapture() async {
     if (_profileRunning) return;
     _sensorLog.clear();
@@ -1549,6 +1786,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         if (_isSkinMode) _buildSkinRegionSelector(),
         if (_autoRunning) Positioned.fill(child: AbsorbPointer(absorbing: true, child: _buildAutoOverlay())),
         if (_fullScanRunning) Positioned.fill(child: _buildFullScanOverlay()),
+        if (_liveScanRunning) Positioned.fill(child: _buildLiveScanOverlay()),
         if (_isDualMode) _buildDualOverlay(),
         if (_profileLocked) _buildProfileLockScreen(),
         if (_isUploading && !_autoRunning) _buildUploadOverlay(),
@@ -1669,13 +1907,27 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         const SizedBox(width: 72),
       ]),
       const SizedBox(height: 12),
-      if (!_fullScanRunning)
+      if (!_fullScanRunning && !_liveScanRunning)
         ElevatedButton.icon(
           onPressed: _customerId != null ? _startFullBodyScan : null,
           icon: const Icon(Icons.view_in_ar, size: 28),
           label: const Text('FULL BODY SCAN', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.deepPurple,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            minimumSize: const Size(double.infinity, 56),
+          ),
+        ),
+      if (!_fullScanRunning && !_liveScanRunning)
+        const SizedBox(height: 8),
+      if (!_fullScanRunning && !_liveScanRunning)
+        ElevatedButton.icon(
+          onPressed: _customerId != null ? _startLiveScan : null,
+          icon: const Icon(Icons.stream, size: 28),
+          label: const Text('LIVE SCAN', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.teal,
             foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
             minimumSize: const Size(double.infinity, 56),
@@ -1802,6 +2054,106 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildLiveScanOverlay() {
+    final regionColors = <String, Color>{};
+    final regions = (_liveScanCoverage['regions'] as Map<String, dynamic>?) ?? {};
+    for (final rn in ['front_torso', 'back_torso', 'right_arm', 'left_arm', 'right_leg', 'left_leg', 'head']) {
+      final info = regions[rn] as Map<String, dynamic>?;
+      final grade = info?['grade'] ?? 'missing';
+      regionColors[rn] = grade == 'excellent' ? Colors.green
+          : grade == 'good' ? Colors.lightGreen
+          : grade == 'fair' ? Colors.orange
+          : Colors.red;
+    }
+
+    return Container(
+      color: Colors.black.withOpacity(0.7),
+      child: SafeArea(child: Column(children: [
+        // Top bar
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          color: Colors.black54,
+          child: Row(children: [
+            Container(width: 10, height: 10, decoration: BoxDecoration(shape: BoxShape.circle,
+              color: _liveScanReadyToFinalize ? Colors.green : Colors.tealAccent)),
+            const SizedBox(width: 8),
+            Text('LIVE SCAN — $_liveScanFrameCount frames',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 1)),
+            const Spacer(),
+            Text('${_liveScanCoveragePct.toStringAsFixed(0)}%',
+              style: TextStyle(color: _liveScanReadyToFinalize ? Colors.green : Colors.tealAccent,
+                fontWeight: FontWeight.bold, fontSize: 22)),
+          ]),
+        ),
+
+        const SizedBox(height: 12),
+
+        // Coverage progress bar
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 24), child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: LinearProgressIndicator(
+            value: _liveScanCoveragePct / 100,
+            minHeight: 10,
+            backgroundColor: Colors.white12,
+            valueColor: AlwaysStoppedAnimation(_liveScanCoveragePct >= 100 ? Colors.green : Colors.tealAccent),
+          ),
+        )),
+
+        const SizedBox(height: 16),
+
+        // 7-region grid
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Wrap(
+          spacing: 8, runSpacing: 6, alignment: WrapAlignment.center,
+          children: regionColors.entries.map((e) => Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: e.value.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: e.value, width: 1.5),
+            ),
+            child: Text(e.key.replaceAll('_', ' ').toUpperCase(),
+              style: TextStyle(color: e.value, fontSize: 10, fontWeight: FontWeight.bold)),
+          )).toList(),
+        )),
+
+        const SizedBox(height: 16),
+
+        // Guidance instruction
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 24), child: Text(
+          _liveScanInstruction,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+        )),
+
+        const Spacer(),
+
+        // Distance slider
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 24), child: Row(children: [
+          const Text('DISTANCE', style: TextStyle(color: Colors.white54, fontSize: 11)),
+          Expanded(child: Slider(
+            value: _liveScanCurrentDistance,
+            min: _liveScanDistanceMin,
+            max: _liveScanDistanceMax,
+            divisions: (((_liveScanDistanceMax - _liveScanDistanceMin) * 10).round()).clamp(1, 100),
+            label: '${_liveScanCurrentDistance.toStringAsFixed(1)}m',
+            activeColor: Colors.tealAccent,
+            onChanged: (v) => setState(() => _liveScanCurrentDistance = v),
+          )),
+          Text('${_liveScanCurrentDistance.toStringAsFixed(1)}m',
+            style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+        ])),
+
+        // Action buttons — only CANCEL (finalize is automatic)
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16), child: Row(children: [
+          Expanded(child: TextButton(
+            onPressed: _cancelLiveScan,
+            child: const Text('CANCEL', style: TextStyle(color: Colors.redAccent, fontSize: 16)),
+          )),
+        ])),
+      ])),
     );
   }
 

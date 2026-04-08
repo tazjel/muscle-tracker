@@ -88,6 +88,69 @@ def compute_sharpness(image_path: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# 1b. process_single_frame — reusable per-frame DensePose analysis
+# ---------------------------------------------------------------------------
+
+def process_single_frame(frame_path: str) -> dict:
+    """Analyse a single frame: sharpness + DensePose region detection.
+
+    Returns dict with keys: sharpness, region_pixels, primary_region, status.
+    """
+    frame_name = os.path.basename(frame_path)
+    sharpness = compute_sharpness(frame_path)
+    result = {
+        'frame_path': frame_path,
+        'frame_name': frame_name,
+        'sharpness': sharpness,
+        'iuv': None,
+        'region_pixels': {},
+        'primary_region': None,
+        'status': 'pending',
+    }
+
+    if not _HAS_DENSEPOSE:
+        result['status'] = 'no_densepose'
+        return result
+
+    try:
+        iuv_result = predict_iuv(frame_path)
+        if iuv_result is None:
+            result['status'] = 'densepose_no_detection'
+            return result
+
+        result['iuv'] = iuv_result
+
+        if isinstance(iuv_result, dict):
+            iuv_array = iuv_result.get('iuv')
+        else:
+            iuv_array = iuv_result
+
+        if iuv_array is None:
+            result['status'] = 'densepose_empty'
+            return result
+
+        part_map = iuv_array[:, :, 0] if iuv_array.ndim == 3 else iuv_array
+
+        region_pixels = {}
+        for region_name, part_ids in BODY_REGIONS.items():
+            mask = np.isin(part_map, part_ids)
+            region_pixels[region_name] = int(mask.sum())
+
+        result['region_pixels'] = region_pixels
+        result['status'] = 'ok'
+
+        # Determine primary region (most pixels)
+        if region_pixels:
+            result['primary_region'] = max(region_pixels, key=region_pixels.get)
+
+    except Exception as exc:
+        logger.error("process_single_frame: DensePose failed on %s: %s", frame_name, exc)
+        result['status'] = 'densepose_error'
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # 2. process_body_scan
 # ---------------------------------------------------------------------------
 
@@ -126,57 +189,7 @@ def process_body_scan(
     frame_assignments = []
 
     for frame_path in frame_paths:
-        frame_name = os.path.basename(frame_path)
-        sharpness = compute_sharpness(frame_path)
-        assignment = {
-            'frame_path': frame_path,
-            'frame_name': frame_name,
-            'sharpness': sharpness,
-            'iuv': None,
-            'region_pixels': {},
-            'status': 'pending',
-        }
-
-        if not _HAS_DENSEPOSE:
-            assignment['status'] = 'no_densepose'
-            frame_assignments.append(assignment)
-            continue
-
-        try:
-            iuv_result = predict_iuv(frame_path)
-            if iuv_result is None:
-                assignment['status'] = 'densepose_no_detection'
-                frame_assignments.append(assignment)
-                continue
-
-            assignment['iuv'] = iuv_result
-
-            # IUV channel 0 is the part-index (I) map
-            # predict_iuv returns a dict with 'iuv' key (H,W,3) numpy array
-            if isinstance(iuv_result, dict):
-                iuv_array = iuv_result.get('iuv')
-            else:
-                iuv_array = iuv_result
-
-            if iuv_array is None:
-                assignment['status'] = 'densepose_empty'
-                frame_assignments.append(assignment)
-                continue
-
-            part_map = iuv_array[:, :, 0] if iuv_array.ndim == 3 else iuv_array
-
-            region_pixels = {}
-            for region_name, part_ids in BODY_REGIONS.items():
-                mask = np.isin(part_map, part_ids)
-                region_pixels[region_name] = int(mask.sum())
-
-            assignment['region_pixels'] = region_pixels
-            assignment['status'] = 'ok'
-
-        except Exception as exc:
-            logger.error("process_body_scan: DensePose failed on %s: %s", frame_name, exc)
-            assignment['status'] = 'densepose_error'
-
+        assignment = process_single_frame(frame_path)
         frame_assignments.append(assignment)
 
     coverage_report = analyze_coverage(frame_assignments)

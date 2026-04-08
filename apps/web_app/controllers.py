@@ -6,6 +6,7 @@ import os
 import sys
 import logging
 import json
+import base64
 import cv2
 import numpy as np
 from datetime import datetime
@@ -20,6 +21,13 @@ def serve_mesh(filename):
     logger.info("Serving mesh: %s", filename)
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'meshes'))
     return static_file(filename, root=root)
+
+
+@action('uploads/<filepath:path>', method=['GET'])
+def serve_upload(filepath):
+    """Serve files from the uploads/ directory (GLB models, textures, etc.)."""
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'uploads'))
+    return static_file(filepath, root=root)
 
 
 @action('assets/<filename:path>', method=['GET'])
@@ -3799,7 +3807,7 @@ def body_scan_result():
     vertex_count = 0
     face_count = 0
     if session.glb_path and os.path.exists(session.glb_path):
-        glb_url = '/web_app/static/' + os.path.basename(session.glb_path)
+        glb_url = '/web_app/' + session.glb_path.replace('\\', '/')
 
     return dict(
         session_id=session_id,
@@ -4219,7 +4227,7 @@ def finalize_body_scan(customer_id, session_id):
 
         glb_url = ''
         if glb_path and os.path.exists(glb_path):
-            glb_url = '/web_app/static/' + os.path.basename(glb_path)
+            glb_url = '/web_app/' + glb_path.replace('\\', '/')
 
         return dict(
             session_id=session_id,
@@ -4232,3 +4240,441 @@ def finalize_body_scan(customer_id, session_id):
         db(db.body_scan_session.id == session.id).update(status='ERROR')
         db.commit()
         return dict(status='error', message=str(e))
+
+
+# =========================================================================
+# LIVE SCAN — continuous frame-by-frame scanning with real-time coverage
+# =========================================================================
+
+@action('api/customer/<customer_id:int>/live_scan/start', method=['POST'])
+@action.uses(db)
+def start_live_scan(customer_id):
+    """Create a live scan session. APK streams frames one at a time."""
+    import uuid as _uuid
+    response.headers['Content-Type'] = 'application/json'
+    response.headers['Access-Control-Allow-Origin'] = '*'
+
+    customer = db.customer(customer_id)
+    if not customer:
+        abort(404, 'Customer not found')
+
+    body = request.json or {}
+    distance_min = float(body.get('distance_min_m', 0.1))
+    distance_max = float(body.get('distance_max_m', 2.5))
+
+    session_id = str(_uuid.uuid4())[:8]
+    frames_dir = os.path.join('uploads', 'live_scans', f'{customer_id}_{session_id}')
+    os.makedirs(frames_dir, exist_ok=True)
+
+    db.body_scan_session.insert(
+        customer_id=customer_id,
+        session_id=session_id,
+        status='LIVE_ACTIVE',
+        num_frames=0,
+        frames_dir=frames_dir,
+        scan_mode='live',
+        distance_min_m=distance_min,
+        distance_max_m=distance_max,
+        coverage_pct=0.0,
+        coverage_report=json.dumps({'regions': {}}),
+    )
+    db.commit()
+
+    return dict(
+        status='ok',
+        session_id=session_id,
+        frames_dir=frames_dir,
+    )
+
+
+@action('api/customer/<customer_id:int>/live_scan/<session_id>/frame', method=['POST'])
+@action.uses(db)
+def upload_live_frame(customer_id, session_id):
+    """Receive a single frame + sensor metadata during live scan."""
+    from core.body_scan_pipeline import process_single_frame, analyze_coverage, BODY_REGIONS
+    response.headers['Content-Type'] = 'application/json'
+    response.headers['Access-Control-Allow-Origin'] = '*'
+
+    session = db(
+        (db.body_scan_session.customer_id == customer_id) &
+        (db.body_scan_session.session_id == session_id) &
+        (db.body_scan_session.scan_mode == 'live')
+    ).select().first()
+
+    if not session:
+        abort(404, 'Live scan session not found')
+
+    frame_file = request.POST.get('frame')
+    if not frame_file or not hasattr(frame_file, 'file'):
+        return dict(status='error', message='No frame file')
+
+    metadata = {}
+    meta_raw = request.POST.get('metadata', '{}')
+    try:
+        metadata = json.loads(meta_raw)
+    except Exception:
+        pass
+
+    # Atomic increment to prevent race condition on concurrent frame uploads
+    import time as _time
+    frame_index = session.num_frames or 0
+    frame_name = f'frame_{frame_index:03d}_{int(_time.time()*1000)%10000}.jpg'
+    frame_path = os.path.join(session.frames_dir, frame_name)
+    with open(frame_path, 'wb') as f:
+        f.write(frame_file.file.read())
+
+    try:
+        result = process_single_frame(frame_path)
+    except Exception as exc:
+        logger.error("process_single_frame failed on %s: %s", frame_path, exc)
+        result = {'region_pixels': {}, 'primary_region': None, 'sharpness': 0, 'status': 'error'}
+
+    region_pixels = result.get('region_pixels', {})
+    primary_region = result.get('primary_region')
+
+    # Save IUV map to disk so finalize can bake textures
+    iuv_raw = result.get('iuv')
+    iuv_path = None
+    if iuv_raw is not None:
+        iuv_array = iuv_raw.get('iuv') if isinstance(iuv_raw, dict) else iuv_raw
+        if iuv_array is not None:
+            iuv_path = frame_path.replace('.jpg', '_iuv.npy')
+            np.save(iuv_path, iuv_array)
+
+    # Store full region_pixels JSON so coverage analysis can reconstruct per-region data
+    db.body_part_assignment.insert(
+        session_id=session.id,
+        frame_index=frame_index,
+        frame_path=frame_path,
+        pass_number=1,
+        distance_m=metadata.get('distance_m', 1.0),
+        compass_deg=metadata.get('compass_deg', 0),
+        body_parts_detected=json.dumps(region_pixels),  # full per-region pixel counts
+        primary_body_region=primary_region,
+        coverage_score=sum(region_pixels.values()),
+        sharpness_score=result.get('sharpness', 0),
+        thumbnail_path=iuv_path,  # reuse field to store IUV .npy path
+    )
+
+    new_count = frame_index + 1
+    update_fields = {'num_frames': new_count}
+
+    if new_count % 5 == 0 or new_count <= 3:
+        all_rows = db(
+            db.body_part_assignment.session_id == session.id
+        ).select(orderby=db.body_part_assignment.frame_index)
+
+        frame_assignments = []
+        for r in all_rows:
+            # Parse stored region_pixels (could be dict or old-format list)
+            rp = {}
+            try:
+                parsed = json.loads(r.body_parts_detected or '{}')
+                if isinstance(parsed, dict):
+                    rp = parsed
+            except Exception:
+                pass
+            frame_assignments.append({
+                'frame_path': r.frame_path,
+                'frame_name': os.path.basename(r.frame_path),
+                'sharpness': r.sharpness_score or 0,
+                'region_pixels': rp,
+                'status': 'ok' if rp else 'no_densepose',
+            })
+
+        coverage_report = analyze_coverage(frame_assignments)
+        regions = coverage_report.get('regions', {})
+        good_count = sum(1 for r in regions.values() if r.get('grade') in ('excellent', 'good'))
+        coverage_pct = (good_count / max(len(regions), 1)) * 100
+
+        update_fields['coverage_report'] = json.dumps(coverage_report)
+        update_fields['coverage_pct'] = coverage_pct
+
+        if coverage_pct >= 100:
+            update_fields['status'] = 'LIVE_SUFFICIENT'
+
+    db(db.body_scan_session.id == session.id).update(**update_fields)
+    db.commit()
+
+    return dict(
+        status='ok',
+        frame_index=frame_index,
+        regions_detected=list(k for k, v in region_pixels.items() if v > 0),
+    )
+
+
+@action('api/customer/<customer_id:int>/live_scan/<session_id>/status', method=['GET'])
+@action.uses(db)
+def live_scan_status(customer_id, session_id):
+    """Poll endpoint: returns coverage progress and guidance for the APK."""
+    response.headers['Content-Type'] = 'application/json'
+    response.headers['Access-Control-Allow-Origin'] = '*'
+
+    session = db(
+        (db.body_scan_session.customer_id == customer_id) &
+        (db.body_scan_session.session_id == session_id) &
+        (db.body_scan_session.scan_mode == 'live')
+    ).select().first()
+
+    if not session:
+        abort(404, 'Live scan session not found')
+
+    coverage_report = {}
+    try:
+        coverage_report = json.loads(session.coverage_report or '{}')
+    except Exception:
+        pass
+
+    regions = coverage_report.get('regions', {})
+    guidance = []
+    region_labels = {
+        'front_torso': 'Face the camera for front torso',
+        'back_torso': 'Turn around to show your back',
+        'right_arm': 'Show your right arm',
+        'left_arm': 'Show your left arm',
+        'right_leg': 'Show your right leg',
+        'left_leg': 'Show your left leg',
+        'head': 'Move closer for head/face detail',
+    }
+    for region_name, info in regions.items():
+        if info.get('action') in ('re-capture', 'confirm') and info.get('grade') in ('missing', 'fair'):
+            guidance.append({
+                'region': region_name,
+                'grade': info.get('grade', 'missing'),
+                'message': region_labels.get(region_name, f'Capture {region_name}'),
+            })
+
+    for rn in ['front_torso', 'back_torso', 'right_arm', 'left_arm', 'right_leg', 'left_leg', 'head']:
+        if rn not in regions:
+            guidance.append({
+                'region': rn,
+                'grade': 'missing',
+                'message': region_labels.get(rn, f'Capture {rn}'),
+            })
+
+    ready = session.status == 'LIVE_SUFFICIENT' or (session.coverage_pct or 0) >= 100
+
+    return dict(
+        session_id=session_id,
+        status=session.status,
+        num_frames=session.num_frames or 0,
+        coverage_pct=session.coverage_pct or 0,
+        coverage_report=coverage_report,
+        guidance=guidance,
+        ready_to_finalize=ready,
+    )
+
+
+@action('api/customer/<customer_id:int>/live_scan/<session_id>/finalize', method=['POST'])
+@action.uses(db)
+def finalize_live_scan(customer_id, session_id):
+    """Bake final GLB from live scan frames."""
+    from core.body_scan_pipeline import bake_final_model
+    response.headers['Content-Type'] = 'application/json'
+    response.headers['Access-Control-Allow-Origin'] = '*'
+
+    session = db(
+        (db.body_scan_session.customer_id == customer_id) &
+        (db.body_scan_session.session_id == session_id) &
+        (db.body_scan_session.scan_mode == 'live')
+    ).select().first()
+
+    if not session:
+        abort(404, 'Live scan session not found')
+
+    # Return cached result if already complete
+    if session.status == 'COMPLETE' and session.glb_path and os.path.exists(session.glb_path):
+        glb_url = '/web_app/' + session.glb_path.replace('\\', '/')
+        return dict(
+            session_id=session_id,
+            status='COMPLETE',
+            glb_url=glb_url,
+            viewer_url=f'/web_app/body_viewer?session={session_id}',
+        )
+
+    try:
+        db(db.body_scan_session.id == session.id).update(status='BAKING')
+        db.commit()
+
+        all_rows = db(
+            db.body_part_assignment.session_id == session.id
+        ).select(orderby=db.body_part_assignment.frame_index)
+
+        if not all_rows:
+            db(db.body_scan_session.id == session.id).update(status='LIVE_ACTIVE')
+            db.commit()
+            return dict(status='error', message='No frames in session')
+
+        def _safe_json(s, default):
+            try:
+                return json.loads(s) if s else default
+            except Exception:
+                return default
+
+        customer = db.customer(customer_id)
+        profile = {
+            'height_cm': float((customer and customer.get('height_cm')) or 170),
+            'weight_kg': float((customer and customer.get('weight_kg')) or 70),
+            'gender': (customer and customer.get('gender')) or 'male',
+        }
+
+        output_dir = os.path.join(session.frames_dir, 'output')
+        os.makedirs(output_dir, exist_ok=True)
+
+        # --- Try RunPod GPU first, fall back to local ---
+        RUNPOD_API_KEY = os.environ.get('RUNPOD_API_KEY', '')
+        RUNPOD_ENDPOINT = os.environ.get('RUNPOD_ENDPOINT', '')
+        use_runpod = bool(RUNPOD_API_KEY and RUNPOD_ENDPOINT)
+        logger.info("finalize_live_scan: use_runpod=%s endpoint=%s", use_runpod, RUNPOD_ENDPOINT)
+
+        if use_runpod:
+            result = _finalize_via_runpod(
+                all_rows, _safe_json, profile, output_dir,
+                RUNPOD_API_KEY, RUNPOD_ENDPOINT, session_id,
+            )
+        else:
+            result = _finalize_local(
+                all_rows, _safe_json, profile, output_dir, session,
+            )
+
+        glb_path = result.get('glb_path', '')
+        texture_path = result.get('texture_path', '')
+
+        db(db.body_scan_session.id == session.id).update(
+            status='COMPLETE',
+            glb_path=glb_path,
+            texture_path=texture_path,
+            mesh_path=glb_path,
+        )
+        db.commit()
+
+        glb_url = ''
+        if glb_path and os.path.exists(glb_path):
+            glb_url = '/web_app/' + glb_path.replace('\\', '/')
+
+        return dict(
+            session_id=session_id,
+            status='COMPLETE',
+            glb_url=glb_url,
+            viewer_url=f'/web_app/body_viewer?session={session_id}',
+        )
+    except Exception as e:
+        logger.exception('finalize_live_scan failed')
+        db(db.body_scan_session.id == session.id).update(status='ERROR')
+        db.commit()
+        return dict(status='error', message=str(e))
+
+
+def _finalize_local(all_rows, _safe_json, profile, output_dir, session):
+    """Original local CPU bake (fallback)."""
+    from core.body_scan_pipeline import bake_final_model
+    frame_assignments = []
+    for r in all_rows:
+        fa = {
+            'frame_index': r.frame_index,
+            'frame_path': r.frame_path,
+            'pass_number': r.pass_number,
+            'distance_m': r.distance_m,
+            'compass_deg': r.compass_deg,
+            'body_parts_detected': _safe_json(r.body_parts_detected, []),
+            'primary_body_region': r.primary_body_region,
+            'coverage_score': r.coverage_score,
+            'sharpness_score': r.sharpness_score,
+            'region_pixels': _safe_json(r.body_parts_detected, {}),
+            'status': 'ok',
+            'iuv': None,
+        }
+        iuv_path = r.thumbnail_path
+        if iuv_path and os.path.exists(iuv_path):
+            try:
+                fa['iuv'] = {'iuv': np.load(iuv_path)}
+            except Exception as exc:
+                logger.warning("Could not load IUV from %s: %s", iuv_path, exc)
+        frame_assignments.append(fa)
+    return bake_final_model(session.frames_dir, frame_assignments, profile, output_dir)
+
+
+def _finalize_via_runpod(all_rows, _safe_json, profile, output_dir,
+                         api_key, endpoint_id, session_id):
+    """Send frames to RunPod GPU for HMR2.0 mesh fit + texture bake."""
+    import requests as req
+    import time
+
+    # Build frames payload — base64 encode each frame image + IUV
+    frames_payload = []
+    for r in all_rows:
+        frame_path = r.frame_path
+        if not frame_path or not os.path.exists(frame_path):
+            continue
+        with open(frame_path, 'rb') as f:
+            image_b64 = base64.b64encode(f.read()).decode('ascii')
+        iuv_b64 = None
+        iuv_path = r.thumbnail_path
+        if iuv_path and os.path.exists(iuv_path):
+            try:
+                iuv_arr = np.load(iuv_path)
+                _, buf = cv2.imencode('.png', iuv_arr)
+                iuv_b64 = base64.b64encode(buf.tobytes()).decode('ascii')
+            except Exception:
+                pass
+        frames_payload.append({
+            'image_b64': image_b64,
+            'iuv_b64': iuv_b64,
+            'region': r.primary_body_region or f'view_{r.frame_index}',
+            'sharpness': float(r.sharpness_score or 0),
+        })
+
+    logger.info("RunPod: sending %d frames to live_scan_bake", len(frames_payload))
+
+    # Submit async job
+    run_url = f"https://api.runpod.io/v2/{endpoint_id}/run"
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type': 'application/json',
+    }
+    payload = {
+        'input': {
+            'action': 'live_scan_bake',
+            'frames': frames_payload,
+            'profile': profile,
+        }
+    }
+    resp = req.post(run_url, json=payload, headers=headers, timeout=30)
+    resp.raise_for_status()
+    job_data = resp.json()
+    job_id = job_data.get('id')
+    logger.info("RunPod job submitted: %s", job_id)
+
+    # Poll for completion (up to 10 minutes)
+    status_url = f"https://api.runpod.io/v2/{endpoint_id}/status/{job_id}"
+    deadline = time.time() + 600
+    while time.time() < deadline:
+        time.sleep(5)
+        sr = req.get(status_url, headers=headers, timeout=15)
+        sd = sr.json()
+        status = sd.get('status', '')
+        logger.info("RunPod job %s status: %s", job_id, status)
+        if status == 'COMPLETED':
+            output = sd.get('output', {})
+            if output.get('status') != 'success':
+                raise RuntimeError(f"RunPod bake failed: {output.get('message', 'unknown')}")
+
+            # Decode GLB and save
+            glb_b64 = output.get('glb_b64', '')
+            glb_path = os.path.join(output_dir, 'body_scan.glb')
+            with open(glb_path, 'wb') as f:
+                f.write(base64.b64decode(glb_b64))
+            logger.info("RunPod GLB saved: %s (%d verts, %d faces, %.1f%% coverage)",
+                        glb_path, output.get('vertex_count', 0),
+                        output.get('face_count', 0),
+                        output.get('texture_coverage', 0) * 100)
+            return {
+                'glb_path': glb_path,
+                'texture_path': None,
+                'vertex_count': output.get('vertex_count', 0),
+                'face_count': output.get('face_count', 0),
+            }
+        elif status == 'FAILED':
+            raise RuntimeError(f"RunPod job failed: {sd.get('error', 'unknown')}")
+
+    raise RuntimeError("RunPod job timed out after 10 minutes")

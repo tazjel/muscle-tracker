@@ -33,7 +33,8 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pytorch-lightning \
     geffnet \
     realesrgan \
-    basicsr && \
+    basicsr \
+    pygltflib && \
     pip install --no-cache-dir --no-build-isolation chumpy
 
 # 3. Clone and install 4D-Humans (HMR2.0)
@@ -45,11 +46,12 @@ RUN pip install --no-cache-dir --force-reinstall "numpy==1.26.4"
 # 5. Pre-compile CUDA Kernels (Saves 2-5 minutes of cold-start cost)
 RUN python -c "import gsplat; print('gsplat CUDA kernels pre-compiled successfully')"
 
-# 6. Copy Code & Assets
-COPY . .
+# 6. Copy Code & Assets (only what's needed)
+COPY core/ /app/core/
+COPY runpod/ /app/
 # Ensure SMPL weights are in the cache path
 RUN mkdir -p /root/.cache/4DHumans/data/smpl && \
-    cp SMPL_NEUTRAL.pkl /root/.cache/4DHumans/data/smpl/SMPL_NEUTRAL.pkl
+    cp /app/SMPL_NEUTRAL.pkl /root/.cache/4DHumans/data/smpl/SMPL_NEUTRAL.pkl
 
 # Environment Variables for Performance
 ENV PYTHONUNBUFFERED=1
