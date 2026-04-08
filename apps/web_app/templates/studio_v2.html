@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GTD3D Studio</title>
+    <link rel="stylesheet" href="/web_app/static/studio/studio.css">
+</head>
+<body>
+
+<!-- Top Bar -->
+<div id="topbar">
+    <span class="brand">GTD3D Studio</span>
+    <div class="nav-links">
+        <a href="#" class="active" data-nav="scan">Scan</a>
+        <a href="#" data-nav="body-scan">Body Scan</a>
+        <a href="#" data-nav="texture">Texture</a>
+        <a href="#" data-nav="render">Render</a>
+        <a href="#" data-nav="progress">Progress</a>
+    </div>
+    <span class="spacer"></span>
+    <span id="current-customer" style="font-size:0.8125rem;color:var(--text-secondary);">No customer selected</span>
+    <span class="status" id="device-status"><span class="dot dot-off"></span>0 devices</span>
+    <span class="status" id="gpu-status"><span class="dot dot-off"></span>GPU</span>
+</div>
+
+<!-- Main Layout -->
+<div id="app">
+
+    <!-- Left Sidebar -->
+    <div id="sidebar-left">
+        <!-- Customer Panel -->
+        <div class="panel">
+            <div class="panel-header">
+                Customers <span class="arrow">&#9662;</span>
+            </div>
+            <div class="panel-body">
+                <div class="form-group">
+                    <input id="customer-search" class="form-input" type="text" placeholder="Search customers...">
+                </div>
+                <div id="customer-list"><div class="empty-state"><span class="spinner"></span> Loading...</div></div>
+            </div>
+        </div>
+
+        <!-- Create Customer -->
+        <div class="panel">
+            <div class="panel-header collapsed">
+                New Customer <span class="arrow">&#9662;</span>
+            </div>
+            <div class="panel-body hidden">
+                <form id="create-customer-form">
+                    <div class="form-group">
+                        <label class="form-label">Email</label>
+                        <input class="form-input" name="email" type="email" placeholder="client@example.com" required>
+                    </div>
+                    <button class="btn btn-accent btn-sm" type="submit">Create</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Scan Panel (Wave 2 placeholder) -->
+        <div class="panel" id="panel-scans">
+            <div class="panel-header">
+                Scans <span class="arrow">&#9662;</span>
+            </div>
+            <div class="panel-body">
+                <div id="scan-list"><div class="empty-state">Select a customer</div></div>
+            </div>
+        </div>
+
+        <!-- Mesh Panel (Wave 2 placeholder) -->
+        <div class="panel" id="panel-meshes">
+            <div class="panel-header collapsed">
+                3D Meshes <span class="arrow">&#9662;</span>
+            </div>
+            <div class="panel-body hidden">
+                <div id="mesh-list"><div class="empty-state">Select a customer</div></div>
+            </div>
+        </div>
+
+        <!-- Body Scan Panel (Wave 3 placeholder) -->
+        <div class="panel" id="panel-body-scan">
+            <div class="panel-header collapsed">
+                Body Scan Sessions <span class="arrow">&#9662;</span>
+            </div>
+            <div class="panel-body hidden">
+                <div id="body-scan-list"><div class="empty-state">Select a customer</div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Center Viewport -->
+    <div id="viewport">
+        <div id="viewport-container">
+            <div class="empty-state" id="viewport-empty" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+                <div style="font-size:3rem;margin-bottom:1rem;">💪</div>
+                <div style="font-size:1.125rem;font-weight:600;margin-bottom:0.5rem;">GTD3D Studio</div>
+                <div>Select a customer and load a scan to begin</div>
+            </div>
+        </div>
+        <div id="viewport-overlay">
+            <div class="badge" id="viewport-info" style="display:none;"></div>
+        </div>
+        <div id="viewport-tools" style="display:none;">
+            <button class="btn btn-sm" onclick="Studio.showInViewport('reset')">Reset View</button>
+            <button class="btn btn-sm" onclick="Studio.showInViewport('wireframe')">Wireframe</button>
+            <button class="btn btn-sm" onclick="Studio.showInViewport('measure')">Measure</button>
+        </div>
+    </div>
+
+    <!-- Right Sidebar -->
+    <div id="sidebar-right">
+        <!-- Customer Profile -->
+        <div class="panel">
+            <div class="panel-header">
+                Profile <span class="arrow">&#9662;</span>
+            </div>
+            <div class="panel-body">
+                <div id="customer-profile"><div class="empty-state">Select a customer</div></div>
+            </div>
+        </div>
+
+        <!-- Muscle Groups (Wave 2 placeholder) -->
+        <div class="panel">
+            <div class="panel-header collapsed">
+                Muscle Groups <span class="arrow">&#9662;</span>
+            </div>
+            <div class="panel-body hidden">
+                <div id="muscle-groups"><div class="empty-state">Load a scan first</div></div>
+            </div>
+        </div>
+
+        <!-- Texture (Wave 4 placeholder) -->
+        <div class="panel" id="panel-texture">
+            <div class="panel-header collapsed">
+                Skin Texture <span class="arrow">&#9662;</span>
+            </div>
+            <div class="panel-body hidden">
+                <div id="texture-status"><div class="empty-state">Select a customer</div></div>
+            </div>
+        </div>
+
+        <!-- Render (Wave 4 placeholder) -->
+        <div class="panel" id="panel-render">
+            <div class="panel-header collapsed">
+                Rendering <span class="arrow">&#9662;</span>
+            </div>
+            <div class="panel-body hidden">
+                <div id="render-controls"><div class="empty-state">Load a mesh first</div></div>
+            </div>
+        </div>
+
+        <!-- Progress (Wave 5 placeholder) -->
+        <div class="panel" id="panel-progress">
+            <div class="panel-header collapsed">
+                Progress <span class="arrow">&#9662;</span>
+            </div>
+            <div class="panel-body hidden">
+                <div id="progress-charts"><div class="empty-state">Select a customer</div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Bar -->
+    <div id="bottombar">
+        <span id="activity-log">Ready</span>
+        <span class="spacer" style="flex:1;"></span>
+        <span>GTD3D Studio v2.0</span>
+    </div>
+
+</div>
+
+<!-- Scripts -->
+<script src="/web_app/static/three.min.js"></script>
+<script src="/web_app/static/OrbitControls.js"></script>
+<script src="/web_app/static/GLTFLoader.js"></script>
+<script src="/web_app/static/studio/studio.js"></script>
+<script src="/web_app/static/studio/customer-panel.js"></script>
+<!-- Wave 2 -->
+<script src="/web_app/static/studio/scan-panel.js" defer></script>
+<script src="/web_app/static/studio/viewport.js" defer></script>
+<script src="/web_app/static/studio/device-panel.js" defer></script>
+<!-- Wave 3 -->
+<script src="/web_app/static/studio/body-scan-panel.js" defer></script>
+<!-- Wave 4 -->
+<script src="/web_app/static/studio/texture-panel.js" defer></script>
+<script src="/web_app/static/studio/render-panel.js" defer></script>
+<!-- Wave 5 -->
+<script src="/web_app/static/studio/progress-panel.js" defer></script>
+<script src="/web_app/static/studio/report-panel.js" defer></script>
+</body>
+</html>

@@ -3621,6 +3621,15 @@ def upload_video_scan(customer_id):
         return dict(status='error', message='Video processing failed')
 
 
+# --- GTD3D STUDIO v2 (Unified) ---
+
+@action('studio_v2')
+@action.uses('studio_v2.html', db)
+def studio_v2():
+    """GTD3D Studio v2 — unified single-page editor."""
+    return dict()
+
+
 # --- GTD3D STUDIO (v5.5 Cinematic) ---
 
 @action('studio')
