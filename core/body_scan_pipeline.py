@@ -389,7 +389,7 @@ def bake_final_model(
 
         if _HAS_TEXTURE_BAKE and photo_dict and iuv_dict:
             try:
-                texture_atlas = bake_from_photos_nn(
+                texture_atlas, _weight = bake_from_photos_nn(
                     vertices, faces, uvs, photo_dict, iuv_dict,
                     texture_size=1024,
                 )
@@ -416,8 +416,9 @@ def bake_final_model(
                     atlas_size=1024,
                     output_dir=output_dir,
                 )
-                if isinstance(result, dict):
-                    texture_path = result.get('texture_path') or result.get('atlas_path')
+                if isinstance(result, dict) and result.get('atlas') is not None:
+                    texture_path = os.path.join(output_dir, 'densepose_texture.png')
+                    cv2.imwrite(texture_path, result['atlas'])
                 elif isinstance(result, str):
                     texture_path = result
                 logger.info("bake_final_model: texture baked via densepose_texture → %s", texture_path)

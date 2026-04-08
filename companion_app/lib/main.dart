@@ -717,7 +717,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   bool _fullScanRunning = false;
   int _fullScanPass = 0;
   int _fullScanFrameCount = 0;
-  int _fullScanTotalFrames = 60;
+  int _fullScanTotalFrames = 30;
   List<Map<String, dynamic>> _fullScanFrames = [];
   String _fullScanInstruction = '';
   AudioPlayer? _scanAudioPlayer;
@@ -1274,8 +1274,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         await _scanAudioPlayer!.play(AssetSource('audio/pass${passNum}_start.mp3'));
       } catch (_) {} // Audio is optional
 
-      // Capture 20 frames at 2-second intervals
-      for (int i = 0; i < 20; i++) {
+      // Capture 10 frames at 1.5-second intervals
+      for (int i = 0; i < 10; i++) {
         if (!mounted || !_fullScanRunning) return;
         try {
           if (_controller == null || !_controller!.value.isInitialized) continue;
@@ -1304,7 +1304,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
           setState(() {
             _fullScanFrameCount = _fullScanFrames.length;
-            _fullScanInstruction = 'PASS $passNum/3 — $label\nFrame ${i + 1}/20 — KEEP ROTATING';
+            _fullScanInstruction = 'PASS $passNum/3 — $label\nFrame ${i + 1}/10 — KEEP ROTATING';
           });
 
           // Play rotation tick every other frame
@@ -1316,8 +1316,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         } catch (e) {
           debugPrint('Full scan frame capture error: $e');
         }
-        // Wait 2 seconds between frames
-        await Future.delayed(const Duration(seconds: 2));
+        // Wait 1.5 seconds between frames
+        await Future.delayed(const Duration(milliseconds: 1500));
       }
 
       // Pass complete
@@ -1325,9 +1325,9 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         await _scanAudioPlayer!.play(AssetSource('audio/pass_complete.mp3'));
       } catch (_) {}
 
-      // 5-second repositioning pause (except after last pass)
+      // 3-second repositioning pause (except after last pass)
       if (passNum < 3) {
-        for (int countdown = 5; countdown >= 1; countdown--) {
+        for (int countdown = 3; countdown >= 1; countdown--) {
           if (!mounted || !_fullScanRunning) return;
           final nextLabel = passes[passNum]['label'];
           setState(() {
@@ -1381,9 +1381,9 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
       // Attach pass config
       final passConfig = [
-        {'pass': 1, 'distance_m': 2.5, 'frame_indices': List.generate(20, (i) => i)},
-        {'pass': 2, 'distance_m': 1.0, 'frame_indices': List.generate(20, (i) => i + 20)},
-        {'pass': 3, 'distance_m': 0.5, 'frame_indices': List.generate(20, (i) => i + 40)},
+        {'pass': 1, 'distance_m': 2.5, 'frame_indices': List.generate(10, (i) => i)},
+        {'pass': 2, 'distance_m': 1.0, 'frame_indices': List.generate(10, (i) => i + 10)},
+        {'pass': 3, 'distance_m': 0.5, 'frame_indices': List.generate(10, (i) => i + 20)},
       ];
       request.fields['pass_config'] = jsonEncode(passConfig);
 
@@ -1399,7 +1399,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
           _fullScanInstruction = 'UPLOAD COMPLETE';
         });
         // Navigate to review screen if we have a session_id
-        if (result['session_id'] != null && mounted) {
+        if (!mounted) return;
+        if (result['session_id'] != null) {
           Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => BodyScanReviewScreen(
               customerId: int.parse(_customerId ?? '1'),

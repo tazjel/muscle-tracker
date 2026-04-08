@@ -3776,15 +3776,15 @@ def body_viewer():
 @action.uses(db)
 def body_scan_result():
     """Return session result data for the 3D viewer."""
-    session_id = request.query.get('session')
+    session_id = request.params.get('session')
     if not session_id:
         response.status = 400
-        return dict(error='Missing session parameter')
+        return dict(status='error', message='Missing session parameter')
 
     session = db(db.body_scan_session.session_id == session_id).select().first()
     if not session:
         response.status = 404
-        return dict(error='Session not found')
+        return dict(status='error', message='Session not found')
 
     coverage = json.loads(session.coverage_report or '{}')
     regions = coverage.get('regions', {})
@@ -3847,8 +3847,8 @@ def upload_body_scan(customer_id):
         return dict(status='error', message='No frames uploaded')
 
     # Parse metadata
-    sensor_log = json.loads(request.vars.get('sensor_log', '[]'))
-    pass_config = json.loads(request.vars.get('pass_config', '[]'))
+    sensor_log = json.loads(request.forms.get('sensor_log', '[]'))
+    pass_config = json.loads(request.forms.get('pass_config', '[]'))
 
     # Save sensor log
     sensor_path = os.path.join(frames_dir, 'sensor_log.json')
@@ -4014,7 +4014,7 @@ def confirm_body_scan(customer_id, session_id):
         abort(404, 'Session not found')
 
     try:
-        payload = json.loads(request.body.read() or b'{}')
+        payload = request.json if request.json else {}
     except Exception:
         return dict(status='error', message='Invalid JSON body')
 
@@ -4077,7 +4077,7 @@ def re_capture_body_scan(customer_id, session_id):
     if not session:
         abort(404, 'Session not found')
 
-    region = request.vars.get('region', '').strip()
+    region = request.forms.get('region', '').strip()
     if not region:
         return dict(status='error', message='region field is required')
 
