@@ -7,10 +7,7 @@ Actions:
 3. 'rembg':          (Legacy) Background removal / masking.
 4. 'dsine':          (Legacy) High-fidelity normal map estimation.
 5. 'pbr_textures':   (Legacy) Vectorized roughness/AO generation.
-6. 'train_splat':    3DGS training from video/images.
-7. 'anchor_splat':   Bind Gaussians to mesh vertices.
-8. 'bake_cinematic': Neural detail -> PBR Texture Baking.
-9. 'health_check':   Liveness probe.
+6. 'health_check':   Liveness probe.
 
 LHM++ model path: /app/lhm/pretrained_models/LHMPP-700M
 """
@@ -480,7 +477,7 @@ def _live_scan_bake(inp):
         # ── Step 2: select up to _MAX_LHM_FRAMES best frames by sharpness ───
         decoded_frames.sort(key=lambda x: x[0], reverse=True)
         selected = decoded_frames[:_MAX_LHM_FRAMES]
-        ref_view = min(len(selected), 16)
+        ref_view = min(len(selected), 16) - 1
 
         # Save selected frames as PNG files
         frame_paths = []
@@ -671,153 +668,6 @@ def _run_colmap(frames_dir, workspace_dir):
     return sparse_path
 
 
-def _train_splat(inp):
-    """Train a 3D Gaussian Splatting volume from video or image frames."""
-    logger.info('Initializing 3DGS Training (v8.0)...')
-    temp_dir = tempfile.mkdtemp()
-    try:
-        from gsplat import Trainer, SplatModel  # type: ignore
-
-        video_b64  = inp.get('video_b64')
-        images_b64 = inp.get('images', [])
-
-        frames_dir = os.path.join(temp_dir, 'frames')
-        if video_b64:
-            video_path = os.path.join(temp_dir, 'input_video.mp4')
-            with open(video_path, 'wb') as f:
-                f.write(base64.b64decode(video_b64))
-            frame_paths = _extract_frames(video_path, frames_dir)
-        elif images_b64:
-            os.makedirs(frames_dir, exist_ok=True)
-            frame_paths = []
-            for i, b64 in enumerate(images_b64):
-                p = os.path.join(frames_dir, f'frame_{i:04d}.jpg')
-                with open(p, 'wb') as f:
-                    f.write(base64.b64decode(b64))
-                frame_paths.append(p)
-        else:
-            return {'status': 'error', 'message': 'No training data provided'}
-
-        colmap_dir = _run_colmap(frames_dir, temp_dir)
-        model = SplatModel.load_colmap(colmap_dir).cuda()
-        trainer = Trainer(model=model, lr=0.01)
-        logger.info(f'Training on {len(frame_paths)} frames...')
-        trainer.train(iterations=2000, images_dir=frames_dir)
-
-        buffer = io.BytesIO()
-        model.save_spz(buffer)
-        spz_b64 = base64.b64encode(buffer.getvalue()).decode('ascii')
-
-        return {
-            'status': 'success',
-            'splat_b64': spz_b64,
-            'gaussians': len(model.gaussians),
-            'format': 'spz',
-        }
-    except Exception as e:
-        logger.error(f'Splat training failed: {e}')
-        return {'status': 'error', 'message': str(e)}
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def _anchor_splat(inp):
-    """Bind Gaussian centroids to MPFB2 mesh vertices for animation."""
-    logger.info('Calculating Mesh-Guided Anchors...')
-    try:
-        verts_b64 = inp.get('vertices_b64')
-        splat_b64 = inp.get('splat_b64')
-        if not verts_b64 or not splat_b64:
-            return {'status': 'error', 'message': 'Missing vertices or splat data'}
-
-        vertices = torch.from_numpy(
-            np.frombuffer(base64.b64decode(verts_b64),
-                          dtype=np.float32).reshape(-1, 3)
-        ).cuda()
-
-        from gsplat import SplatModel  # type: ignore
-        model = SplatModel.load_spz(
-            io.BytesIO(base64.b64decode(splat_b64))
-        ).cuda()
-        centroids = model.means
-
-        batch_size  = 10000
-        n_gaussians = centroids.shape[0]
-        anchor_indices = torch.zeros(n_gaussians, dtype=torch.long,    device='cuda')
-        offsets        = torch.zeros((n_gaussians, 3), dtype=torch.float32, device='cuda')
-
-        for i in range(0, n_gaussians, batch_size):
-            end   = min(i + batch_size, n_gaussians)
-            chunk = centroids[i:end]
-            dists = torch.cdist(chunk, vertices)
-            idx   = torch.argmin(dists, dim=1)
-            anchor_indices[i:end] = idx
-            offsets[i:end]        = chunk - vertices[idx]
-
-        return {
-            'status': 'success',
-            'anchor_indices_b64': _encode_array(anchor_indices.cpu().numpy(), dtype='int32'),
-            'offsets_b64':        _encode_array(offsets.cpu().numpy()),
-            'gaussians':          n_gaussians,
-            'message': 'Splat successfully anchored to MPFB2 mesh',
-        }
-    except Exception as e:
-        logger.error(f'Splat anchoring failed: {e}')
-        return {'status': 'error', 'message': str(e)}
-
-
-def _bake_cinematic(inp):
-    """Neural baking for PBR normal/albedo enhancement."""
-    logger.info('Baking Neural Detail to 4K PBR...')
-    try:
-        from core.densepose_infer import predict_iuv
-        from core.texture_bake import bake_from_photos_nn, build_seam_mask, smooth_seam
-
-        images_b64 = inp.get('images', [])
-        directions = inp.get('directions', ['front', 'back', 'left', 'right'])
-        verts_b64  = inp.get('vertices_b64')
-        faces_b64  = inp.get('faces_b64')
-        uvs_b64    = inp.get('uvs_b64')
-
-        if not all([images_b64, verts_b64, faces_b64, uvs_b64]):
-            return {'status': 'error', 'message': 'Missing mesh or image data'}
-
-        vertices = np.frombuffer(base64.b64decode(verts_b64),
-                                 dtype=np.float32).reshape(-1, 3)
-        faces    = np.frombuffer(base64.b64decode(faces_b64),
-                                 dtype=np.int32).reshape(-1, 3)
-        uvs      = np.frombuffer(base64.b64decode(uvs_b64),
-                                 dtype=np.float32).reshape(-1, 2)
-
-        photo_dict = {
-            d: _decode_image(images_b64[i])
-            for i, d in enumerate(directions) if i < len(images_b64)
-        }
-        iuv_dict = {
-            d: predict_iuv(img, backend='torchscript')
-            for d, img in photo_dict.items()
-        }
-        iuv_dict = {k: v for k, v in iuv_dict.items() if v is not None}
-
-        if not iuv_dict:
-            return {'status': 'error', 'message': 'DensePose failed on all views'}
-
-        tex, weight = bake_from_photos_nn(
-            vertices, faces, uvs, photo_dict, iuv_dict, texture_size=4096
-        )
-        seam_mask  = build_seam_mask(vertices, faces, uvs, texture_size=4096)
-        tex_smooth = smooth_seam(tex, seam_mask)
-
-        return {
-            'status': 'success',
-            'albedo_4k_b64': _encode_image(tex_smooth, quality=95),
-            'coverage': float((weight > 0).mean()),
-        }
-    except Exception as e:
-        logger.error(f'Cinematic baking failed: {e}')
-        return {'status': 'error', 'message': str(e)}
-
-
 def _health_check():
     """Liveness probe — reports model loading status."""
     return {
@@ -865,12 +715,6 @@ def handler(job):
                 'normals': _run_dsine(inp.get('images', []),
                                       inp.get('directions', ['front'])),
             }
-        elif action == 'train_splat':
-            return _train_splat(inp)
-        elif action == 'anchor_splat':
-            return _anchor_splat(inp)
-        elif action == 'bake_cinematic':
-            return _bake_cinematic(inp)
         else:
             return {'status': 'error', 'message': f'Unknown action: {action}'}
     except Exception as exc:

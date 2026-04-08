@@ -3804,8 +3804,8 @@ def body_scan_result():
     coverage_pct = (good_regions / total_regions * 100) if total_regions > 0 else 0
 
     glb_url = ''
-    vertex_count = 0
-    face_count = 0
+    vertex_count = session.vertex_count or 0
+    face_count = session.face_count or 0
     if session.glb_path and os.path.exists(session.glb_path):
         glb_url = '/web_app/' + session.glb_path.replace('\\', '/')
 
@@ -4545,6 +4545,8 @@ def finalize_live_scan(customer_id, session_id):
             glb_path=glb_path,
             texture_path=texture_path,
             mesh_path=glb_path,
+            vertex_count=result.get('vertex_count', 0),
+            face_count=result.get('face_count', 0),
         )
         db.commit()
 

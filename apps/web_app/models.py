@@ -224,6 +224,12 @@ db.define_table('body_scan_session',
     Field('texture_path', 'string', length=512),
     Field('glb_path', 'string', length=512),
     Field('quality_score', 'double'),
+    Field('scan_mode', 'string', length=16, default='batch'),
+    Field('distance_min_m', 'double'),
+    Field('distance_max_m', 'double'),
+    Field('coverage_pct', 'double', default=0.0),
+    Field('vertex_count', 'integer', default=0),
+    Field('face_count', 'integer', default=0),
     Field('created_on', 'datetime', default=lambda: datetime.now()),
 )
 # 10c. BODY PART ASSIGNMENTS
