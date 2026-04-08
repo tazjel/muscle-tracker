@@ -42,7 +42,8 @@ RUN pip install --no-cache-dir \
 # ── 6. Gaussian-Splatting dependencies ─────────────────────────────────────
 # diff-gaussian-rasterization and simple-knn must be built from source
 # (no compatible pre-built wheels for this exact CUDA/torch combo)
-RUN pip install --no-cache-dir --no-build-isolation \
+RUN TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0" \
+    pip install --no-cache-dir --no-build-isolation \
     git+https://github.com/ashawkey/diff-gaussian-rasterization/ \
     git+https://github.com/camenduru/simple-knn/
 
