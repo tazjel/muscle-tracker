@@ -192,12 +192,15 @@ const Viewport = {
     // --- Latest mesh for customer ---
     async loadLatestMesh(customerId) {
         const { ok, data } = await Studio.apiGet(`/api/customer/${customerId}/meshes`);
-        if (!ok) return;
+        if (!ok) { Studio.log('Mesh list fetch failed', 'warn'); return; }
         const meshes = data.meshes || data || [];
-        if (meshes.length === 0) return;
+        if (meshes.length === 0) { Studio.log(`No meshes for customer ${customerId}`); return; }
         const first = meshes[0];
         const meshId = first.id;
         if (!meshId) return;
+        // Hide empty state immediately so the Three.js canvas is visible during load
+        this._showEmpty(false);
+        this._showInfo('Loading mesh…');
         const url = `${Studio.API_BASE}/api/mesh/${meshId}.glb`;
         this.loadGLB(url);
     },

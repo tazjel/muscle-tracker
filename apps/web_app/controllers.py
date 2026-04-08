@@ -1246,26 +1246,33 @@ def serve_static(filename):
 @action.uses(db, cors)
 def serve_mesh_glb(mesh_id):
     """Serve the GLB binary for the 3D viewer (?model= param)."""
-    mesh = db.mesh_model(mesh_id)
-    if not mesh:
-        abort(404, 'Mesh not found')
-    # Fall back to OBJ if GLB was never generated
-    glb = getattr(mesh, 'glb_path', None)
-    logger.info("serve_mesh_glb: id=%d path=%s", mesh_id, glb)
-    if not glb or not os.path.exists(glb):
-        logger.error("GLB missing at path: %s", glb)
-        abort(404, 'GLB not available for this mesh — use .obj endpoint')
-    response.headers['Content-Type']        = 'model/gltf-binary'
-    response.headers['Content-Disposition'] = f'inline; filename="mesh_{mesh_id}.glb"'
-    with open(glb, 'rb') as f:
-        return f.read()
+    try:
+        mesh = db.mesh_model(mesh_id)
+        if not mesh:
+            return dict(status='error', message='Mesh not found')
+        glb = mesh.glb_path
+        if not glb:
+            return dict(status='error', message='No GLB path for this mesh')
+        # Resolve relative paths against project root (py4web CWD may differ)
+        if not os.path.isabs(glb):
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            glb = os.path.join(project_root, glb)
+        if not os.path.exists(glb):
+            return dict(status='error', message=f'GLB not found: {glb}')
+        response.headers['Content-Type']        = 'model/gltf-binary'
+        response.headers['Content-Disposition'] = f'inline; filename="mesh_{mesh_id}.glb"'
+        with open(glb, 'rb') as f:
+            return f.read()
+    except Exception as e:
+        logger.exception("serve_mesh_glb failed: %s", e)
+        return dict(status='error', message=str(e))
 
 
 @action('api/mesh/template.glb', method=['GET'])
 @action.uses(cors)
 def serve_template_glb():
     """Serve the MPFB2 template GLB (default body before any customisation)."""
-    path = os.path.join('meshes', 'gtd3d_body_template.glb')
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'meshes', 'gtd3d_body_template.glb')
     if not os.path.exists(path):
         abort(404, 'Template mesh not generated yet')
     response.headers['Content-Type'] = 'model/gltf-binary'
@@ -2034,6 +2041,59 @@ _BODY_PROFILE_FIELDS = [
     'calf_circumference_cm', 'skin_tone_hex',
     'muscle_factor', 'weight_factor', 'gender_factor', 'gender',
 ]
+
+
+@action('api/seed_demo', method=['POST'])
+@action.uses(db, cors)
+def seed_demo():
+    """Seed demo customer (id=1) with sample scan data for studio testing."""
+    customer = db.customer(1)
+    if not customer:
+        return dict(status='error', message='Demo customer not found')
+
+    from datetime import datetime, timedelta
+    import random
+
+    # Create 5 sample scans over 5 weeks (one per muscle group)
+    muscle_groups = ['bicep', 'quadricep', 'chest', 'deltoid', 'lat']
+    base_date = datetime.now() - timedelta(weeks=5)
+
+    for i, mg in enumerate(muscle_groups):
+        scan_date = base_date + timedelta(weeks=i)
+        base_vol = 800 + random.randint(-50, 50)
+        growth = round(random.uniform(1.5, 4.5), 1)
+
+        db.muscle_scan.insert(
+            customer_id=1,
+            scan_date=scan_date,
+            muscle_group=mg,
+            side='both',
+            processing_status='complete',
+            volume_cm3=base_vol + (i * 15),
+            growth_pct=growth,
+            shape_score=round(random.uniform(6.0, 9.0), 1),
+            shape_grade=['A', 'B', 'A', 'B', 'A'][i],
+            definition_score=round(random.uniform(5.0, 8.5), 1),
+            definition_grade=['B', 'A', 'B', 'B', 'A'][i],
+            circumference_cm=round(30 + i * 2.5 + random.uniform(-1, 1), 1),
+            calibrated=True,
+        )
+
+    # Create 5 health logs (one per week)
+    for i in range(5):
+        log_date = base_date + timedelta(weeks=i)
+        db.health_log.insert(
+            customer_id=1,
+            log_date=log_date.date(),
+            body_weight_kg=round(63.0 + random.uniform(-0.5, 0.3), 1),
+            calories_in=random.randint(1800, 2400),
+            sleep_hours=round(random.uniform(6.5, 8.5), 1),
+            activity_type=['moderate', 'intense', 'light', 'intense', 'moderate'][i],
+            notes=['Leg day', 'Upper body', 'Rest day', 'Full body', 'Cardio'][i],
+        )
+
+    db.commit()
+    return dict(status='success', message='Seeded 5 scans + 5 health logs for demo customer')
 
 
 def _auth_check(customer_id=None):

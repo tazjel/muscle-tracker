@@ -96,15 +96,16 @@ const CustomerPanel = {
         const fields = [
             { label: 'Height', key: 'height_cm', unit: 'cm' },
             { label: 'Weight', key: 'weight_kg', unit: 'kg' },
-            { label: 'Chest', key: 'chest_cm', unit: 'cm' },
-            { label: 'Waist', key: 'waist_cm', unit: 'cm' },
-            { label: 'Hips', key: 'hips_cm', unit: 'cm' },
-            { label: 'L Bicep', key: 'bicep_left_cm', unit: 'cm' },
-            { label: 'R Bicep', key: 'bicep_right_cm', unit: 'cm' },
-            { label: 'L Thigh', key: 'thigh_left_cm', unit: 'cm' },
-            { label: 'R Thigh', key: 'thigh_right_cm', unit: 'cm' },
-            { label: 'Neck', key: 'neck_cm', unit: 'cm' },
-            { label: 'Shoulders', key: 'shoulders_cm', unit: 'cm' },
+            { label: 'Chest', key: 'chest_circumference_cm', unit: 'cm' },
+            { label: 'Waist', key: 'waist_circumference_cm', unit: 'cm' },
+            { label: 'Hips', key: 'hip_circumference_cm', unit: 'cm' },
+            { label: 'Bicep', key: 'bicep_circumference_cm', unit: 'cm' },
+            { label: 'Quad', key: 'quadricep_circumference_cm', unit: 'cm' },
+            { label: 'Thigh', key: 'thigh_circumference_cm', unit: 'cm' },
+            { label: 'Calf', key: 'calf_circumference_cm', unit: 'cm' },
+            { label: 'Neck', key: 'neck_circumference_cm', unit: 'cm' },
+            { label: 'Shoulders', key: 'shoulder_width_cm', unit: 'cm' },
+            { label: 'Forearm', key: 'forearm_circumference_cm', unit: 'cm' },
         ];
         el.innerHTML = `
             <div style="padding:0.5rem 0;">
@@ -129,7 +130,7 @@ const CustomerPanel = {
         if (!ok) return;
         const el = document.getElementById('customer-profile');
         if (!el) return;
-        const fields = ['height_cm', 'weight_kg', 'chest_cm', 'waist_cm', 'hips_cm', 'bicep_left_cm', 'bicep_right_cm', 'thigh_left_cm', 'thigh_right_cm', 'neck_cm', 'shoulders_cm'];
+        const fields = ['height_cm', 'weight_kg', 'chest_circumference_cm', 'waist_circumference_cm', 'hip_circumference_cm', 'bicep_circumference_cm', 'quadricep_circumference_cm', 'thigh_circumference_cm', 'calf_circumference_cm', 'neck_circumference_cm', 'shoulder_width_cm', 'forearm_circumference_cm'];
         el.innerHTML = `
             <form id="edit-profile-form">
                 ${fields.map(f => `<div class="form-group">

@@ -8,10 +8,32 @@ const Studio = {
     customerId: null,     // Currently selected customer ID
     panels: {},          // Registered panel modules
     logs: [],            // Activity log entries
+    _token: null,        // JWT token acquired on init
+
+    async _acquireToken() {
+        try {
+            const resp = await fetch(`${this.API_BASE}/api/auth/admin_token`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ admin_secret: 'dev-admin-secret' }),
+            });
+            const data = await resp.json();
+            if (resp.ok && data.token) {
+                this._token = data.token;
+                this.log('Auth token acquired');
+            } else {
+                this.log(`Token acquire failed: ${JSON.stringify(data)}`, 'error');
+            }
+        } catch (e) {
+            this.log(`Token acquire error: ${e.message}`, 'error');
+        }
+    },
 
     async init() {
+        await this._acquireToken();
         this._setupTabs();
         this._setupPanelToggles();
+        this._setupNavLinks();
         this._setupKeyboardShortcuts();
         this._pollDevices();
         this._pollGPU();
@@ -28,14 +50,24 @@ const Studio = {
     },
 
     // --- API helpers ---
-    async api(path, options = {}) {
+    async api(path, options = {}, _isRetry = false) {
         const url = `${this.API_BASE}${path}`;
-        const defaults = { headers: { 'Content-Type': 'application/json' } };
+        const defaults = {
+            headers: {
+                'Content-Type': 'application/json',
+                ...(this._token ? { 'Authorization': `Bearer ${this._token}` } : {}),
+            },
+        };
         if (options.body && typeof options.body === 'object') {
             options.body = JSON.stringify(options.body);
         }
         try {
             const resp = await fetch(url, { ...defaults, ...options });
+            if (resp.status === 401 && !_isRetry) {
+                this.log('Token expired, re-acquiring…');
+                await this._acquireToken();
+                return this.api(path, options, true);
+            }
             const data = await resp.json();
             this.log(`${options.method || 'GET'} ${path} → ${resp.status}`);
             return { ok: resp.ok, status: resp.status, data };
@@ -87,6 +119,46 @@ const Studio = {
                     header.classList.toggle('collapsed');
                 }
             });
+        });
+    },
+
+    // --- Nav panel switching ---
+    // Maps each nav tab to the panel IDs it should show in left and right sidebars.
+    // Customer panels (first 2 .panel elements in left sidebar) are always visible.
+    _NAV_PANELS: {
+        'scan':      { left: ['panel-scans', 'panel-meshes'],    right: [] },
+        'body-scan': { left: ['panel-body-scan'],                right: [] },
+        'texture':   { left: ['panel-scans'],                    right: ['panel-texture'] },
+        'render':    { left: ['panel-meshes'],                   right: ['panel-render'] },
+        'progress':  { left: [],                                 right: ['panel-progress', 'panel-reports'] },
+    },
+
+    _setupNavLinks() {
+        document.querySelectorAll('.nav-links a').forEach(a => {
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                const section = a.dataset.nav;
+                if (section) this._activateNav(section);
+            });
+        });
+        // Apply initial state for the default active tab (scan)
+        this._switchNavPanels('scan');
+    },
+
+    _switchNavPanels(section) {
+        const map = this._NAV_PANELS[section];
+        if (!map) return;
+
+        // Left sidebar: all switchable panels (those with an id), skip the first 2 customer panels
+        const leftPanels = document.querySelectorAll('#sidebar-left .panel[id]');
+        leftPanels.forEach(panel => {
+            panel.style.display = map.left.includes(panel.id) ? '' : 'none';
+        });
+
+        // Right sidebar: all panels with an id
+        const rightPanels = document.querySelectorAll('#sidebar-right .panel[id]');
+        rightPanels.forEach(panel => {
+            panel.style.display = map.right.includes(panel.id) ? '' : 'none';
         });
     },
 
@@ -167,6 +239,7 @@ const Studio = {
         document.querySelectorAll('.nav-links a').forEach(a => {
             a.classList.toggle('active', a.dataset.nav === section);
         });
+        this._switchNavPanels(section);
         this.log(`Switched to ${section}`);
     },
 
