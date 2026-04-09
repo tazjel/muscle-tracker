@@ -1,59 +1,69 @@
-# Next Session Brief — 2026-04-08
+# Next Session Brief — GTD3D (2026-04-10)
 
-## What's Done
-- **Pipeline pivot**: HMR2.0+DensePose → LHM++ (160K Gaussian splats, 2s inference, 8GB VRAM)
-- **handler_v2.py**: v8.0 — LHM++ inference, Gaussian→GLB via pygltflib
-- **Dockerfile fixes** (3 commits):
-  - `--no-build-isolation` for diff-gaussian-rasterization (needs system torch)
-  - `TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0"` set inline before CUDA compile (no GPU on CI)
-  - `torch_scatter` installed directly from URL (not wget+rename)
-  - Free disk space step added to workflow (remove dotnet, Android SDK, cached images)
-- **Sonnet completed Tasks 2-4** (commit `6a4d401`):
-  - Fixed `ref_view` off-by-one: `min(len(selected), 16) - 1`
-  - Removed 3 dead code actions (`_train_splat`, `_anchor_splat`, `_bake_cinematic`) ~150 lines
-  - Added `vertex_count`/`face_count` to `body_scan_session` table (model + controllers + SQLite migration)
-- **Test images ready**: `test_frames/vid5_man/` — front1.jpg, back1.jpg, right_hand.jpg, left_hand.jpg
+## Just Completed: Wave 2 — APK Tabs + Web Panel Upgrades
+Commits: `6672202` (merge), `93c1159` (APK), `2f68f6b` (web stubs), `2f3f0f7` (web enhance)
 
-## What's In Progress
-- **GitHub Actions Docker build**: Run `24148755188` — was at 8+ min (past all previous failures) when session ended
-  - Check: `gh run list --workflow=257905070 --repo tazjel/muscle-tracker --limit 1`
-  - If failed: `gh run view <RUN_ID> --log-failed --repo tazjel/muscle-tracker`
-- **Docker Desktop being re-enabled** — user restarting PC to activate. Next session should build locally first.
+**APK**: main.dart 3,562→2,074 lines. 5 real tab files (camera 549, body_scan 278, live_scan 378, skin 183, multi_capture 379).
+**Web**: 5 panels upgraded from stubs to real API integration (scan 262, render 259, device 184, progress 489, texture 519).
+Detailed handoff: memory `handoff_next_agent.md`
 
-## What's Next (in order)
-1. **Check if Docker build succeeded or failed**
-2. **If Docker Desktop is available**: build locally first (`docker build -t gtd3d-worker -f runpod/Dockerfile .`), fix issues with fast feedback, then push to GHCR
-3. **Create RunPod endpoint** from `ghcr.io/tazjel/gtd3d-gpu-worker:latest` (user manual step)
-4. **Set env vars**: `RUNPOD_API_KEY` and `RUNPOD_ENDPOINT`
-5. **End-to-end curl test** (Task 6 in `.agent/LIVE_SCAN_TASKS.md`)
-6. **Verify GLB renders** in body_viewer.html (Task 7)
+## Next Up: Wave 3 — Screen Extraction + Services + Live Mode
 
-## Key Technical Details
-- LHM++ CLI: `test_app_case.py --image_glob "*.png" --ref_view 4 --model_name LHMPP-700M`
-- Weights: ~7GB from HuggingFace (Damo_XR_Lab/LHMPP-700M)
-- Output: 160K Gaussian splats → GLB point cloud via pygltflib degenerate triangles
-- body_viewer.html: THREE.GLTFLoader — may need GL_POINTS for point cloud visibility
-- API contract: {glb_b64, vertex_count, face_count, texture_coverage, lhm_used}
-- Actual SQLite DB: `database.db` at project root (NOT `apps/web_app/databases/storage.db`)
+### Wave 3 Sonnet Agent Tasks (ready to dispatch)
 
-## Docker Build History (for debugging)
-| Run | Duration | Failure | Fix |
-|-----|----------|---------|-----|
-| 24143479284 | 3m | `ModuleNotFoundError: torch` in diff-gaussian-rasterization | `--no-build-isolation` |
-| 24147766255 | 3m24s | `IndexError: list index out of range` in `_get_cuda_arch_flags` | `TORCH_CUDA_ARCH_LIST` inline |
-| 24148626885 | 1m58s | `no space left on device` extracting base image | Free disk space step |
-| 24148755188 | 8m+? | Still running / unknown | — |
+**Agent 1 — APK Screen Extraction (worktree, ~20 min)**
+Extract 15 screen classes from main.dart (2,074 lines) to `companion_app/lib/screens/`.
+Target: main.dart → ~800 lines after extraction.
+Screens to extract (grep for `^class` to find current line numbers):
+- ProfileSetupScreen, LoginScreen, ReviewScreen, ResultsScreen
+- ProfileProgressScreen, HistoryScreen, ProgressScreen
+- HealthLogScreen, HealthLogListScreen, RegisterScreen
+- ReportViewerScreen, LivePreviewScreen, ModelViewerScreen
+- BodyScanReviewScreen, _RegionRecaptureScreen
+Rules: remove `_` prefix on private classes, update imports in main.dart, `flutter.bat build apk --debug` to verify.
 
-## RunPod
-- Balance: $13.86
-- Old endpoints: all deleted
-- New endpoint: needs to be created after Docker build succeeds
+**Agent 2 — APK Services Implementation (worktree, ~15 min)**
+Implement 3 stub services in `companion_app/lib/services/`:
+- `api_service.dart` (6→~200 lines) — centralize all HTTP calls: GET/POST with JWT auth header from config.dart `jwtToken`, base URL from `AppConfig.serverBaseUrl`, response parsing. Extract repeated `http.get/post` patterns from tabs/ and screens/.
+- `camera_service.dart` (6→~100 lines) — singleton owning CameraController init, frame capture (`takePicture`), torch toggle, resolution switching. Currently HomeScreen owns controller directly.
+- `sensor_service.dart` (6→~80 lines) — singleton owning accelerometer/gyro/magnetometer streams, expose pitch/roll as ValueNotifier or Stream. Currently HomeScreen subscribes directly.
+Rules: Use singleton pattern (already scaffolded). Don't add Provider/Riverpod. Wire into HomeScreen, update tabs to use services instead of passed params.
 
-## Rules
-- py4web must use `--host 0.0.0.0` for MatePad access
-- APK package: `com.example.companion_app`
-- Rename repo muscle-tracker → gtd3d (still TODO)
-- `fake_migrate_all=True` in common.py — new columns need manual ALTER TABLE
+**Agent 3 — Web Studio Live Mode (worktree, ~10 min)**
+- Set `Studio.MOCK_MODE = false` in studio.js line 12
+- Add a `MOCK_MODE` toggle button in the top bar (so developers can switch)
+- Verify all panels handle `MOCK_MODE=false` gracefully (no crashes when backend is down)
+- Wire viewport.js to render-panel.js: when "View 3D" is clicked in mesh list, call `Studio.showInViewport('glb', url)` — this dispatches `viewport-load` event that viewport.js listens to
+- Test: start py4web (`py4web run apps --port 8000`), seed data, open studio_v2, verify customer list loads, scan upload works
+- `git add -f` for all `apps/` files
 
-## Task File
-- `.agent/LIVE_SCAN_TASKS.md` — Tasks 1-4 done, Tasks 5-7 remain
+### Agent Dependency Map
+```
+Agent 1 (screens) ──┐
+                     ├──→ Merge + verify build
+Agent 2 (services) ──┘    (Agent 2 depends on Agent 1 if services
+                           reference screen classes — safer to run
+                           sequentially or merge Agent 1 first)
+Agent 3 (web live) ─────→ Independent, can run in parallel
+```
+
+### Quick Start
+```bash
+cd C:/Users/MiEXCITE/Projects/gtd3d
+py4web run apps --port 8000
+curl -X POST http://localhost:8000/web_app/api/seed_demo
+# APK: cd companion_app && flutter.bat clean && flutter.bat run
+# Studio: http://localhost:8000/web_app/studio_v2
+```
+
+### Key Technical Notes
+- `.gitignore` matches `apps/` — ALWAYS `git add -f`
+- Grep for class/function names, never trust line numbers from memory
+- Sequential bash calls only (Windows)
+- Services: singleton with ValueNotifier, NOT Provider/Riverpod
+- Tab pattern: AutomaticKeepAliveClientMixin, shared CameraController
+
+## Also Pending (lower priority)
+- Docker/RunPod LHM++ deployment (handler_v2.py v8, Dockerfile with CUDA fixes)
+- Rename GitHub repo muscle-tracker → gtd3d
+- 3dgs-panel.js, lhm-panel.js, multi-capture-panel.js still mock-only
