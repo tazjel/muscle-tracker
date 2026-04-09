@@ -2051,6 +2051,27 @@ def seed_demo():
     if not customer:
         return dict(status='error', message='Demo customer not found')
 
+    # Update customer 1 profile — Ahmed Bani, 165cm / 65kg
+    db(db.customer.id == 1).update(
+        name='Ahmed Bani',
+        gender='male',
+        height_cm=165,
+        shoulder_width_cm=43,
+        neck_circumference_cm=37,
+        chest_circumference_cm=92,
+        bicep_circumference_cm=30,
+        forearm_circumference_cm=26,
+        waist_circumference_cm=78,
+        hip_circumference_cm=93,
+        thigh_circumference_cm=52,
+        calf_circumference_cm=36,
+        arm_length_cm=55,
+        torso_length_cm=45,
+        inseam_cm=74,
+        skin_tone_hex='C4956A',
+        profile_completed=True,
+    )
+
     from datetime import datetime, timedelta
     import random
 

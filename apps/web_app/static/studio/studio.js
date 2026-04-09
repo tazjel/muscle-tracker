@@ -9,6 +9,7 @@ const Studio = {
     panels: {},          // Registered panel modules
     logs: [],            // Activity log entries
     _token: null,        // JWT token acquired on init
+    MOCK_MODE: true,     // Dev mode — no backend needed
 
     async _acquireToken() {
         try {
@@ -30,27 +31,33 @@ const Studio = {
     },
 
     async init() {
-        await this._acquireToken();
+        // await this._acquireToken(); // disabled in dev mode
         this._setupTabs();
         this._setupPanelToggles();
         this._setupNavLinks();
         this._setupKeyboardShortcuts();
-        this._pollDevices();
-        this._pollGPU();
-        // Load panel modules
-        if (window.CustomerPanel) CustomerPanel.init();
-        if (window.ScanPanel) ScanPanel.init();
-        if (window.ViewportPanel) ViewportPanel.init();
-        if (window.BodyScanPanel) BodyScanPanel.init();
-        if (window.TexturePanel) TexturePanel.init();
-        if (window.RenderPanel) RenderPanel.init();
-        if (window.ProgressPanel) ProgressPanel.init();
-        if (window.ReportPanel) ReportPanel.init();
+        // this._pollDevices(); // disabled in dev mode
+        // this._pollGPU();     // disabled in dev mode
+        // Load panel modules (const globals aren't on window — check typeof)
+        if (typeof CustomerPanel !== 'undefined') {
+            try { await CustomerPanel.init(); } catch(e) { this.log('CustomerPanel init error: ' + e.message, 'error'); }
+        }
+        if (typeof ScanPanel !== 'undefined') ScanPanel.init();
+        if (typeof ViewportPanel !== 'undefined') ViewportPanel.init();
+        if (typeof BodyScanPanel !== 'undefined') BodyScanPanel.init();
+        if (typeof TexturePanel !== 'undefined') TexturePanel.init();
+        if (typeof RenderPanel !== 'undefined') RenderPanel.init();
+        if (typeof ProgressPanel !== 'undefined') ProgressPanel.init();
+        if (typeof ReportPanel !== 'undefined') ReportPanel.init();
+        if (typeof GaussianPanel !== 'undefined') GaussianPanel.init();
+        if (typeof LHMPanel !== 'undefined') LHMPanel.init();
+        if (typeof MultiCapturePanel !== 'undefined') MultiCapturePanel.init();
         this.log('Studio initialized');
     },
 
     // --- API helpers ---
     async api(path, options = {}, _isRetry = false) {
+        if (this.MOCK_MODE) return { ok: false, status: 0, data: { error: 'Mock mode — no backend' } };
         const url = `${this.API_BASE}${path}`;
         const defaults = {
             headers: {
@@ -126,11 +133,14 @@ const Studio = {
     // Maps each nav tab to the panel IDs it should show in left and right sidebars.
     // Customer panels (first 2 .panel elements in left sidebar) are always visible.
     _NAV_PANELS: {
-        'scan':      { left: ['panel-scans', 'panel-meshes'],    right: [] },
-        'body-scan': { left: ['panel-body-scan'],                right: [] },
-        'texture':   { left: ['panel-scans'],                    right: ['panel-texture'] },
-        'render':    { left: ['panel-meshes'],                   right: ['panel-render'] },
-        'progress':  { left: [],                                 right: ['panel-progress', 'panel-reports'] },
+        'scan':     { left: ['panel-camera'],    right: [] },
+        'mesh':     { left: ['panel-mesh-info'], right: [] },
+        'texture':  { left: [],                  right: ['panel-texture-checklist'] },
+        'render':   { left: [],                  right: ['panel-render-controls'] },
+        'progress': { left: [],                  right: ['panel-progress-report'] },
+        '3dgs':     { left: ['panel-3dgs-upload'],   right: ['panel-3dgs-status'] },
+        'lhm':      { left: ['panel-lhm-upload'],    right: ['panel-lhm-status'] },
+        'multi-capture': { left: ['panel-multi-capture-devices'], right: ['panel-multi-capture-controls'] },
     },
 
     _setupNavLinks() {
@@ -224,10 +234,13 @@ const Studio = {
             }
             switch (key) {
                 case '1': this._activateNav('scan'); break;
-                case '2': this._activateNav('body-scan'); break;
+                case '2': this._activateNav('mesh'); break;
                 case '3': this._activateNav('texture'); break;
                 case '4': this._activateNav('render'); break;
                 case '5': this._activateNav('progress'); break;
+                case '6': this._activateNav('3dgs'); break;
+                case '7': this._activateNav('lhm'); break;
+                case '8': this._activateNav('multi-capture'); break;
                 case 'r': if (window.ViewportPanel) ViewportPanel.resetView(); break;
                 case 'w': if (window.ViewportPanel) ViewportPanel.toggleWireframe(); break;
                 case '/': document.getElementById('customer-search')?.focus(); e.preventDefault(); break;

@@ -29,6 +29,7 @@ const CustomerPanel = {
             const q = input.value.toLowerCase().trim();
             this.filteredCustomers = q
                 ? this.customers.filter(c =>
+                    (c.name || '').toLowerCase().includes(q) ||
                     (c.email || '').toLowerCase().includes(q) ||
                     String(c.id).includes(q))
                 : this.customers;
@@ -69,8 +70,8 @@ const CustomerPanel = {
             const scans = c.scan_count || 0;
             return `<div class="list-item ${active}" onclick="CustomerPanel.select(${c.id})">
                 <div>
-                    <div>${c.email || 'Customer #' + c.id}</div>
-                    <div class="meta">${scans} scan${scans !== 1 ? 's' : ''}</div>
+                    <div>${c.name || c.email || 'Customer #' + c.id}</div>
+                    <div class="meta">${c.email}${scans ? ' · ' + scans + ' scan' + (scans !== 1 ? 's' : '') : ''}</div>
                 </div>
             </div>`;
         }).join('');

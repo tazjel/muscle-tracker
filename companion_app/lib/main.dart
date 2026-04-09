@@ -13,78 +13,12 @@ import 'package:share_plus/share_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'studio_server.dart';
+import 'config.dart';
+import 'widgets/dev_panel.dart';
+import 'widgets/level_painter.dart';
+import 'widgets/skin_guide_overlay.dart';
 
 late List<CameraDescription> _cameras;
-
-// --- CONFIG & THEME ---
-
-class AppConfig {
-  static const String serverBaseUrl = 'http://192.168.100.7:8000/web_app';
-  static const String appVersion = '3.0.0';
-
-  // ── DEV MODE ─────────────────────────────────────────────────────────────
-  // Set to false when releasing to production.
-  static const bool devMode = true;
-
-  static bool profileCompleted = false;
-
-  // Hardcoded test profile — submitted automatically on first run in dev mode.
-  // Edit these values to match the current test subject.
-  static const Map<String, dynamic> devProfile = {
-    'height_cm':                  168,
-    'weight_kg':                  63,
-    'shoulder_width_cm':          37,
-    'neck_to_shoulder_cm':        15,
-    'shoulder_to_head_cm':        25,
-    'arm_length_cm':              80,
-    'upper_arm_length_cm':        35,
-    'forearm_length_cm':          45,
-    'torso_length_cm':            50,
-    'floor_to_knee_cm':           52,
-    'knee_to_belly_cm':           40,
-    'back_buttock_to_knee_cm':    61.6,
-    'head_circumference_cm':      56,
-    'neck_circumference_cm':      35,
-    'chest_circumference_cm':     97,
-    'bicep_circumference_cm':     32,
-    'forearm_circumference_cm':   29,
-    'hand_circumference_cm':      21,
-    'waist_circumference_cm':     90,
-    'hip_circumference_cm':       92,
-    'thigh_circumference_cm':     53,
-    'quadricep_circumference_cm': 52,
-    'calf_circumference_cm':      34,
-    'skin_tone_hex':              'C4956A',
-  };
-}
-
-class AppTheme {
-  static const Color primaryTeal = ui.Color(0xFF009688);
-  static const Color darkBg = ui.Color(0xFF000000);
-  static const Color cardBg = ui.Color(0xFF121212);
-  static const Color accentGreen = ui.Color(0xFF69F0AE);
-  static const Color accentRed = ui.Color(0xFFFF5252);
-
-  static ThemeData get darkTheme => ThemeData(
-    brightness: Brightness.dark,
-    scaffoldBackgroundColor: darkBg,
-    colorScheme: ColorScheme.fromSeed(seedColor: primaryTeal, brightness: Brightness.dark, primary: primaryTeal),
-    cardTheme: CardThemeData(color: cardBg, elevation: 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-    appBarTheme: const AppBarTheme(backgroundColor: darkBg, foregroundColor: Colors.white, centerTitle: true, elevation: 0),
-    filledButtonTheme: FilledButtonThemeData(style: FilledButton.styleFrom(
-      backgroundColor: primaryTeal,
-      foregroundColor: Colors.black,
-      padding: const EdgeInsets.symmetric(vertical: 16),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      textStyle: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2),
-    )),
-    useMaterial3: true,
-  );
-}
-
-String? _jwtToken;
-String? _customerId;
-String? _customerName;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -117,30 +51,30 @@ Future<void> main() async {
     ).timeout(const Duration(seconds: 4));
     final data = jsonDecode(res.body);
     if (res.statusCode == 200 && data['status'] == 'success') {
-      _jwtToken = data['token'];
-      _customerId = data['customer_id']?.toString() ?? '1';
-      _customerName = data['name'] ?? 'Demo User';
+      jwtToken = data['token'];
+      customerId = data['customer_id']?.toString() ?? '1';
+      customerName = data['name'] ?? 'Demo User';
     }
   } catch (_) {}
-  _jwtToken ??= 'demo';
-  _customerId ??= '1';
-  _customerName ??= 'Demo User';
+  jwtToken ??= 'demo';
+  customerId ??= '1';
+  customerName ??= 'Demo User';
 
   // --- Dev mode: auto-submit hardcoded profile, skip setup screen ---
   if (AppConfig.devMode) {
     try {
       // Check if profile already submitted to avoid hammering server
       final pRes = await http.get(
-        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_profile'),
-        headers: {'Authorization': 'Bearer $_jwtToken'},
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/body_profile'),
+        headers: {'Authorization': 'Bearer $jwtToken'},
       ).timeout(const Duration(seconds: 4));
       final pData = jsonDecode(pRes.body);
       final alreadyDone = pData['profile']?['profile_completed'] == true;
       if (!alreadyDone) {
         // Submit hardcoded dev profile
         await http.post(
-          Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_profile'),
-          headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $_jwtToken'},
+          Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/body_profile'),
+          headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $jwtToken'},
           body: jsonEncode(AppConfig.devProfile),
         ).timeout(const Duration(seconds: 5));
       }
@@ -151,8 +85,8 @@ Future<void> main() async {
     // Production: check server for profile completion
     try {
       final pRes = await http.get(
-        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_profile'),
-        headers: {'Authorization': 'Bearer $_jwtToken'},
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/body_profile'),
+        headers: {'Authorization': 'Bearer $jwtToken'},
       ).timeout(const Duration(seconds: 4));
       final pData = jsonDecode(pRes.body);
       AppConfig.profileCompleted = pData['profile']?['profile_completed'] == true;
@@ -162,16 +96,85 @@ Future<void> main() async {
   runApp(const MuscleCompanionApp());
 }
 
+// =============================================================================
+// HOME SCREEN — Tabbed navigation (Wave 1 refactor)
+// =============================================================================
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  int _currentTab = 0;
+
+  static const _tabLabels = ['Camera', 'Body Scan', 'Live Scan', 'Skin', 'Multi-Cap'];
+  static const _tabIcons = [
+    Icons.camera_alt,
+    Icons.accessibility_new,
+    Icons.radar,
+    Icons.texture,
+    Icons.devices,
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(
+        index: _currentTab,
+        children: [
+          const CameraLevelScreen(),  // Tab 0: existing camera (all modes still here for now)
+          _placeholderTab('Body Scan', Icons.accessibility_new, 'Full 360° multi-pass scan'),
+          _placeholderTab('Live Scan', Icons.radar, 'Real-time coverage-guided scan'),
+          _placeholderTab('Skin', Icons.texture, 'Skin region close-up capture'),
+          _placeholderTab('Multi-Capture', Icons.devices, 'Multi-device sync capture'),
+        ],
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentTab,
+        onTap: (i) => setState(() => _currentTab = i),
+        type: BottomNavigationBarType.fixed,
+        backgroundColor: Colors.black,
+        selectedItemColor: AppTheme.primaryTeal,
+        unselectedItemColor: Colors.white38,
+        selectedFontSize: 11,
+        unselectedFontSize: 10,
+        items: List.generate(_tabLabels.length, (i) => BottomNavigationBarItem(
+          icon: Icon(_tabIcons[i]),
+          label: _tabLabels[i],
+        )),
+      ),
+    );
+  }
+
+  Widget _placeholderTab(String title, IconData icon, String description) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 64, color: AppTheme.primaryTeal.withOpacity(0.3)),
+          const SizedBox(height: 16),
+          Text(title, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text(description, style: const TextStyle(color: Colors.white38, fontSize: 13)),
+          const SizedBox(height: 24),
+          Text('Coming in Wave 2', style: TextStyle(color: AppTheme.primaryTeal.withOpacity(0.5), fontSize: 11)),
+        ]),
+      ),
+    );
+  }
+}
+
 class MuscleCompanionApp extends StatelessWidget {
   const MuscleCompanionApp({super.key});
   @override
   Widget build(BuildContext context) {
-    // Dev mode always goes straight to camera — no onboarding
     final Widget home = (AppConfig.devMode || AppConfig.profileCompleted)
-        ? const CameraLevelScreen()
+        ? const HomeScreen()
         : const ProfileSetupScreen();
     return MaterialApp(
-      title: 'Muscle Tracker v3',
+      title: 'GTD3D',
       theme: AppTheme.darkTheme,
       home: home,
       debugShowCheckedModeBanner: false,
@@ -252,8 +255,8 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       profile['gender_factor'] = _gender == 'Male' ? 1.0 : (_gender == 'Female' ? 0.0 : 0.5);
 
       await http.post(
-        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_profile'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $_jwtToken'},
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/body_profile'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $jwtToken'},
         body: jsonEncode(profile),
       ).timeout(const Duration(seconds: 8));
 
@@ -261,8 +264,8 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       final camH = _parse(_camHeightCtrl) ?? 65.0;
       final camD = _parse(_camDistCtrl)   ?? 100.0;
       await http.post(
-        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/devices'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $_jwtToken'},
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/devices'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $jwtToken'},
         body: jsonEncode({
           'device_name': 'Phone',
           'role': 'front',
@@ -275,7 +278,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       AppConfig.profileCompleted = true;
       if (mounted) {
         Navigator.pushReplacement(context,
-            MaterialPageRoute(builder: (_) => const CameraLevelScreen()));
+            MaterialPageRoute(builder: (_) => const HomeScreen()));
       }
     } catch (e) {
       setState(() { _error = 'Could not save profile. Tap Skip to continue.'; });
@@ -338,7 +341,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pushReplacement(context,
-                MaterialPageRoute(builder: (_) => const CameraLevelScreen())),
+                MaterialPageRoute(builder: (_) => const HomeScreen())),
             child: const Text('Skip', style: TextStyle(color: Color(0xFF94A3B8))),
           ),
         ],
@@ -454,71 +457,6 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
 // DEV PANEL — overlaid on CameraLevelScreen in dev mode
 // =============================================================================
 
-class DevPanel extends StatelessWidget {
-  final String customerId;
-  final String? jwtToken;
-  final double cameraDistanceCm;
-  final bool profileCompleted;
-  final VoidCallback? onEditProfile;
-  final VoidCallback? onForceScan;
-
-  const DevPanel({
-    super.key,
-    required this.customerId,
-    this.jwtToken,
-    this.cameraDistanceCm = 75,
-    this.profileCompleted = false,
-    this.onEditProfile,
-    this.onForceScan,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (!AppConfig.devMode) return const SizedBox.shrink();
-    return Positioned(
-      top: 40, right: 8,
-      child: Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.85),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.amber.withOpacity(0.6)),
-        ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('⚙ DEV', style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 11)),
-          const SizedBox(height: 4),
-          Text('ID: $customerId', style: const TextStyle(color: Colors.white70, fontSize: 10)),
-          Text('Dist: ${cameraDistanceCm.round()}cm', style: const TextStyle(color: Colors.white70, fontSize: 10)),
-          Text(
-            'Profile: ${profileCompleted ? "✓" : "✗"}',
-            style: TextStyle(color: profileCompleted ? Colors.greenAccent : Colors.redAccent, fontSize: 10),
-          ),
-          if (jwtToken != null)
-            Text('JWT: ${jwtToken!.length > 8 ? jwtToken!.substring(0, 8) : jwtToken!}…',
-                style: const TextStyle(color: Colors.white38, fontSize: 9)),
-          const SizedBox(height: 6),
-          if (onEditProfile != null)
-            _devBtn('Edit Profile', Colors.teal, onEditProfile!),
-          if (onForceScan != null)
-            _devBtn('Force Scan', Colors.orange, onForceScan!),
-        ]),
-      ),
-    );
-  }
-
-  Widget _devBtn(String label, Color color, VoidCallback onTap) => GestureDetector(
-    onTap: onTap,
-    child: Container(
-      margin: const EdgeInsets.only(top: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(color: color.withOpacity(0.2),
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: color.withOpacity(0.5))),
-      child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.bold)),
-    ),
-  );
-}
-
 // --- LOGIN SCREEN ---
 
 class LoginScreen extends StatefulWidget {
@@ -544,11 +482,11 @@ class _LoginScreenState extends State<LoginScreen> {
       );
       final data = jsonDecode(response.body);
       if (response.statusCode == 200 && data['status'] == 'success') {
-        _jwtToken = data['token'];
-        _customerId = data['customer_id']?.toString() ?? '1';
-        _customerName = data['name'] ?? 'User';
+        jwtToken = data['token'];
+        customerId = data['customer_id']?.toString() ?? '1';
+        customerName = data['name'] ?? 'User';
         if (!mounted) return;
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const CameraLevelScreen()));
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const HomeScreen()));
       } else { setState(() => _error = data['message'] ?? 'Login failed'); }
     } catch (e) { setState(() => _error = 'Network error: $e'); }
     finally { if (mounted) setState(() => _isLoading = false); }
@@ -621,8 +559,8 @@ class _LoginScreenState extends State<LoginScreen> {
         const SizedBox(height: 12),
         SizedBox(width: double.infinity, child: OutlinedButton(
           onPressed: () {
-            _customerId = '1'; _customerName = 'Demo User'; _jwtToken = 'demo';
-            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const CameraLevelScreen()));
+            customerId = '1'; customerName = 'Demo User'; jwtToken = 'demo';
+            Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const HomeScreen()));
           },
           style: OutlinedButton.styleFrom(foregroundColor: Colors.white54, side: const BorderSide(color: Colors.white24)),
           child: const Text('DEMO MODE'),
@@ -830,9 +768,9 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       // We use the serverBaseUrl from AppConfig
       var request = http.MultipartRequest(
         'POST', 
-        Uri.parse('${AppConfig.serverBaseUrl}/api/studio/upload_frame/$_customerId')
+        Uri.parse('${AppConfig.serverBaseUrl}/api/studio/upload_frame/$customerId')
       );
-      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? 'demo'}';
+      request.headers['Authorization'] = 'Bearer ${jwtToken ?? 'demo'}';
       request.files.add(await http.MultipartFile.fromPath('frame', image.path));
       request.fields['metadata'] = jsonEncode(sensorData);
       
@@ -1011,9 +949,9 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       setState(() => _statusMessage = 'Uploading $_selectedSkinRegion...');
       var request = http.MultipartRequest(
         'POST',
-        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/skin_region/$_selectedSkinRegion'),
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/skin_region/$_selectedSkinRegion'),
       );
-      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
+      request.headers['Authorization'] = 'Bearer ${jwtToken ?? ''}';
       request.files.add(await http.MultipartFile.fromPath('image', image.path));
       var streamedResponse = await request.send().timeout(const Duration(seconds: 30));
       var response = await http.Response.fromStream(streamedResponse);
@@ -1080,7 +1018,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Widget _buildSkinGuideOverlay() {
     return Positioned.fill(
       child: IgnorePointer(
-        child: CustomPaint(painter: _SkinGuideOverlayPainter()),
+        child: CustomPaint(painter: SkinGuideOverlayPainter()),
       ),
     );
   }
@@ -1091,7 +1029,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     try {
       final XFile image = await _controller!.takePicture();
       var request = http.MultipartRequest('POST', Uri.parse('${AppConfig.serverBaseUrl}/api/pose_check'));
-      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
+      request.headers['Authorization'] = 'Bearer ${jwtToken ?? ''}';
       request.files.add(await http.MultipartFile.fromPath('image', image.path));
       request.fields['muscle_group'] = _selectedMuscleGroup;
       var streamedResponse = await request.send().timeout(const Duration(seconds: 5));
@@ -1126,8 +1064,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Future<void> _uploadScan() async {
     setState(() { _isUploading = true; _statusMessage = 'Uploading...'; });
     try {
-      var request = http.MultipartRequest('POST', Uri.parse('${AppConfig.serverBaseUrl}/api/upload_scan/$_customerId'));
-      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
+      var request = http.MultipartRequest('POST', Uri.parse('${AppConfig.serverBaseUrl}/api/upload_scan/$customerId'));
+      request.headers['Authorization'] = 'Bearer ${jwtToken ?? ''}';
       request.files.add(await http.MultipartFile.fromPath('front', _frontPath!));
       request.files.add(await http.MultipartFile.fromPath('side', _sidePath!));
       request.fields['muscle_group'] = _selectedMuscleGroup;
@@ -1135,7 +1073,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       var streamedResponse = await request.send().timeout(const Duration(seconds: 30));
       var response = await http.Response.fromStream(streamedResponse);
       if (!mounted) return;
-      if (response.statusCode == 401) { _jwtToken = null; Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen())); return; }
+      if (response.statusCode == 401) { jwtToken = null; Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginScreen())); return; }
       final result = jsonDecode(response.body);
       if (response.statusCode == 200 && result['status'] == 'success') {
         setState(() => _isUploading = false);
@@ -1163,8 +1101,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     try {
       XFile file = await _controller!.stopVideoRecording();
       setState(() { _isRecording = false; _isUploading = true; _statusMessage = 'Processing video...'; });
-      var request = http.MultipartRequest('POST', Uri.parse('${AppConfig.serverBaseUrl}/api/upload_video/$_customerId'));
-      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
+      var request = http.MultipartRequest('POST', Uri.parse('${AppConfig.serverBaseUrl}/api/upload_video/$customerId'));
+      request.headers['Authorization'] = 'Bearer ${jwtToken ?? ''}';
       request.files.add(await http.MultipartFile.fromPath('video', file.path));
       request.fields['muscle_group'] = _selectedMuscleGroup;
       request.fields['camera_distance_cm'] = _cameraDistanceCm.round().toString();
@@ -1367,12 +1305,12 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   Future<void> _uploadFullBodyScan() async {
     if (_fullScanFrames.isEmpty) return;
     try {
-      final uri = Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/body_scan');
+      final uri = Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/body_scan');
       final request = http.MultipartRequest('POST', uri);
 
       // Add auth token if available
-      if (_jwtToken != null) {
-        request.headers['Authorization'] = 'Bearer $_jwtToken';
+      if (jwtToken != null) {
+        request.headers['Authorization'] = 'Bearer $jwtToken';
       }
 
       // Attach frames
@@ -1421,10 +1359,10 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         if (result['session_id'] != null) {
           Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => BodyScanReviewScreen(
-              customerId: int.parse(_customerId ?? '1'),
+              customerId: int.parse(customerId ?? '1'),
               sessionId: result['session_id'],
               serverBaseUrl: AppConfig.serverBaseUrl,
-              token: _jwtToken,
+              token: jwtToken,
             ),
           ));
         }
@@ -1503,11 +1441,11 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     }
     _liveScanStarting = true;
 
-    print('[LIVESCAN] Starting... customerId=$_customerId distMin=$_liveScanDistanceMin distMax=$_liveScanDistanceMax');
-    final uri = Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/live_scan/start');
+    print('[LIVESCAN] Starting... customerId=$customerId distMin=$_liveScanDistanceMin distMax=$_liveScanDistanceMax');
+    final uri = Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/live_scan/start');
     try {
       final resp = await http.post(uri,
-        headers: {'Content-Type': 'application/json', if (_jwtToken != null) 'Authorization': 'Bearer $_jwtToken'},
+        headers: {'Content-Type': 'application/json', if (jwtToken != null) 'Authorization': 'Bearer $jwtToken'},
         body: jsonEncode({'distance_min_m': _liveScanDistanceMin, 'distance_max_m': _liveScanDistanceMax}),
       );
       print('[LIVESCAN] Start response: ${resp.statusCode} ${resp.body.substring(0, resp.body.length.clamp(0, 200))}');
@@ -1553,9 +1491,9 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       }
 
       final uri = Uri.parse(
-        '${AppConfig.serverBaseUrl}/api/customer/$_customerId/live_scan/$_liveScanSessionId/frame');
+        '${AppConfig.serverBaseUrl}/api/customer/$customerId/live_scan/$_liveScanSessionId/frame');
       final request = http.MultipartRequest('POST', uri);
-      if (_jwtToken != null) request.headers['Authorization'] = 'Bearer $_jwtToken';
+      if (jwtToken != null) request.headers['Authorization'] = 'Bearer $jwtToken';
       request.files.add(await http.MultipartFile.fromPath('frame', img.path));
       request.fields['metadata'] = jsonEncode({
         'compass_deg': compassDeg,
@@ -1581,9 +1519,9 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     if (!_liveScanRunning || !mounted) return;
     try {
       final uri = Uri.parse(
-        '${AppConfig.serverBaseUrl}/api/customer/$_customerId/live_scan/$_liveScanSessionId/status');
+        '${AppConfig.serverBaseUrl}/api/customer/$customerId/live_scan/$_liveScanSessionId/status');
       final resp = await http.get(uri, headers: {
-        if (_jwtToken != null) 'Authorization': 'Bearer $_jwtToken',
+        if (jwtToken != null) 'Authorization': 'Bearer $jwtToken',
       });
       final data = jsonDecode(resp.body);
       final pct = (data['coverage_pct'] as num?)?.toDouble() ?? 0;
@@ -1619,11 +1557,11 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
     try {
       final uri = Uri.parse(
-        '${AppConfig.serverBaseUrl}/api/customer/$_customerId/live_scan/$_liveScanSessionId/finalize');
+        '${AppConfig.serverBaseUrl}/api/customer/$customerId/live_scan/$_liveScanSessionId/finalize');
       final client = http.Client();
       final request = http.Request('POST', uri);
       request.headers['Content-Type'] = 'application/json';
-      if (_jwtToken != null) request.headers['Authorization'] = 'Bearer $_jwtToken';
+      if (jwtToken != null) request.headers['Authorization'] = 'Bearer $jwtToken';
       final streamed = await client.send(request).timeout(const Duration(minutes: 5));
       final resp = await http.Response.fromStream(streamed);
       final data = jsonDecode(resp.body);
@@ -1713,8 +1651,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
     setState(() { _profileRunning = false; _profileLocked = false; _isTakingProfileFrame = false; _profileSecondsLeft = 0; _statusMessage = 'Uploading session...'; });
     try {
       var request = http.MultipartRequest(
-        'POST', Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/upload_session'));
-      request.headers['Authorization'] = 'Bearer ${_jwtToken ?? ''}';
+        'POST', Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/upload_session'));
+      request.headers['Authorization'] = 'Bearer ${jwtToken ?? ''}';
       request.fields['muscle_group'] = _selectedMuscleGroup;
       request.fields['camera_distance_cm'] = _cameraDistanceCm.round().toString();
       request.fields['sensor_log'] = jsonEncode(_sensorLog);
@@ -1791,8 +1729,8 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         if (_profileLocked) _buildProfileLockScreen(),
         if (_isUploading && !_autoRunning) _buildUploadOverlay(),
         DevPanel(
-          customerId: _customerId ?? '1',
-          jwtToken: _jwtToken,
+          customerId: customerId ?? '1',
+          jwtToken: jwtToken,
           cameraDistanceCm: _cameraDistanceCm,
           profileCompleted: AppConfig.profileCompleted,
           onEditProfile: () => Navigator.push(context,
@@ -1909,7 +1847,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
       const SizedBox(height: 12),
       if (!_fullScanRunning && !_liveScanRunning)
         ElevatedButton.icon(
-          onPressed: _customerId != null ? _startFullBodyScan : null,
+          onPressed: customerId != null ? _startFullBodyScan : null,
           icon: const Icon(Icons.view_in_ar, size: 28),
           label: const Text('FULL BODY SCAN', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           style: ElevatedButton.styleFrom(
@@ -1923,7 +1861,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
         const SizedBox(height: 8),
       if (!_fullScanRunning && !_liveScanRunning)
         ElevatedButton.icon(
-          onPressed: _customerId != null ? _startLiveScan : null,
+          onPressed: customerId != null ? _startLiveScan : null,
           icon: const Icon(Icons.stream, size: 28),
           label: const Text('LIVE SCAN', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           style: ElevatedButton.styleFrom(
@@ -2158,7 +2096,7 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
   }
 
   void _showProfile() {
-    showDialog(context: context, builder: (c) => AlertDialog(backgroundColor: AppTheme.cardBg, title: Row(children: [const Icon(Icons.account_circle, color: AppTheme.primaryTeal), const SizedBox(width: 12), Text(_customerName ?? 'Profile')]), content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('ID: $_customerId', style: const TextStyle(color: Colors.white70)), const Text('Role: Clinical Data Contributor', style: TextStyle(color: AppTheme.primaryTeal, fontSize: 11))]), actions: [TextButton(onPressed: () { _jwtToken = null; Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false); }, child: const Text('LOGOUT', style: TextStyle(color: AppTheme.accentRed))), TextButton(onPressed: () => Navigator.pop(c), child: const Text('CLOSE'))]));
+    showDialog(context: context, builder: (c) => AlertDialog(backgroundColor: AppTheme.cardBg, title: Row(children: [const Icon(Icons.account_circle, color: AppTheme.primaryTeal), const SizedBox(width: 12), Text(customerName ?? 'Profile')]), content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [Text('ID: $customerId', style: const TextStyle(color: Colors.white70)), const Text('Role: Clinical Data Contributor', style: TextStyle(color: AppTheme.primaryTeal, fontSize: 11))]), actions: [TextButton(onPressed: () { jwtToken = null; Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false); }, child: const Text('LOGOUT', style: TextStyle(color: AppTheme.accentRed))), TextButton(onPressed: () => Navigator.pop(c), child: const Text('CLOSE'))]));
   }
 
   Widget _buildProfileLockScreen() {
@@ -2203,130 +2141,6 @@ class _CameraLevelScreenState extends State<CameraLevelScreen> {
 
 // --- SUPPORTING UI ---
 
-// R-6: Enhanced BodyGuidePainter with colored joint indicators and guidance text
-class BodyGuidePainter extends CustomPainter {
-  final int phase;
-  final String muscleGroup;
-  BodyGuidePainter({required this.phase, this.muscleGroup = 'bicep'});
-
-  static const _guidanceText = {
-    'bicep':     'Flex arm, elbow ~90°, raise to shoulder',
-    'tricep':    'Extend arm back, elbow straight',
-    'quadricep': 'Stand straight, legs together, facing camera',
-    'hamstring': 'Stand straight, back to camera',
-    'calf':      'Stand straight, heels on ground',
-    'glute':     'Stand straight, back to camera',
-    'deltoid':   'Arms at sides, slight abduction',
-    'lat':       'Arms wide, lat spread pose',
-  };
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final outline = Paint()..color = Colors.white.withOpacity(0.1)..style = PaintingStyle.stroke..strokeWidth = 1.0;
-    final jointPrimary   = Paint()..color = AppTheme.primaryTeal.withOpacity(0.7)..style = PaintingStyle.fill;
-    final jointSecondary = Paint()..color = AppTheme.accentGreen.withOpacity(0.6)..style = PaintingStyle.fill;
-    final cx = size.width / 2, cy = size.height / 2;
-
-    if (phase == 0) {
-      // Body outline — front
-      canvas.drawPath(Path()..moveTo(cx - 50, cy - 100)..lineTo(cx - 70, cy - 60)..lineTo(cx - 40, cy + 100)..lineTo(cx + 40, cy + 100)..lineTo(cx + 70, cy - 60)..lineTo(cx + 50, cy - 100)..close(), outline);
-      canvas.drawCircle(Offset(cx, cy - 130), 25, outline);
-      // Joint dots: shoulders (primary), elbows (secondary based on muscle), hips (secondary)
-      canvas.drawCircle(Offset(cx - 52, cy - 62), 6, jointPrimary);   // L shoulder
-      canvas.drawCircle(Offset(cx + 52, cy - 62), 6, jointPrimary);   // R shoulder
-      canvas.drawCircle(Offset(cx - 68, cy - 10), 5, jointSecondary); // L elbow
-      canvas.drawCircle(Offset(cx + 68, cy - 10), 5, jointSecondary); // R elbow
-      canvas.drawCircle(Offset(cx - 38, cy + 2),  5, jointSecondary); // L hip
-      canvas.drawCircle(Offset(cx + 38, cy + 2),  5, jointSecondary); // R hip
-      canvas.drawCircle(Offset(cx - 38, cy + 56), 5, jointSecondary); // L knee
-      canvas.drawCircle(Offset(cx + 38, cy + 56), 5, jointSecondary); // R knee
-    } else {
-      // Body outline — side
-      canvas.drawPath(Path()..moveTo(cx - 15, cy - 100)..lineTo(cx - 25, cy - 60)..lineTo(cx - 20, cy + 100)..lineTo(cx + 20, cy + 100)..lineTo(cx + 35, cy - 60)..lineTo(cx + 15, cy - 100)..close(), outline);
-      canvas.drawCircle(Offset(cx + 5, cy - 130), 24, outline);
-      canvas.drawCircle(Offset(cx + 20, cy - 62), 6, jointPrimary);   // shoulder (side)
-      canvas.drawCircle(Offset(cx + 32, cy - 8),  5, jointSecondary); // elbow (side)
-      canvas.drawCircle(Offset(cx + 10, cy + 2),  5, jointSecondary); // hip (side)
-      canvas.drawCircle(Offset(cx + 12, cy + 56), 5, jointSecondary); // knee (side)
-    }
-
-    // Guidance text strip at top-left
-    final guidance = _guidanceText[muscleGroup] ?? '';
-    if (guidance.isNotEmpty) {
-      final tp = TextPainter(
-        text: TextSpan(text: guidance, style: const TextStyle(color: Color(0xFFB2EBF2), fontSize: 11, fontWeight: FontWeight.w500)),
-        textDirection: TextDirection.ltr,
-      )..layout(maxWidth: size.width - 32);
-      tp.paint(canvas, Offset(16, size.height * 0.62));
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant BodyGuidePainter old) => old.phase != phase || old.muscleGroup != muscleGroup;
-}
-
-class LevelPainter extends CustomPainter {
-  final double pitch, roll; final Color color; LevelPainter({required this.pitch, required this.roll, required this.color});
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, 120);
-    canvas.drawCircle(center, 35, Paint()..color = Colors.white24..style = PaintingStyle.stroke..strokeWidth = 1.0);
-    canvas.drawLine(Offset(center.dx - 35, center.dy), Offset(center.dx + 35, center.dy), Paint()..color = Colors.white10);
-    canvas.drawLine(Offset(center.dx, center.dy - 35), Offset(center.dx, center.dy + 35), Paint()..color = Colors.white10);
-    final b = Offset(center.dx - roll.clamp(-3.0, 3.0) * 10, center.dy - pitch.clamp(-3.0, 3.0) * 10);
-    canvas.drawCircle(b, 10, Paint()..color = color);
-    if (color == AppTheme.accentGreen) canvas.drawCircle(b, 18, Paint()..color = color.withOpacity(0.1));
-  }
-  @override
-  bool shouldRepaint(covariant CustomPainter old) => true;
-}
-
-class GhostOverlayPainter extends CustomPainter {
-  final ui.Image? image; GhostOverlayPainter({this.image});
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (image == null) return;
-    double sw = image!.width.toDouble(), sh = image!.height.toDouble(), dw = size.width, dh = size.height;
-    double scale = (dw / sw > dh / sh) ? dh / sh : dw / sw;
-    double fw = sw * scale, fh = sh * scale, dx = (dw - fw) / 2, dy = (dh - fh) / 2;
-    canvas.drawImageRect(image!, Rect.fromLTWH(0, 0, sw, sh), Rect.fromLTWH(dx, dy, fw, fh), Paint()..color = Colors.white.withOpacity(0.2));
-  }
-  @override
-  bool shouldRepaint(covariant GhostOverlayPainter old) => old.image != image;
-}
-
-class _SkinGuideOverlayPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Draw a centered rectangle guide for skin close-up framing
-    final cx = size.width / 2, cy = size.height / 2;
-    final rw = size.width * 0.6, rh = size.height * 0.35;
-    final rect = Rect.fromCenter(center: Offset(cx, cy), width: rw, height: rh);
-    final paint = Paint()
-      ..color = const Color(0x5500BCD4)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5;
-    canvas.drawRRect(RRect.fromRectAndRadius(rect, const Radius.circular(16)), paint);
-    // Corner highlights
-    final cornerLen = 20.0;
-    final cp = Paint()..color = const Color(0xFF00BCD4)..strokeWidth = 3..style = PaintingStyle.stroke;
-    // Top-left
-    canvas.drawLine(Offset(rect.left, rect.top + cornerLen), rect.topLeft, cp);
-    canvas.drawLine(rect.topLeft, Offset(rect.left + cornerLen, rect.top), cp);
-    // Top-right
-    canvas.drawLine(Offset(rect.right - cornerLen, rect.top), rect.topRight, cp);
-    canvas.drawLine(rect.topRight, Offset(rect.right, rect.top + cornerLen), cp);
-    // Bottom-left
-    canvas.drawLine(Offset(rect.left, rect.bottom - cornerLen), rect.bottomLeft, cp);
-    canvas.drawLine(rect.bottomLeft, Offset(rect.left + cornerLen, rect.bottom), cp);
-    // Bottom-right
-    canvas.drawLine(Offset(rect.right - cornerLen, rect.bottom), rect.bottomRight, cp);
-    canvas.drawLine(rect.bottomRight, Offset(rect.right, rect.bottom - cornerLen), cp);
-  }
-  @override
-  bool shouldRepaint(covariant CustomPainter old) => false;
-}
-
 class ReviewScreen extends StatelessWidget {
   final String frontPath, sidePath; const ReviewScreen({super.key, required this.frontPath, required this.sidePath});
   @override
@@ -2364,8 +2178,8 @@ class _ResultsScreenState extends State<ResultsScreen> {
     setState(() => _downloadingReport = true);
     try {
       final res = await http.post(
-        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/session_report'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${_jwtToken ?? ''}'},
+        Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/session_report'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${jwtToken ?? ''}'},
         body: jsonEncode({'scan_id': scanId}),
       ).timeout(const Duration(seconds: 30));
       if (!mounted) return;
@@ -2440,7 +2254,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                 borderRadius: const BorderRadius.only(bottomLeft: Radius.circular(12), bottomRight: Radius.circular(12)),
                 child: Image.network(
                   '${AppConfig.serverBaseUrl}$annUrl',
-                  headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'},
+                  headers: {'Authorization': 'Bearer ${jwtToken ?? ''}'},
                   fit: BoxFit.contain,
                   errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                 ),
@@ -2691,7 +2505,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   Future<void> _f() async {
     setState(() { _l = true; _e = null; });
     try {
-      final res = await http.get(Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/scans${widget.muscleGroup != null ? "?muscle_group=${widget.muscleGroup}" : ""}'), headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'});
+      final res = await http.get(Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/scans${widget.muscleGroup != null ? "?muscle_group=${widget.muscleGroup}" : ""}'), headers: {'Authorization': 'Bearer ${jwtToken ?? ''}'});
       final d = jsonDecode(res.body);
       if (res.statusCode == 200 && d['status'] == 'success') setState(() { _s = d['scans']; _l = false; });
       else setState(() { _e = d['message'] ?? 'Load failed'; _l = false; });
@@ -2737,7 +2551,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
   Future<void> _f() async {
     setState(() { _l = true; _e = null; });
     try {
-      final res = await http.get(Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/progress${widget.muscleGroup != null ? "?muscle_group=${widget.muscleGroup}" : ""}'), headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'});
+      final res = await http.get(Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/progress${widget.muscleGroup != null ? "?muscle_group=${widget.muscleGroup}" : ""}'), headers: {'Authorization': 'Bearer ${jwtToken ?? ''}'});
       final data = jsonDecode(res.body);
       if (res.statusCode == 200 && data['status'] == 'success') setState(() { _d = data; _l = false; });
       else setState(() { _e = data['message'] ?? 'Load failed'; _l = false; });
@@ -2789,7 +2603,7 @@ class _HealthLogScreenState extends State<HealthLogScreen> {
     if (!_fk.currentState!.validate()) return;
     setState(() => _sub = true);
     try {
-      final res = await http.post(Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/health_log'), headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${_jwtToken ?? ''}'}, body: jsonEncode({'calories_in': int.tryParse(_cals.text) ?? 0, 'protein_g': int.tryParse(_pro.text) ?? 0, 'carbs_g': int.tryParse(_carb.text) ?? 0, 'fat_g': int.tryParse(_fat.text) ?? 0, 'water_ml': int.tryParse(_wat.text) ?? 0, 'activity_type': _at.text, 'activity_duration_min': int.tryParse(_ad.text) ?? 0, 'sleep_hours': double.tryParse(_slp.text) ?? 0.0, 'body_weight_kg': double.tryParse(_wt.text) ?? 0.0, 'notes': _nts.text}));
+      final res = await http.post(Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/health_log'), headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${jwtToken ?? ''}'}, body: jsonEncode({'calories_in': int.tryParse(_cals.text) ?? 0, 'protein_g': int.tryParse(_pro.text) ?? 0, 'carbs_g': int.tryParse(_carb.text) ?? 0, 'fat_g': int.tryParse(_fat.text) ?? 0, 'water_ml': int.tryParse(_wat.text) ?? 0, 'activity_type': _at.text, 'activity_duration_min': int.tryParse(_ad.text) ?? 0, 'sleep_hours': double.tryParse(_slp.text) ?? 0.0, 'body_weight_kg': double.tryParse(_wt.text) ?? 0.0, 'notes': _nts.text}));
       if (res.statusCode == 200 || res.statusCode == 201) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Log saved'))); Navigator.pop(context); }
       else { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ${jsonDecode(res.body)['message']}'))); }
     } catch (e) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Network error: $e'))); }
@@ -2838,7 +2652,7 @@ class _HealthLogListScreenState extends State<HealthLogListScreen> {
   void initState() { super.initState(); _f(); }
   Future<void> _f() async {
     try {
-      final res = await http.get(Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/health_logs'), headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'});
+      final res = await http.get(Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/health_logs'), headers: {'Authorization': 'Bearer ${jwtToken ?? ''}'});
       final d = jsonDecode(res.body);
       if (res.statusCode == 200 && d['status'] == 'success') setState(() { _logs = d['logs']; _l = false; });
       else setState(() { _l = false; });
@@ -2882,7 +2696,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       if (res.statusCode == 200 || res.statusCode == 201) {
         final lres = await http.post(Uri.parse('${AppConfig.serverBaseUrl}/api/auth/token'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'email': _em.text.trim()}));
         final ld = jsonDecode(lres.body);
-        if (lres.statusCode == 200) { _jwtToken = ld['token']; _customerId = ld['customer_id']?.toString() ?? '1'; _customerName = ld['name'] ?? _name.text; Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const CameraLevelScreen()), (r) => false); }
+        if (lres.statusCode == 200) { jwtToken = ld['token']; customerId = ld['customer_id']?.toString() ?? '1'; customerName = ld['name'] ?? _name.text; Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const HomeScreen()), (r) => false); }
       } else { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(jsonDecode(res.body)['message'] ?? 'Failed'))); }
     } catch (e) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'))); }
     finally { if (mounted) setState(() => _l = false); }
@@ -2907,7 +2721,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
 class ReportViewerScreen extends StatelessWidget {
   final int scanId; const ReportViewerScreen({super.key, required this.scanId});
-  Future<Uint8List> _f() async { final r = await http.get(Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$_customerId/report/$scanId'), headers: {'Authorization': 'Bearer ${_jwtToken ?? ''}'}); if (r.statusCode == 200) return r.bodyBytes; throw Exception('Error ${r.statusCode}'); }
+  Future<Uint8List> _f() async { final r = await http.get(Uri.parse('${AppConfig.serverBaseUrl}/api/customer/$customerId/report/$scanId'), headers: {'Authorization': 'Bearer ${jwtToken ?? ''}'}); if (r.statusCode == 200) return r.bodyBytes; throw Exception('Error ${r.statusCode}'); }
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2980,7 +2794,7 @@ class _LivePreviewScreenState extends State<LivePreviewScreen> {
       final b64 = base64Encode(bytes);
       final res = await http.post(
         Uri.parse('${AppConfig.serverBaseUrl}/api/live_analyze'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${_jwtToken ?? ''}'},
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${jwtToken ?? ''}'},
         body: jsonEncode({'image_b64': b64, 'muscle_group': _selectedMuscleGroup}),
       ).timeout(const Duration(seconds: 3));
       if (!mounted) return;
@@ -3156,32 +2970,6 @@ class _LivePreviewScreenState extends State<LivePreviewScreen> {
   ]);
 }
 
-// --- R-5: CONTOUR OVERLAY PAINTER ---
-
-class ContourOverlayPainter extends CustomPainter {
-  final List<List<double>> points;
-  final Color color;
-  const ContourOverlayPainter({required this.points, this.color = const Color(0xFF00E5FF)});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (points.isEmpty) return;
-    final stroke = Paint()..color = color.withOpacity(0.85)..style = PaintingStyle.stroke..strokeWidth = 2.0;
-    final fill   = Paint()..color = color.withOpacity(0.07)..style  = PaintingStyle.fill;
-    final path = Path()..moveTo(points[0][0], points[0][1]);
-    for (int i = 1; i < points.length; i++) { path.lineTo(points[i][0], points[i][1]); }
-    path.close();
-    canvas.drawPath(path, fill);
-    canvas.drawPath(path, stroke);
-    // Corner dots
-    final dot = Paint()..color = color..style = PaintingStyle.fill;
-    for (final p in points) { canvas.drawCircle(Offset(p[0], p[1]), 3.0, dot); }
-  }
-
-  @override
-  bool shouldRepaint(covariant ContourOverlayPainter old) => old.points != points || old.color != color;
-}
-
 // ── 3D Model Viewer (WebView) ─────────────────────────────────────────────────
 
 class ModelViewerScreen extends StatefulWidget {
@@ -3208,7 +2996,7 @@ class _ModelViewerScreenState extends State<ModelViewerScreen> {
       ..loadRequest(Uri.parse(
         '${AppConfig.serverBaseUrl}/static/viewer3d/index.html'
         '?model=/api/mesh/${widget.meshId}.glb'
-        '&customer=${_customerId ?? "1"}'
+        '&customer=${customerId ?? "1"}'
       ));
   }
 
