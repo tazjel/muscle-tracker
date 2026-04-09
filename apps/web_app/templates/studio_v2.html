@@ -33,16 +33,36 @@
         <div class="panel" id="panel-camera">
             <div class="panel-header">CAMERA FEED <span class="arrow">&#9662;</span></div>
             <div class="panel-body">
-                <div id="camera-status" style="padding:8px 0;">
-                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-                        <span style="width:8px;height:8px;border-radius:50%;background:#ef4444;display:inline-block;"></span>
-                        <span>MatePad: Disconnected</span>
-                    </div>
-                    <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px;">IP: 192.168.100.2</div>
-                    <button class="btn" disabled title="Start GTD3D APK on MatePad">Connect</button>
-                    <div style="margin-top:12px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.1);border-radius:4px;padding:24px;text-align:center;color:var(--text-dim);font-size:12px;">No frames received</div>
-                    <div style="margin-top:8px;font-size:11px;color:var(--text-dim);">0 frames captured</div>
+                <!-- Camera connection status — populated by ScanPanel.init() -->
+                <div id="camera-status" style="padding:8px 0;"></div>
+            </div>
+        </div>
+
+        <div class="panel" id="panel-scan-upload">
+            <div class="panel-header">UPLOAD SCAN <span class="arrow">&#9662;</span></div>
+            <div class="panel-body">
+                <!-- Upload form — populated by ScanPanel.init() -->
+                <div id="scan-upload-section"></div>
+            </div>
+        </div>
+
+        <div class="panel" id="panel-scan-history">
+            <div class="panel-header">SCAN HISTORY <span class="arrow">&#9662;</span></div>
+            <div class="panel-body">
+                <!-- Scan list — populated by ScanPanel.init() -->
+                <div id="scan-history-list">
+                    <div class="empty-state">Select a customer to view scans</div>
                 </div>
+            </div>
+        </div>
+
+        <div class="panel" id="panel-device-status">
+            <div class="panel-header">DEVICE BRIDGE <span class="arrow">&#9662;</span></div>
+            <div class="panel-body">
+                <!-- Device status — populated by DevicePanel.init() -->
+                <div id="device-status-section"></div>
+                <!-- Action buttons (Pose Check, Classify) — populated by DevicePanel.init() -->
+                <div id="device-actions-section"></div>
             </div>
         </div>
 
@@ -137,14 +157,43 @@
                     <div style="border-top:1px solid rgba(255,255,255,0.08);margin:8px 0;"></div>
                     <button class="btn" id="btn-request-hd" style="width:100%;">Request HD (RunPod)</button>
                     <div style="margin-top:8px;font-size:11px;color:var(--text-dim);">HD uses RunPod GPU — ~$0.12, ~45s</div>
+                    <!-- 3D Reconstruction — populated by RenderPanel.init() -->
+                    <div id="render-reconstruct-section"></div>
                 </div>
+            </div>
+        </div>
+
+        <div class="panel" id="panel-render-meshes">
+            <div class="panel-header">3D MESHES <span class="arrow">&#9662;</span></div>
+            <div class="panel-body">
+                <!-- Mesh list — populated by RenderPanel.init() -->
+                <div id="render-mesh-list">
+                    <div class="empty-state">Select a customer to view meshes</div>
+                </div>
+                <!-- Body composition + GPU status — populated by RenderPanel.init() -->
+                <div id="render-bodycomp-section"></div>
+                <div id="render-gpu-status"></div>
             </div>
         </div>
 
         <div class="panel" id="panel-progress-report">
             <div class="panel-header">PROGRESS <span class="arrow">&#9662;</span></div>
             <div class="panel-body">
+                <!-- RunPod / Reconstruction job tracker -->
+                <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:4px;">HD Render Job</div>
                 <div id="runpod-stats" style="font-size:13px;color:var(--text-dim);">No HD render requested yet.</div>
+
+                <!-- Customer progress summary — populated on customer-selected -->
+                <div style="border-top:1px solid rgba(255,255,255,0.08);margin:10px 0 6px;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);">Body Changes</div>
+                <div id="progress-customer-data" style="color:var(--text-dim);font-size:12px;">Select a customer to view progress.</div>
+
+                <!-- Scan timeline -->
+                <div style="border-top:1px solid rgba(255,255,255,0.08);margin:10px 0 6px;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);">Scan Timeline</div>
+                <div id="progress-scan-timeline" style="color:var(--text-dim);font-size:12px;">—</div>
+
+                <!-- Health log -->
+                <div style="border-top:1px solid rgba(255,255,255,0.08);margin:10px 0 6px;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);">Health Log</div>
+                <div id="progress-health-log" style="color:var(--text-dim);font-size:12px;">Select a customer to view health log.</div>
             </div>
         </div>
 

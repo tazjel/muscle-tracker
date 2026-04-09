@@ -133,10 +133,10 @@ const Studio = {
     // Maps each nav tab to the panel IDs it should show in left and right sidebars.
     // Customer panels (first 2 .panel elements in left sidebar) are always visible.
     _NAV_PANELS: {
-        'scan':     { left: ['panel-camera'],    right: [] },
+        'scan':     { left: ['panel-camera', 'panel-scan-upload', 'panel-scan-history', 'panel-device-status'], right: [] },
         'mesh':     { left: ['panel-mesh-info'], right: [] },
         'texture':  { left: [],                  right: ['panel-texture-checklist'] },
-        'render':   { left: [],                  right: ['panel-render-controls'] },
+        'render':   { left: [],                  right: ['panel-render-controls', 'panel-render-meshes'] },
         'progress': { left: [],                  right: ['panel-progress-report'] },
         '3dgs':     { left: ['panel-3dgs-upload'],   right: ['panel-3dgs-status'] },
         'lhm':      { left: ['panel-lhm-upload'],    right: ['panel-lhm-status'] },
