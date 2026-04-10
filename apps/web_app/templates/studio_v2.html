@@ -22,7 +22,10 @@
         <a href="#" data-nav="multi-capture">Multi-Cap</a>
     </div>
     <span class="spacer"></span>
-    <span style="font-size:12px;color:var(--text-dim);">Dev Mode</span>
+    <button id="mock-mode-toggle" onclick="Studio.toggleMockMode()"
+        style="font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.06);color:var(--text-dim);cursor:pointer;">
+        Mock
+    </button>
 </div>
 
 <!-- Main Layout -->
@@ -83,6 +86,7 @@
         <div class="panel" id="panel-3dgs-upload">
             <div class="panel-header">3DGS — VIDEO UPLOAD <span class="arrow">&#9662;</span></div>
             <div class="panel-body">
+                <div id="3dgs-mode-banner"></div>
                 <div id="3dgs-upload-area">
                     <div style="border:2px dashed rgba(255,255,255,0.15);border-radius:8px;padding:24px;text-align:center;color:var(--text-dim);font-size:12px;cursor:pointer;" id="3dgs-dropzone">
                         Drop video here or click to upload
@@ -96,6 +100,7 @@
         <div class="panel" id="panel-lhm-upload">
             <div class="panel-header">LHM — PHOTO UPLOAD <span class="arrow">&#9662;</span></div>
             <div class="panel-body">
+                <div id="lhm-mode-banner"></div>
                 <div id="lhm-upload-area">
                     <div style="border:2px dashed rgba(255,255,255,0.15);border-radius:8px;padding:24px;text-align:center;color:var(--text-dim);font-size:12px;cursor:pointer;" id="lhm-dropzone">
                         Drop a photo here or click to upload
@@ -109,6 +114,7 @@
         <div class="panel" id="panel-multi-capture-devices">
             <div class="panel-header">DEVICES <span class="arrow">&#9662;</span></div>
             <div class="panel-body">
+                <div id="multi-capture-mode-banner"></div>
                 <div id="multi-capture-devices">Loading devices...</div>
             </div>
         </div>

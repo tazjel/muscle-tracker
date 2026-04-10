@@ -18,7 +18,7 @@ const ReportPanel = {
 
         const { ok, data } = await Studio.apiGet(`/api/customer/${customerId}/health_logs`);
         if (!ok) {
-            el.innerHTML = '<div class="empty-state" style="color:var(--error);">Failed to load health logs</div>';
+            el.innerHTML = '<div class="empty-state" style="color:var(--error);">Backend unavailable — start py4web or enable Mock mode</div>';
             return;
         }
         this._renderHealthLogs(el, customerId, data.logs || data || []);

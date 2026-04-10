@@ -11,8 +11,15 @@ const MultiCapturePanel = {
     captures: [],
 
     init() {
+        this._renderModeBanner();
         this._renderDevices();
         this._setupButtons();
+    },
+
+    _renderModeBanner() {
+        const el = document.getElementById('multi-capture-mode-banner');
+        if (!el) return;
+        el.innerHTML = '<div style="padding:8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:4px;font-size:11px;color:#ef4444;margin-bottom:8px;">Requires backend — enable Live mode and start py4web</div>';
     },
 
     _renderDevices() {

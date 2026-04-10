@@ -10,6 +10,13 @@ const GaussianPanel = {
     init() {
         this._setupDropzone();
         this._setupButtons();
+        this._renderModeBanner();
+    },
+
+    _renderModeBanner() {
+        const el = document.getElementById('3dgs-mode-banner');
+        if (!el) return;
+        el.innerHTML = '<div style="padding:8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:4px;font-size:11px;color:#ef4444;margin-bottom:8px;">Requires backend — enable Live mode and start py4web</div>';
     },
 
     _setupDropzone() {

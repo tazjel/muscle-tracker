@@ -17,27 +17,37 @@ const BodyScanPanel = {
     async loadSessions(customerId) {
         const el = document.getElementById('body-scan-list');
         if (!el) return;
+
+        if (Studio.MOCK_MODE) {
+            this.sessions = [];
+            this._renderSessionList(customerId);
+            return;
+        }
+
         el.innerHTML = '<div class="empty-state">Loading…</div>';
 
         const { ok, data } = await Studio.apiGet(`/api/customer/${customerId}/scans`);
         if (!ok) {
-            // API may not expose a list endpoint — render empty state with actions
-            this.sessions = [];
-        } else {
-            // Filter to body_scan type if the response mixes scan types
-            const raw = data.sessions || data.scans || data || [];
-            this.sessions = raw.filter(s => !s.type || s.type === 'body_scan');
+            el.innerHTML = '<div class="empty-state" style="color:var(--error);">Backend unavailable — start py4web or enable Mock mode</div>';
+            return;
         }
+        // Filter to body_scan type if the response mixes scan types
+        const raw = data.sessions || data.scans || data || [];
+        this.sessions = raw.filter(s => !s.type || s.type === 'body_scan');
         this._renderSessionList(customerId);
     },
 
     async startNewSession(customerId) {
+        if (Studio.MOCK_MODE) {
+            Studio.log('Mock mode — backend required to start scan session', 'error');
+            return;
+        }
         const btn = document.getElementById('bsp-start-btn');
         if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
 
         const { ok, data } = await Studio.apiPost(`/api/customer/${customerId}/body_scan`, {});
         if (!ok) {
-            Studio.log(`Failed to start scan session: ${(data && data.error) || 'Unknown'}`, 'error');
+            Studio.log(`Backend unavailable: ${(data && data.error) || 'start py4web or enable Mock mode'}`, 'error');
             if (btn) { btn.disabled = false; btn.textContent = 'Start New Session'; }
             return;
         }

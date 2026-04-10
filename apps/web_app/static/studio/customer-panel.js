@@ -12,9 +12,18 @@ const CustomerPanel = {
     },
 
     async loadCustomers() {
+        if (Studio.MOCK_MODE) {
+            this.customers = [
+                { id: 1, name: 'Alice Demo', email: 'alice@demo.com', scan_count: 3 },
+                { id: 2, name: 'Bob Demo', email: 'bob@demo.com', scan_count: 1 },
+            ];
+            this.filteredCustomers = this.customers;
+            this._renderList();
+            return;
+        }
         const { ok, data } = await Studio.apiGet('/api/customers');
         if (!ok) {
-            this._renderError('Failed to load customers');
+            this._renderError('Backend unavailable — start py4web or enable Mock mode');
             return;
         }
         this.customers = data.customers || data || [];
@@ -80,10 +89,12 @@ const CustomerPanel = {
     async select(id) {
         const customer = this.customers.find(c => c.id === id);
         if (!customer) return;
-        // Fetch full profile
-        const { ok, data } = await Studio.apiGet(`/api/customer/${id}/body_profile`);
-        if (ok) {
-            customer.profile = data;
+        if (!Studio.MOCK_MODE) {
+            // Fetch full profile
+            const { ok, data } = await Studio.apiGet(`/api/customer/${id}/body_profile`);
+            if (ok) {
+                customer.profile = data;
+            }
         }
         Studio.selectCustomer(customer);
         this._renderList();

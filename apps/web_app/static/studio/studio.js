@@ -213,6 +213,21 @@ const Studio = {
         if (el) el.textContent = `${ts} ${msg}`;
     },
 
+    // --- Mock/Live toggle ---
+    toggleMockMode() {
+        this.MOCK_MODE = !this.MOCK_MODE;
+        const btn = document.getElementById('mock-mode-toggle');
+        if (btn) {
+            btn.textContent = this.MOCK_MODE ? 'Mock' : 'Live';
+            btn.style.color = this.MOCK_MODE ? 'var(--text-dim)' : 'var(--accent, #4caf50)';
+            btn.style.borderColor = this.MOCK_MODE ? 'rgba(255,255,255,0.2)' : 'var(--accent, #4caf50)';
+        }
+        this.log(`Mode: ${this.MOCK_MODE ? 'Mock (no backend)' : 'Live (py4web required)'}`);
+        // Re-init panels that respond to MOCK_MODE
+        if (typeof CustomerPanel !== 'undefined') CustomerPanel.loadCustomers();
+        if (typeof RenderPanel !== 'undefined') { RenderPanel._renderMeshList(); RenderPanel._renderGpuStatus(); RenderPanel._startGpuPoll(); }
+    },
+
     // --- Viewport helpers ---
     showInViewport(type, url) {
         document.dispatchEvent(new CustomEvent('viewport-load', { detail: { type, url } }));
