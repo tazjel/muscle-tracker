@@ -35,6 +35,9 @@ import 'screens/profile_setup_screen.dart';
 import 'screens/live_preview_screen.dart';
 import 'screens/model_viewer_screen.dart';
 import 'screens/body_scan_review_screen.dart';
+import 'services/api_service.dart';
+import 'services/camera_service.dart';
+import 'services/sensor_service.dart';
 
 late List<CameraDescription> _cameras;
 
@@ -127,13 +130,11 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _currentTab = 0;
 
-  // Shared camera + sensor state owned by HomeScreen, passed to all tabs
-  CameraController? _controller;
-  StreamSubscription<AccelerometerEvent>? _sensorSubscription;
+  // Services own camera + sensor state; HomeScreen reads from them
+  final _cameraService = CameraService.instance;
+  final _sensorService = SensorService.instance;
+
   double _pitch = 0.0, _roll = 0.0;
-  double _filteredPitch = 0.0, _filteredRoll = 0.0;
-  static const double _smoothingFactor = 0.15;
-  final Map<String, dynamic> _latestSensor = {};
   final List<Map<String, dynamic>> _sensorLog = [];
 
   static const _tabLabels = ['Camera', 'Body Scan', 'Live Scan', 'Skin', 'Multi-Cap'];
@@ -153,34 +154,27 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _initCamera() async {
-    if (_cameras.isEmpty) return;
-    final cam = _cameras.firstWhere(
-      (c) => c.lensDirection == CameraLensDirection.back,
-      orElse: () => _cameras.first,
-    );
-    _controller = CameraController(cam, ResolutionPreset.max, enableAudio: false);
     try {
-      await _controller!.initialize();
+      await _cameraService.initialize();
       if (mounted) setState(() {});
     } catch (_) {}
   }
 
   void _initSensors() {
-    _sensorSubscription = accelerometerEventStream().listen((event) {
+    _sensorService.start();
+    _sensorService.pitch.addListener(() {
       if (!mounted) return;
-      _filteredPitch += (event.y - _filteredPitch) * _smoothingFactor;
-      _filteredRoll += (event.x - _filteredRoll) * _smoothingFactor;
-      setState(() { _pitch = _filteredPitch; _roll = _filteredRoll; });
-      _latestSensor['accel_x'] = event.x;
-      _latestSensor['accel_y'] = event.y;
-      _latestSensor['accel_z'] = event.z;
+      setState(() { _pitch = _sensorService.pitch.value; _roll = _sensorService.roll.value; });
+    });
+    _sensorService.roll.addListener(() {
+      if (!mounted) return;
+      setState(() { _pitch = _sensorService.pitch.value; _roll = _sensorService.roll.value; });
     });
   }
 
   @override
   void dispose() {
-    _controller?.dispose();
-    _sensorSubscription?.cancel();
+    _sensorService.stop();
     super.dispose();
   }
 
@@ -195,42 +189,44 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_controller == null || !_controller!.value.isInitialized) {
+    final controller = _cameraService.controller;
+    if (controller == null || !controller.value.isInitialized) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator(color: AppTheme.primaryTeal)),
       );
     }
+    final latestSensor = _sensorService.latestValues;
     return Scaffold(
       body: IndexedStack(
         index: _currentTab,
         children: [
           CameraTab(
-            controller: _controller!,
+            controller: controller,
             pitch: _pitch,
             roll: _roll,
-            latestSensor: _latestSensor,
+            latestSensor: latestSensor,
             onSaveLatestScan: _saveLatestScan,
           ),
           BodyScanTab(
-            controller: _controller!,
+            controller: controller,
             pitch: _pitch,
             roll: _roll,
-            latestSensor: _latestSensor,
+            latestSensor: latestSensor,
           ),
           LiveScanTab(
-            controller: _controller!,
+            controller: controller,
             pitch: _pitch,
             roll: _roll,
-            latestSensor: _latestSensor,
+            latestSensor: latestSensor,
           ),
           SkinTab(
-            controller: _controller!,
+            controller: controller,
           ),
           MultiCaptureTab(
-            controller: _controller!,
+            controller: controller,
             pitch: _pitch,
             roll: _roll,
-            latestSensor: _latestSensor,
+            latestSensor: latestSensor,
             sensorLog: _sensorLog,
             selectedMuscleGroup: 'quadricep',
             cameraDistanceCm: 75.0,

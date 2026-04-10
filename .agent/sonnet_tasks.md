@@ -68,7 +68,7 @@ Goal: Fill the 3 stub service files (currently 6 lines each) with real implement
 
 ### Tasks
 
-- [ ] **3B.1 — Implement api_service.dart**
+- [x] **3B.1 — Implement api_service.dart**
   Current: 6-line stub. Target: ~150-200 lines.
   - Singleton pattern: `static final ApiService instance = ApiService._();`
   - Base URL from `AppConfig.serverBaseUrl`, JWT from `AppConfig.jwtToken`
@@ -79,7 +79,7 @@ Goal: Fill the 3 stub service files (currently 6 lines each) with real implement
   - Extract repeated `http.get(Uri.parse('${AppConfig.serverBaseUrl}/...')` patterns
   - **Don't**: Add retry logic, caching, interceptors, or anything not already in the codebase.
 
-- [ ] **3B.2 — Implement camera_service.dart + sensor_service.dart**
+- [x] **3B.2 — Implement camera_service.dart + sensor_service.dart**
   **camera_service.dart** (~80-100 lines):
   - Singleton owning `CameraController`
   - `Future<void> initialize(ResolutionPreset preset)` — init camera
@@ -93,7 +93,7 @@ Goal: Fill the 3 stub service files (currently 6 lines each) with real implement
   - Expose `ValueNotifier<double> pitch` and `ValueNotifier<double> roll`
   - Grep `accelerometer\|gyroscope\|magnetometer` to find current subscription patterns
 
-- [ ] **3B.3 — Wire services into HomeScreen + verify build**
+- [x] **3B.3 — Wire services into HomeScreen + wire build**
   - In `_HomeScreenState`: replace direct CameraController creation with `CameraService.instance`
   - Replace direct sensor subscriptions with `SensorService.instance`
   - Replace direct HTTP calls with `ApiService.instance.get/post`

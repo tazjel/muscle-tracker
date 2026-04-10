@@ -5,6 +5,23 @@
 
 <!-- Updates will appear below, newest first -->
 
+## [2026-04-10] Wave 3B Update
+
+### Task 3B.1 — Implement api_service.dart
+- Status: done
+- Files changed: `services/api_service.dart`
+- Notes: Singleton with `get()`, `post()`, `uploadImage()`, `uploadMultipart()`, `getRaw()`, `postRaw()`. Uses `AppConfig.serverBaseUrl` and `jwtToken` from config.dart. Mirrors MultipartRequest patterns found in tabs/.
+
+### Task 3B.2 — Implement camera_service.dart + sensor_service.dart
+- Status: done
+- Files changed: `services/camera_service.dart`, `services/sensor_service.dart`
+- Notes: CameraService: singleton owning CameraController, `initialize()`, `capture()`, `toggleTorch()`, `dispose()`. SensorService: singleton with `ValueNotifier<double> pitch/roll`, `latestValues` map, `start()`/`stop()`/`dispose()`. Both mirror patterns from main.dart HomeScreen.
+
+### Task 3B.3 — Wire services into HomeScreen + verify build
+- Status: done
+- Files changed: `companion_app/lib/main.dart`
+- Notes: HomeScreen now delegates camera init to `CameraService.instance` and sensors to `SensorService.instance`. `_latestSensor` replaced with `_sensorService.latestValues`. Tabs still receive CameraController as param (passed from service). Build verified: `✓ Built build/app/outputs/flutter-apk/app-debug.apk`
+
 ## [2026-04-10] Wave 3A Update
 
 ### Task 3A.1 — Extract simple screens (6 classes)
