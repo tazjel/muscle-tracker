@@ -5,6 +5,33 @@
 
 <!-- Updates will appear below, newest first -->
 
+## [2026-04-10] Wave 3A Update
+
+### Task 3A.1 — Extract simple screens (6 classes)
+- Status: done
+- Files changed: `screens/review_screen.dart`, `screens/report_viewer_screen.dart`, `screens/profile_progress_screen.dart`, `screens/register_screen.dart`, `screens/health_log_screen.dart`
+- Notes: RegisterScreen uses `Navigator.pushNamedAndRemoveUntil(context, '/home', ...)` to avoid circular import with main.dart. Both HealthLogScreen and HealthLogListScreen in one file.
+
+### Task 3A.2 — Extract medium screens (4 classes)
+- Status: done
+- Files changed: `screens/login_screen.dart`, `screens/results_screen.dart`, `screens/progress_screen.dart`, `screens/history_screen.dart`
+- Notes: LoginScreen uses named route `/home` instead of direct HomeScreen import. ResultsScreen imports its cross-screen dependencies (LivePreviewScreen, HistoryScreen, etc.) from the screens/ folder.
+
+### Task 3A.3 — Extract complex screens (3 classes)
+- Status: done
+- Files changed: `screens/profile_setup_screen.dart`, `screens/live_preview_screen.dart`, `screens/model_viewer_screen.dart`
+- Notes: ProfileSetupScreen and LivePreviewScreen use named route `/home`. LivePreviewScreen initializes its own camera via `availableCameras()` (independent of global `_cameras`).
+
+### Task 3A.4 — Extract BodyScanReview + RegionRecapture
+- Status: done
+- Files changed: `screens/body_scan_review_screen.dart`
+- Notes: Both classes in one file. `_RegionRecaptureScreen` renamed to `RegionRecaptureScreen` (public). Internal reference in BodyScanReviewScreen updated to use `RegionRecaptureScreen`.
+
+### Task 3A.5 — Update imports + verify build
+- Status: done
+- Files changed: `companion_app/lib/main.dart`
+- Notes: main.dart reduced from 2,074 lines to 275 lines. All 14 screen imports added. Named routes map added (`/home`). Build succeeded: `✓ Built build/app/outputs/flutter-apk/app-debug.apk`
+
 ## [2026-04-10] Wave 3C Update
 
 ### Task 3C.1 — Add MOCK_MODE toggle UI

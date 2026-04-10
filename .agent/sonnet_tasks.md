@@ -16,7 +16,7 @@ Goal: Extract 15 screen classes from `companion_app/lib/main.dart` (2,074 lines)
 
 ### Tasks
 
-- [ ] **3A.1 — Extract simple screens (6 classes)**
+- [x] **3A.1 — Extract simple screens (6 classes)**
   Extract these stateless/simple screens into `companion_app/lib/screens/`:
   - `ReviewScreen` → `review_screen.dart`
   - `ReportViewerScreen` → `report_viewer_screen.dart`
@@ -28,7 +28,7 @@ Goal: Extract 15 screen classes from `companion_app/lib/main.dart` (2,074 lines)
   **Don't**: Add new imports, refactor logic, add comments, or change any behavior.
   **Verify**: `Grep "class ReviewScreen" companion_app/lib/screens/review_screen.dart` confirms extraction.
 
-- [ ] **3A.2 — Extract medium screens (4 classes)**
+- [x] **3A.2 — Extract medium screens (4 classes)**
   - `LoginScreen` → `login_screen.dart`
   - `ResultsScreen` → `results_screen.dart`
   - `ProgressScreen` → `progress_screen.dart`
@@ -36,19 +36,19 @@ Goal: Extract 15 screen classes from `companion_app/lib/main.dart` (2,074 lines)
   
   **Same process**: Read class boundaries with Grep, extract, remove from main.dart.
 
-- [ ] **3A.3 — Extract complex screens (3 classes)**
+- [x] **3A.3 — Extract complex screens (3 classes)**
   - `ProfileSetupScreen` → `profile_setup_screen.dart` (~270 lines, has form logic)
   - `LivePreviewScreen` → `live_preview_screen.dart` (~220 lines, has camera logic)
   - `ModelViewerScreen` → `model_viewer_screen.dart` (~55 lines)
   
   **Warning**: ProfileSetupScreen and LivePreviewScreen are large. Read their full class boundaries carefully before extracting.
 
-- [ ] **3A.4 — Extract BodyScanReview + RegionRecapture**
+- [x] **3A.4 — Extract BodyScanReview + RegionRecapture**
   - `BodyScanReviewScreen` + `_RegionRecaptureScreen` → `body_scan_review_screen.dart`
   - These two are tightly coupled (RegionRecapture is used inside BodyScanReview). Keep in same file.
   - Rename `_RegionRecaptureScreen` to `RegionRecaptureScreen` (remove private prefix since it's now in its own file, but keep it package-private by not exporting).
 
-- [ ] **3A.5 — Update imports + verify build**
+- [x] **3A.5 — Update imports + verify build**
   - In `main.dart`: add `import 'screens/xxx.dart';` for each extracted file
   - In `main.dart`: verify route table still references correct class names
   - Run: `cd C:/Users/MiEXCITE/Projects/gtd3d/companion_app && rtk flutter.bat build apk --debug`
