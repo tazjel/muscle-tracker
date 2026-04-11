@@ -9,6 +9,7 @@ from . import profile_controller
 from . import body_model_controller
 from . import studio_controller
 from . import body_scan_controller
+from . import lhm_controller
 
 from py4web import action
 @action('ping')
