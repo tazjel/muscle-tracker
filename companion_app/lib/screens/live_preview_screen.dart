@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import '../config.dart';
+import '../services/secure_delete.dart';
 import '../widgets/level_painter.dart';
 
 class LivePreviewScreen extends StatefulWidget {
@@ -107,6 +108,10 @@ class _LivePreviewScreenState extends State<LivePreviewScreen> {
       final file = File('${dir.path}/live_${DateTime.now().millisecondsSinceEpoch}.jpg');
       await file.writeAsBytes(_lockedFrameBytes!);
       await Share.shareXFiles([XFile(file.path)], text: 'Muscle Tracker Live Measure');
+      // Privacy: delete temp file after sharing
+      await SecureDelete.path(file.path);
+      // Clear in-memory bytes
+      if (mounted) setState(() => _lockedFrameBytes = null);
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Share failed: $e')));
     }

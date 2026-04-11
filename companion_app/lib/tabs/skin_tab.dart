@@ -3,6 +3,7 @@ import 'package:camera/camera.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config.dart';
+import '../services/secure_delete.dart';
 import '../widgets/skin_guide_overlay.dart';
 
 // 8-Region Skin Capture Tab
@@ -60,6 +61,8 @@ class _SkinTabState extends State<SkinTab> {
       if (!mounted) return;
       final result = jsonDecode(response.body);
       if (response.statusCode == 200 && result['status'] == 'success') {
+        // Privacy: delete local capture after successful upload
+        await SecureDelete.path(img.path);
         setState(() {
           skinRegionsUploaded[selectedSkinRegion] = true;
           final uploaded = skinRegionsUploaded.values.where((v) => v).length;
@@ -72,6 +75,7 @@ class _SkinTabState extends State<SkinTab> {
           selectedSkinRegion = next;
         });
       } else {
+        await SecureDelete.path(img.path);
         setState(() { statusMessage = 'Failed: ${result["message"] ?? "error"}'; isCapturing = false; });
       }
     } catch (e) {

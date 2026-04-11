@@ -3,6 +3,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart';
+import '../services/secure_delete.dart';
 
 class BodyScanReviewScreen extends StatefulWidget {
   final int customerId;
@@ -458,11 +459,24 @@ class _RegionRecaptureScreenState extends State<RegionRecaptureScreen> {
 
       final resp = await request.send();
       if (resp.statusCode == 200) {
+        // Privacy: securely delete all captured frames after successful upload
+        for (final p in _capturedPaths) {
+          await SecureDelete.path(p);
+        }
+        _capturedPaths.clear();
         if (mounted) Navigator.of(context).pop(true);
       } else {
+        for (final p in _capturedPaths) {
+          await SecureDelete.path(p);
+        }
+        _capturedPaths.clear();
         setState(() { _instruction = 'Upload failed'; _uploading = false; _capturing = false; });
       }
     } catch (e) {
+      for (final p in _capturedPaths) {
+        await SecureDelete.path(p);
+      }
+      _capturedPaths.clear();
       setState(() { _instruction = 'Error: $e'; _uploading = false; _capturing = false; });
     }
   }
@@ -470,6 +484,10 @@ class _RegionRecaptureScreenState extends State<RegionRecaptureScreen> {
   @override
   void dispose() {
     _camera?.dispose();
+    // Privacy: delete any unsent recapture frames
+    for (final p in _capturedPaths) {
+      SecureDelete.path(p);
+    }
     super.dispose();
   }
 

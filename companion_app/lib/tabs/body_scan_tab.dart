@@ -7,6 +7,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart';
 import '../config.dart';
+import '../services/secure_delete.dart';
 
 // Full 360° Body Scan Tab
 class BodyScanTab extends StatefulWidget {
@@ -39,6 +40,11 @@ class _BodyScanTabState extends State<BodyScanTab> {
   @override
   void dispose() {
     scanAudioPlayer?.dispose();
+    // Privacy: delete any unsent scan frames
+    for (final frame in fullScanFrames) {
+      final p = frame['path'] as String?;
+      if (p != null) SecureDelete.path(p);
+    }
     super.dispose();
   }
 
@@ -165,6 +171,12 @@ class _BodyScanTabState extends State<BodyScanTab> {
 
       if (response.statusCode == 200) {
         final result = jsonDecode(body);
+        // Privacy: securely delete all scan frames after successful upload
+        for (final frame in fullScanFrames) {
+          final framePath = frame['path'] as String?;
+          if (framePath != null) await SecureDelete.path(framePath);
+        }
+        fullScanFrames.clear();
         if (!mounted) return;
         setState(() { fullScanRunning = false; fullScanInstruction = 'UPLOAD COMPLETE'; });
         if (result['session_id'] != null) {

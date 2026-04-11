@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:ui' as ui;
 import 'package:http/http.dart' as http;
 import '../config.dart';
+import '../services/secure_delete.dart';
 import '../widgets/level_painter.dart';
 
 // Photo + Video Capture Tab
@@ -15,7 +16,6 @@ class CameraTab extends StatefulWidget {
   final double pitch;
   final double roll;
   final Map<String, dynamic> latestSensor;
-  final Future<void> Function(String path, String phase) onSaveLatestScan;
 
   const CameraTab({
     super.key,
@@ -23,7 +23,6 @@ class CameraTab extends StatefulWidget {
     required this.pitch,
     required this.roll,
     required this.latestSensor,
-    required this.onSaveLatestScan,
   });
 
   @override
@@ -61,6 +60,9 @@ class CameraTabState extends State<CameraTab> {
   void dispose() {
     countdownTimer?.cancel();
     autoTimer?.cancel();
+    // Privacy: delete any unsent captures
+    if (frontPath != null) SecureDelete.path(frontPath!);
+    if (sidePath != null) SecureDelete.path(sidePath!);
     super.dispose();
   }
 
@@ -88,11 +90,9 @@ class CameraTabState extends State<CameraTab> {
 
       if (capturePhase == 0) {
         frontPath = image.path;
-        await widget.onSaveLatestScan(image.path, 'front');
         setState(() { capturePhase = 1; isCapturing = false; statusMessage = null; });
       } else {
         sidePath = image.path;
-        await widget.onSaveLatestScan(image.path, 'side');
         await widget.controller.pausePreview();
         if (!mounted) return;
         final confirmed = await Navigator.push(context, MaterialPageRoute(builder: (_) => _ReviewScreen(frontPath: frontPath!, sidePath: sidePath!)));
@@ -120,6 +120,11 @@ class CameraTabState extends State<CameraTab> {
       }
       final result = jsonDecode(response.body);
       if (response.statusCode == 200 && result['status'] == 'success') {
+        // Privacy: securely delete local captures after successful upload
+        if (frontPath != null) await SecureDelete.path(frontPath!);
+        if (sidePath != null) await SecureDelete.path(sidePath!);
+        frontPath = null;
+        sidePath = null;
         setState(() => isUploading = false);
         resetCapture();
         Navigator.push(context, MaterialPageRoute(builder: (_) => _ResultsScreenPlaceholder(result: result, muscleGroup: selectedMuscleGroup)));
@@ -176,7 +181,6 @@ class CameraTabState extends State<CameraTab> {
     final frontBest = await burstCaptureBest(8);
     if (!mounted || !autoRunning || frontBest == null) return;
     frontPath = frontBest;
-    await widget.onSaveLatestScan(frontBest, 'front');
     setState(() { capturePhase = 1; });
     for (int i = 5; i >= 1; i--) {
       setState(() { autoInstruction = 'ROTATE 90° — $i s'; });
@@ -187,7 +191,6 @@ class CameraTabState extends State<CameraTab> {
     final sideBest = await burstCaptureBest(8);
     if (!mounted || !autoRunning || sideBest == null) return;
     sidePath = sideBest;
-    await widget.onSaveLatestScan(sideBest, 'side');
     setState(() { autoInstruction = 'Uploading...'; });
     await _uploadScan();
     if (mounted) setState(() { autoRunning = false; autoInstruction = ''; });
@@ -213,6 +216,10 @@ class CameraTabState extends State<CameraTab> {
     for (final path in frames) {
       final size = await File(path).length();
       if (size > bestSize) { bestSize = size; best = path; }
+    }
+    // Privacy: delete all non-best burst frames
+    for (final path in frames) {
+      if (path != best) await SecureDelete.path(path);
     }
     return best;
   }

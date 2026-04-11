@@ -6,6 +6,7 @@ import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart';
 import '../config.dart';
+import '../services/secure_delete.dart';
 
 // Coverage-Guided Live Scan Tab
 class LiveScanTab extends StatefulWidget {
@@ -163,6 +164,8 @@ class _LiveScanTabState extends State<LiveScanTab> {
 
       final resp = await request.send();
       if (resp.statusCode == 200) setState(() => liveScanFrameCount++);
+      // Privacy: delete frame immediately after upload attempt
+      await SecureDelete.path(img.path);
     } catch (e) { print('Live scan frame upload error: $e'); }
   }
 

@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../config.dart';
+import '../services/secure_delete.dart';
 import 'history_screen.dart';
 import 'live_preview_screen.dart';
 import 'model_viewer_screen.dart';
@@ -35,6 +36,8 @@ class _ResultsScreenState extends State<ResultsScreen> {
         final file = File('${dir.path}/session_report_$scanId.pdf');
         await file.writeAsBytes(res.bodyBytes);
         await Share.shareXFiles([XFile(file.path)], text: 'Muscle Tracker Session Report');
+        // Privacy: delete temp PDF after sharing
+        await SecureDelete.path(file.path);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Report generation failed')));
       }

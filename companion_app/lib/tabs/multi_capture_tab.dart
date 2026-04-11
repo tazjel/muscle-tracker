@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../config.dart';
+import '../services/secure_delete.dart';
 
 // Dual/Multi Device Capture Tab
 class MultiCaptureTab extends StatefulWidget {
@@ -68,6 +69,10 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
     profileTimer?.cancel();
     gyroSub?.cancel();
     magSub?.cancel();
+    // Privacy: wipe dual capture temp files on tab close
+    getTemporaryDirectory().then((tmpDir) {
+      SecureDelete.directory(Directory('${tmpDir.path}/muscle_dual'));
+    }).catchError((_) {});
     super.dispose();
   }
 
@@ -160,6 +165,10 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
         }
         final dest = '${dualDir.path}/${dualRole}_${dualCaptureCount}_$timestamp.jpg';
         await File(best).copy(dest);
+        // Privacy: delete all non-best burst frames
+        for (final p in frames) {
+          if (p != best) await SecureDelete.path(p);
+        }
       }
       if (!mounted) return;
       setState(() { dualStatus = 'DONE'; isCapturing = false; });
@@ -245,7 +254,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
     } catch (e) {
       if (mounted) setState(() { statusMessage = 'Error: $e'; profileLocked = false; });
     } finally {
-      try { await sessionDir.delete(recursive: true); } catch (e) { print('Cleanup error: $e'); }
+      await SecureDelete.directory(sessionDir);
     }
   }
 

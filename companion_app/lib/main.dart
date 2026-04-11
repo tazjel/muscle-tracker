@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:sensors_plus/sensors_plus.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:io';
@@ -38,6 +37,7 @@ import 'screens/live_preview_screen.dart';
 import 'screens/model_viewer_screen.dart';
 import 'screens/body_scan_review_screen.dart';
 import 'services/api_service.dart';
+import 'services/secure_delete.dart';
 import 'services/camera_service.dart';
 import 'services/sensor_service.dart';
 import 'services/connectivity_service.dart';
@@ -121,6 +121,8 @@ Future<void> main() async {
   }
 
   await ApiService.instance.init();
+  // Privacy: securely wipe any leftover image data from previous sessions
+  await SecureDelete.purgeAll();
   ConnectivityService.instance.start();
   runApp(const MuscleCompanionApp());
 }
@@ -186,15 +188,6 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  Future<void> _saveLatestScan(String path, String phase) async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final scansDir = Directory('${dir.path}/scans');
-      if (!await scansDir.exists()) await scansDir.create(recursive: true);
-      await File(path).copy('${scansDir.path}/latest_scan_$phase.jpg');
-    } catch (e) { print(e); }
-  }
-
   @override
   Widget build(BuildContext context) {
     final controller = _cameraService.controller;
@@ -214,7 +207,6 @@ class _HomeScreenState extends State<HomeScreen> {
               pitch: _pitch,
               roll: _roll,
               latestSensor: latestSensor,
-              onSaveLatestScan: _saveLatestScan,
             ),
             BodyScanTab(
               controller: controller,
