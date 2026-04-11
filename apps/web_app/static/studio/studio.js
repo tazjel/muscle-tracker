@@ -10,6 +10,8 @@ const Studio = {
     logs: [],            // Activity log entries
     _token: null,        // JWT token acquired on init
     MOCK_MODE: false,    // Live mode — auto-detects backend availability
+    _sse: null,
+    _sseRetryMs: 1000,
 
     async _acquireToken() {
         try {
@@ -40,6 +42,7 @@ const Studio = {
                     console.warn('[Studio] Backend not reachable — falling back to mock mode');
                 } else {
                     await this._acquireToken();
+                    this._connectSSE();
                 }
             } catch (e) {
                 this.MOCK_MODE = true;
@@ -65,6 +68,45 @@ const Studio = {
         if (typeof LHMPanel !== 'undefined') LHMPanel.init();
         if (typeof MultiCapturePanel !== 'undefined') MultiCapturePanel.init();
         this.log('Studio initialized');
+    },
+
+    // --- SSE (Server-Sent Events) ---
+    _connectSSE() {
+        if (this.MOCK_MODE) return;
+        try {
+            this._sse = new EventSource(`${this.API_BASE}/api/events`);
+            this._sse.onopen = () => {
+                this.log('SSE connected');
+                this._sseRetryMs = 1000;
+            };
+            this._sse.onerror = () => {
+                this.log('SSE disconnected — reconnecting...', 'warn');
+                this._sse.close();
+                this._sse = null;
+                setTimeout(() => this._connectSSE(), Math.min(this._sseRetryMs *= 2, 30000));
+            };
+            const eventTypes = ['scan_progress', 'mesh_ready', 'customer_updated', 'device_connected', 'device_disconnected'];
+            eventTypes.forEach(type => {
+                this._sse.addEventListener(type, (e) => {
+                    try {
+                        const data = JSON.parse(e.data);
+                        document.dispatchEvent(new CustomEvent(type, { detail: data }));
+                        this.log(`SSE: ${type}`);
+                    } catch (err) {
+                        this.log(`SSE parse error: ${err.message}`, 'error');
+                    }
+                });
+            });
+        } catch (e) {
+            this.log(`SSE init failed: ${e.message}`, 'error');
+        }
+    },
+
+    disconnectSSE() {
+        if (this._sse) {
+            this._sse.close();
+            this._sse = null;
+        }
     },
 
     // --- API helpers ---

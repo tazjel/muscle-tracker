@@ -10,16 +10,52 @@ const MultiCapturePanel = {
     ],
     captures: [],
 
-    init() {
+    async init() {
         this._renderModeBanner();
-        this._renderDevices();
+        await this._loadDevices();
         this._setupButtons();
+        // Listen for SSE device events
+        document.addEventListener('device_connected', (e) => {
+            Studio.log(`Device connected: ${e.detail.serial || 'unknown'}`);
+            this._loadDevices();
+        });
+        document.addEventListener('device_disconnected', (e) => {
+            Studio.log(`Device disconnected: ${e.detail.serial || 'unknown'}`);
+            this._loadDevices();
+        });
+    },
+
+    async _loadDevices() {
+        if (Studio.MOCK_MODE || !Studio.customerId) {
+            this._renderDevices();
+            return;
+        }
+        try {
+            const { ok, data } = await Studio.apiGet(`/api/customer/${Studio.customerId}/devices`);
+            if (ok && data.devices) {
+                this.devices = data.devices.map(d => ({
+                    serial: d.device_serial || d.serial || '',
+                    name: d.device_name || d.name || `Device ${d.id}`,
+                    connection: d.connection_type || 'WiFi',
+                    direction: d.direction || 'front',
+                    status: 'connected',
+                    lastFrame: null,
+                }));
+            }
+        } catch (e) {
+            Studio.log(`Multi-capture: device load failed — ${e.message}`, 'warn');
+        }
+        this._renderDevices();
     },
 
     _renderModeBanner() {
         const el = document.getElementById('multi-capture-mode-banner');
         if (!el) return;
-        el.innerHTML = '<div style="padding:8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:4px;font-size:11px;color:#ef4444;margin-bottom:8px;">Requires backend — enable Live mode and start py4web</div>';
+        if (Studio.MOCK_MODE) {
+            el.innerHTML = '<div style="padding:8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:4px;font-size:11px;color:#ef4444;margin-bottom:8px;">Enable Live mode for real device sync</div>';
+        } else {
+            el.innerHTML = '';
+        }
     },
 
     _renderDevices() {
@@ -69,15 +105,40 @@ const MultiCapturePanel = {
         if (btn) btn.addEventListener('click', () => this.syncCapture());
     },
 
-    syncCapture() {
+    async syncCapture() {
         const connected = this.devices.filter(d => d.status === 'connected');
         if (connected.length < 2) return;
 
         connected.forEach(d => d.status = 'capturing');
         this._renderDevices();
-        if (typeof Studio !== 'undefined') Studio.log(`Sync capture: ${connected.length} devices triggered`);
+        Studio.log(`Sync capture: ${connected.length} devices triggered`);
 
-        // Mock capture complete after 2s
+        if (!Studio.MOCK_MODE && Studio.customerId) {
+            try {
+                const { ok, data } = await Studio.apiPost(`/api/customer/${Studio.customerId}/multi_capture`, {
+                    devices: connected.map(d => ({ serial: d.serial, direction: d.direction })),
+                });
+                if (ok) {
+                    const capture = {
+                        id: data.capture_id || 'cap-' + Date.now(),
+                        timestamp: new Date().toLocaleTimeString(),
+                        frames: connected.map(d => ({ serial: d.serial, name: d.name, direction: d.direction })),
+                    };
+                    this.captures.unshift(capture);
+                    Studio.log(`Sync capture complete: ${connected.length} frames`);
+                } else {
+                    Studio.log(`Sync capture failed: ${data.message || 'unknown'}`, 'error');
+                }
+            } catch (e) {
+                Studio.log(`Sync capture error: ${e.message}`, 'error');
+            }
+            connected.forEach(d => d.status = 'connected');
+            this._renderDevices();
+            this._renderGallery();
+            return;
+        }
+
+        // Mock fallback
         setTimeout(() => {
             const capture = {
                 id: 'cap-' + Date.now(),
@@ -88,7 +149,7 @@ const MultiCapturePanel = {
             connected.forEach(d => d.status = 'connected');
             this._renderDevices();
             this._renderGallery();
-            if (typeof Studio !== 'undefined') Studio.log(`Sync capture complete: ${connected.length} frames from ${connected.map(d => d.direction).join(', ')}`);
+            Studio.log(`Sync capture complete: ${connected.length} frames from ${connected.map(d => d.direction).join(', ')}`);
         }, 2000);
     },
 
