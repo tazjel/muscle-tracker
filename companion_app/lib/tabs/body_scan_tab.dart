@@ -27,10 +27,7 @@ class BodyScanTab extends StatefulWidget {
   State<BodyScanTab> createState() => _BodyScanTabState();
 }
 
-class _BodyScanTabState extends State<BodyScanTab> with AutomaticKeepAliveClientMixin {
-  @override
-  bool get wantKeepAlive => true;
-
+class _BodyScanTabState extends State<BodyScanTab> {
   bool fullScanRunning = false;
   int fullScanPass = 0;
   int fullScanFrameCount = 0;
@@ -197,7 +194,6 @@ class _BodyScanTabState extends State<BodyScanTab> with AutomaticKeepAliveClient
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(

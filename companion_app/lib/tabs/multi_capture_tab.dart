@@ -33,10 +33,7 @@ class MultiCaptureTab extends StatefulWidget {
   State<MultiCaptureTab> createState() => _MultiCaptureTabState();
 }
 
-class _MultiCaptureTabState extends State<MultiCaptureTab> with AutomaticKeepAliveClientMixin {
-  @override
-  bool get wantKeepAlive => true;
-
+class _MultiCaptureTabState extends State<MultiCaptureTab> {
   bool isDualMode = false;
   String dualRole = 'front';
   String dualStatus = 'READY';
@@ -81,14 +78,14 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> with AutomaticKeepAli
         widget.latestSensor['gyro_y'] = event.y;
         widget.latestSensor['gyro_z'] = event.z;
       });
-    } catch (_) {}
+    } catch (e) { print('Gyro sensor unavailable: $e'); }
     try {
       magSub = magnetometerEventStream().listen((event) {
         widget.latestSensor['mag_x'] = event.x;
         widget.latestSensor['mag_y'] = event.y;
         widget.latestSensor['mag_z'] = event.z;
       });
-    } catch (_) {}
+    } catch (e) { print('Magnetometer unavailable: $e'); }
   }
 
   Future<void> _loadDualRole() async {
@@ -99,7 +96,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> with AutomaticKeepAli
     try {
       final docsDir = await getApplicationDocumentsDirectory();
       paths.insert(0, '${docsDir.path}/muscle_tracker_role.json');
-    } catch (_) {}
+    } catch (e) { print('Failed to get docs dir: $e'); }
     for (final path in paths) {
       try {
         final file = File(path);
@@ -112,7 +109,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> with AutomaticKeepAli
           _startTriggerPolling();
           return;
         }
-      } catch (_) {}
+      } catch (e) { print('Role file read error: $e'); }
     }
   }
 
@@ -131,7 +128,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> with AutomaticKeepAli
             _dualCapture();
             return;
           }
-        } catch (_) {}
+        } catch (e) { print('Trigger poll error: $e'); }
       }
     });
   }
@@ -151,7 +148,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> with AutomaticKeepAli
           if (widget.controller.value.isTakingPicture) { await Future.delayed(const Duration(milliseconds: 100)); continue; }
           final img = await widget.controller.takePicture();
           frames.add(img.path);
-        } catch (_) { await Future.delayed(const Duration(milliseconds: 200)); }
+        } catch (e) { print('Dual capture frame error: $e'); await Future.delayed(const Duration(milliseconds: 200)); }
       }
       if (frames.isNotEmpty) {
         String best = frames.first;
@@ -207,7 +204,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> with AutomaticKeepAli
           setState(() => profileFrameCount = framePaths.length);
           isTakingProfileFrame = false;
         }
-      } catch (_) { isTakingProfileFrame = false; }
+      } catch (e) { print('Profile frame capture error: $e'); isTakingProfileFrame = false; }
       tick++;
     });
   }
@@ -243,13 +240,12 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> with AutomaticKeepAli
     } catch (e) {
       if (mounted) setState(() { statusMessage = 'Error: $e'; profileLocked = false; });
     } finally {
-      try { await sessionDir.delete(recursive: true); } catch (_) {}
+      try { await sessionDir.delete(recursive: true); } catch (e) { print('Cleanup error: $e'); }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
     if (!widget.controller.value.isInitialized) {
       return const Scaffold(body: Center(child: CircularProgressIndicator(color: AppTheme.primaryTeal)));
     }

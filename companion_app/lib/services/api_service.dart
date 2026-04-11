@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../config.dart';
 
 class ApiService {
@@ -12,8 +13,24 @@ class ApiService {
   static ApiService get instance => _instance;
 
   final List<Map<String, dynamic>> _offlineQueue = [];
+  SharedPreferences? _prefs;
 
   int get queueLength => _offlineQueue.length;
+
+  Future<void> init() async {
+    _prefs = await SharedPreferences.getInstance();
+    final stored = _prefs?.getString('offline_queue');
+    if (stored != null) {
+      try {
+        final list = jsonDecode(stored) as List;
+        _offlineQueue.addAll(list.cast<Map<String, dynamic>>());
+      } catch (_) {}
+    }
+  }
+
+  void _persist() {
+    _prefs?.setString('offline_queue', jsonEncode(_offlineQueue));
+  }
 
   Map<String, String> get _authHeaders => {
     'Content-Type': 'application/json',
@@ -52,9 +69,11 @@ class ApiService {
       });
     } on SocketException {
       _offlineQueue.add({'method': 'GET', 'path': path, 'body': null, 'timestamp': DateTime.now().toIso8601String()});
+      _persist();
       return {'status': 'queued', 'message': 'Request queued for retry'};
     } on TimeoutException {
       _offlineQueue.add({'method': 'GET', 'path': path, 'body': null, 'timestamp': DateTime.now().toIso8601String()});
+      _persist();
       return {'status': 'queued', 'message': 'Request queued for retry'};
     }
   }
@@ -73,9 +92,11 @@ class ApiService {
       });
     } on SocketException {
       _offlineQueue.add({'method': 'POST', 'path': path, 'body': body, 'timestamp': DateTime.now().toIso8601String()});
+      _persist();
       return {'status': 'queued', 'message': 'Request queued for retry'};
     } on TimeoutException {
       _offlineQueue.add({'method': 'POST', 'path': path, 'body': body, 'timestamp': DateTime.now().toIso8601String()});
+      _persist();
       return {'status': 'queued', 'message': 'Request queued for retry'};
     }
   }
@@ -92,9 +113,11 @@ class ApiService {
       });
     } on SocketException {
       _offlineQueue.add({'method': 'UPLOAD_IMAGE', 'path': path, 'body': {'imagePath': image.path}, 'timestamp': DateTime.now().toIso8601String()});
+      _persist();
       return {'status': 'queued', 'message': 'Request queued for retry'};
     } on TimeoutException {
       _offlineQueue.add({'method': 'UPLOAD_IMAGE', 'path': path, 'body': {'imagePath': image.path}, 'timestamp': DateTime.now().toIso8601String()});
+      _persist();
       return {'status': 'queued', 'message': 'Request queued for retry'};
     }
   }
@@ -117,9 +140,11 @@ class ApiService {
       });
     } on SocketException {
       _offlineQueue.add({'method': 'UPLOAD_MULTIPART', 'path': path, 'body': {'fields': fields}, 'timestamp': DateTime.now().toIso8601String()});
+      _persist();
       return {'status': 'queued', 'message': 'Request queued for retry'};
     } on TimeoutException {
       _offlineQueue.add({'method': 'UPLOAD_MULTIPART', 'path': path, 'body': {'fields': fields}, 'timestamp': DateTime.now().toIso8601String()});
+      _persist();
       return {'status': 'queued', 'message': 'Request queued for retry'};
     }
   }
@@ -164,7 +189,10 @@ class ApiService {
           // Re-queuing multipart without original file paths is not possible; drop it
           success = true;
         }
-        if (success) _offlineQueue.remove(entry);
+        if (success) {
+          _offlineQueue.remove(entry);
+          _persist();
+        }
       } catch (_) {
         // Still offline — stop flushing
         break;

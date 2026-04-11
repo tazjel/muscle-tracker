@@ -39,6 +39,14 @@ class CameraService {
     );
   }
 
+  Future<void> pause() async {
+    try { await _controller?.pausePreview(); } catch (_) {}
+  }
+
+  Future<void> resume() async {
+    try { await _controller?.resumePreview(); } catch (_) {}
+  }
+
   void dispose() {
     _controller?.dispose();
     _controller = null;

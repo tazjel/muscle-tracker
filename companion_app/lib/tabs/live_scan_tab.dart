@@ -26,10 +26,7 @@ class LiveScanTab extends StatefulWidget {
   State<LiveScanTab> createState() => _LiveScanTabState();
 }
 
-class _LiveScanTabState extends State<LiveScanTab> with AutomaticKeepAliveClientMixin {
-  @override
-  bool get wantKeepAlive => true;
-
+class _LiveScanTabState extends State<LiveScanTab> {
   bool liveScanRunning = false;
   bool liveScanStarting = false;
   String liveScanSessionId = '';
@@ -166,7 +163,7 @@ class _LiveScanTabState extends State<LiveScanTab> with AutomaticKeepAliveClient
 
       final resp = await request.send();
       if (resp.statusCode == 200) setState(() => liveScanFrameCount++);
-    } catch (_) {}
+    } catch (e) { print('Live scan frame upload error: $e'); }
   }
 
   Future<void> _pollLiveScanStatus() async {
@@ -192,7 +189,7 @@ class _LiveScanTabState extends State<LiveScanTab> with AutomaticKeepAliveClient
           liveScanInstruction = liveScanGuidance.first['message'] ?? 'KEEP ROTATING';
         }
       });
-    } catch (_) {}
+    } catch (e) { print('Live scan poll error: $e'); }
   }
 
   Future<void> finalizeLiveScan() async {
@@ -248,7 +245,6 @@ class _LiveScanTabState extends State<LiveScanTab> with AutomaticKeepAliveClient
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(

@@ -18,10 +18,7 @@ class SkinTab extends StatefulWidget {
   State<SkinTab> createState() => _SkinTabState();
 }
 
-class _SkinTabState extends State<SkinTab> with AutomaticKeepAliveClientMixin {
-  @override
-  bool get wantKeepAlive => true;
-
+class _SkinTabState extends State<SkinTab> {
   bool isCapturing = false;
   String selectedSkinRegion = 'forearm';
   final Map<String, bool> skinRegionsUploaded = {};
@@ -84,7 +81,6 @@ class _SkinTabState extends State<SkinTab> with AutomaticKeepAliveClientMixin {
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
     if (!widget.controller.value.isInitialized) {
       return const Scaffold(body: Center(child: CircularProgressIndicator(color: AppTheme.primaryTeal)));
     }

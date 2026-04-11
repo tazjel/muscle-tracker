@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
@@ -65,20 +66,46 @@ Future<void> main() async {
   });
   _cameras = await availableCameras();
 
-  // Auto-login
-  try {
-    final res = await http.post(
-      Uri.parse('${AppConfig.serverBaseUrl}/api/auth/token'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'email': 'demo@muscle.com'}),
-    ).timeout(const Duration(seconds: 4));
-    final data = jsonDecode(res.body);
-    if (res.statusCode == 200 && data['status'] == 'success') {
-      jwtToken = data['token'];
-      customerId = data['customer_id']?.toString() ?? '1';
-      customerName = data['name'] ?? 'Demo User';
-    }
-  } catch (_) {}
+  // Restore saved auth
+  final prefs = await SharedPreferences.getInstance();
+  final savedToken = prefs.getString('jwt_token');
+  final savedCustomerId = prefs.getString('customer_id');
+  final savedCustomerName = prefs.getString('customer_name');
+
+  if (savedToken != null) {
+    // Validate saved token
+    try {
+      final res = await http.get(
+        Uri.parse('${AppConfig.serverBaseUrl}/api/health'),
+      ).timeout(const Duration(seconds: 4));
+      if (res.statusCode == 200) {
+        jwtToken = savedToken;
+        customerId = savedCustomerId ?? '1';
+        customerName = savedCustomerName ?? 'User';
+      }
+    } catch (e) { print('Token validation failed: $e'); }
+  }
+
+  // Fallback: try auto-login for dev mode
+  if (jwtToken == null && AppConfig.devMode) {
+    try {
+      final res = await http.post(
+        Uri.parse('${AppConfig.serverBaseUrl}/api/auth/token'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': 'demo@muscle.com'}),
+      ).timeout(const Duration(seconds: 4));
+      final data = jsonDecode(res.body);
+      if (res.statusCode == 200 && data['status'] == 'success') {
+        jwtToken = data['token'];
+        customerId = data['customer_id']?.toString() ?? '1';
+        customerName = data['name'] ?? 'Demo User';
+        // Persist for next launch
+        prefs.setString('jwt_token', jwtToken!);
+        prefs.setString('customer_id', customerId!);
+        prefs.setString('customer_name', customerName!);
+      }
+    } catch (e) { print('Auto-login failed: $e'); }
+  }
   jwtToken ??= 'demo';
   customerId ??= '1';
   customerName ??= 'Demo User';
@@ -101,7 +128,7 @@ Future<void> main() async {
           body: jsonEncode(AppConfig.devProfile),
         ).timeout(const Duration(seconds: 5));
       }
-    } catch (_) {}
+    } catch (e) { print('Dev profile check failed: $e'); }
     // In dev mode, always mark complete so we go straight to camera
     AppConfig.profileCompleted = true;
   } else {
@@ -113,9 +140,10 @@ Future<void> main() async {
       ).timeout(const Duration(seconds: 4));
       final pData = jsonDecode(pRes.body);
       AppConfig.profileCompleted = pData['profile']?['profile_completed'] == true;
-    } catch (_) {}
+    } catch (e) { print('Production profile check failed: $e'); }
   }
 
+  await ApiService.instance.init();
   ConnectivityService.instance.start();
   runApp(const MuscleCompanionApp());
 }
@@ -160,7 +188,7 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       await _cameraService.initialize();
       if (mounted) setState(() {});
-    } catch (_) {}
+    } catch (e) { print('Camera init failed: $e'); }
   }
 
   void _initSensors() {
@@ -203,47 +231,48 @@ class _HomeScreenState extends State<HomeScreen> {
       body: Column(
         children: [
           ConnectionBanner(isOnline: ConnectivityService.instance.isOnline),
-          Expanded(child: IndexedStack(
-        index: _currentTab,
-        children: [
-          CameraTab(
-            controller: controller,
-            pitch: _pitch,
-            roll: _roll,
-            latestSensor: latestSensor,
-            onSaveLatestScan: _saveLatestScan,
-          ),
-          BodyScanTab(
-            controller: controller,
-            pitch: _pitch,
-            roll: _roll,
-            latestSensor: latestSensor,
-          ),
-          LiveScanTab(
-            controller: controller,
-            pitch: _pitch,
-            roll: _roll,
-            latestSensor: latestSensor,
-          ),
-          SkinTab(
-            controller: controller,
-          ),
-          MultiCaptureTab(
-            controller: controller,
-            pitch: _pitch,
-            roll: _roll,
-            latestSensor: latestSensor,
-            sensorLog: _sensorLog,
-            selectedMuscleGroup: 'quadricep',
-            cameraDistanceCm: 75.0,
-          ),
-        ],
-      )),
+          Expanded(child: [
+            CameraTab(
+              controller: controller,
+              pitch: _pitch,
+              roll: _roll,
+              latestSensor: latestSensor,
+              onSaveLatestScan: _saveLatestScan,
+            ),
+            BodyScanTab(
+              controller: controller,
+              pitch: _pitch,
+              roll: _roll,
+              latestSensor: latestSensor,
+            ),
+            LiveScanTab(
+              controller: controller,
+              pitch: _pitch,
+              roll: _roll,
+              latestSensor: latestSensor,
+            ),
+            SkinTab(
+              controller: controller,
+            ),
+            MultiCaptureTab(
+              controller: controller,
+              pitch: _pitch,
+              roll: _roll,
+              latestSensor: latestSensor,
+              sensorLog: _sensorLog,
+              selectedMuscleGroup: 'quadricep',
+              cameraDistanceCm: 75.0,
+            ),
+          ][_currentTab]),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentTab,
-        onTap: (i) => setState(() => _currentTab = i),
+        onTap: (i) {
+          _cameraService.pause();
+          setState(() => _currentTab = i);
+          if ([0, 1, 2, 4].contains(i)) _cameraService.resume();
+        },
         type: BottomNavigationBarType.fixed,
         backgroundColor: Colors.black,
         selectedItemColor: AppTheme.primaryTeal,

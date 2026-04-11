@@ -30,10 +30,7 @@ class CameraTab extends StatefulWidget {
   State<CameraTab> createState() => CameraTabState();
 }
 
-class CameraTabState extends State<CameraTab> with AutomaticKeepAliveClientMixin {
-  @override
-  bool get wantKeepAlive => true;
-
+class CameraTabState extends State<CameraTab> {
   int capturePhase = 0;
   final List<String> phaseLabels = ['FRONT VIEW', 'SIDE VIEW'];
   final List<IconData> phaseIcons = [Icons.person, Icons.person_outline];
@@ -168,7 +165,7 @@ class CameraTabState extends State<CameraTab> with AutomaticKeepAliveClientMixin
       torchOn = !torchOn;
       await widget.controller.setFlashMode(torchOn ? FlashMode.torch : FlashMode.off);
       setState(() {});
-    } catch (_) {}
+    } catch (e) { setState(() => statusMessage = 'Error: $e'); }
   }
 
   Future<void> startAutoCapture() async {
@@ -205,7 +202,8 @@ class CameraTabState extends State<CameraTab> with AutomaticKeepAliveClientMixin
         final XFile img = await widget.controller.takePicture();
         frames.add(img.path);
         setState(() { autoInstruction = 'BURST ${frames.length}/$count'; });
-      } catch (_) {
+      } catch (e) {
+        print('Burst capture error: $e');
         await Future.delayed(const Duration(milliseconds: 200));
       }
     }
@@ -343,7 +341,6 @@ class CameraTabState extends State<CameraTab> with AutomaticKeepAliveClientMixin
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
     if (!widget.controller.value.isInitialized) {
       return const Scaffold(body: Center(child: CircularProgressIndicator(color: AppTheme.primaryTeal)));
     }

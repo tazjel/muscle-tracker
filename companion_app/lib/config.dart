@@ -76,3 +76,13 @@ class AppTheme {
 String? jwtToken;
 String? customerId;
 String? customerName;
+
+void showSnackError(BuildContext context, String message) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(message),
+      backgroundColor: AppTheme.accentRed,
+      duration: const Duration(seconds: 3),
+    ),
+  );
+}
