@@ -1,0 +1,46 @@
+# GTD3D Production — Caddy reverse proxy with auto-HTTPS
+#
+# Usage:
+#   caddy run                    # Dev (localhost, no TLS)
+#   caddy run --config Caddyfile # Production (auto Let's Encrypt)
+#
+# Set GTD3D_DOMAIN env var for production, defaults to localhost for dev.
+
+{$GTD3D_DOMAIN:localhost} {
+    # py4web backend
+    reverse_proxy /web_app/* localhost:8000
+    reverse_proxy /api/* localhost:8000
+
+    # Static assets with cache
+    @static path /static/* /meshes/* /uploads/* /assets/*
+    header @static Cache-Control "public, max-age=3600"
+    reverse_proxy @static localhost:8000
+
+    # SSE endpoint — disable buffering for streaming
+    @sse path /web_app/api/events
+    reverse_proxy @sse localhost:8000 {
+        flush_interval -1
+        transport http {
+            read_timeout 0
+        }
+    }
+
+    # Security headers
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options SAMEORIGIN
+        Referrer-Policy strict-origin-when-cross-origin
+        -Server
+    }
+
+    # Compression
+    encode gzip zstd
+
+    # Logging
+    log {
+        output file /var/log/caddy/gtd3d.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}

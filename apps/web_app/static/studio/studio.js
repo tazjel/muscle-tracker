@@ -9,6 +9,7 @@ const Studio = {
     panels: {},          // Registered panel modules
     logs: [],            // Activity log entries
     _token: null,        // JWT token acquired on init
+    _tokenReady: null,   // Promise that resolves when token is acquired
     MOCK_MODE: false,    // Live mode — auto-detects backend availability
     _sse: null,
     _sseRetryMs: 1000,
@@ -41,7 +42,8 @@ const Studio = {
                     this.MOCK_MODE = true;
                     console.warn('[Studio] Backend not reachable — falling back to mock mode');
                 } else {
-                    await this._acquireToken();
+                    this._tokenReady = this._acquireToken();
+                    await this._tokenReady;
                     this._connectSSE();
                 }
             } catch (e) {
@@ -112,13 +114,14 @@ const Studio = {
     // --- API helpers ---
     async api(path, options = {}, _isRetry = false) {
         if (this.MOCK_MODE) return { ok: false, status: 0, data: { error: 'Mock mode — no backend' } };
+        if (this._tokenReady) await this._tokenReady;
         const url = `${this.API_BASE}${path}`;
-        const defaults = {
-            headers: {
-                'Content-Type': 'application/json',
-                ...(this._token ? { 'Authorization': `Bearer ${this._token}` } : {}),
-            },
+        const method = (options.method || 'GET').toUpperCase();
+        const headers = {
+            ...(this._token ? { 'Authorization': `Bearer ${this._token}` } : {}),
         };
+        if (method !== 'GET') headers['Content-Type'] = 'application/json';
+        const defaults = { headers };
         if (options.body && typeof options.body === 'object') {
             options.body = JSON.stringify(options.body);
         }
