@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config.dart';
+import 'auth_service.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._();
@@ -34,11 +35,11 @@ class ApiService {
 
   Map<String, String> get _authHeaders => {
     'Content-Type': 'application/json',
-    if (jwtToken != null) 'Authorization': 'Bearer $jwtToken',
+    if (AuthService.instance.token.value != null) 'Authorization': 'Bearer ${AuthService.instance.token.value}',
   };
 
   Map<String, String> get _authOnlyHeaders => {
-    if (jwtToken != null) 'Authorization': 'Bearer $jwtToken',
+    if (AuthService.instance.token.value != null) 'Authorization': 'Bearer ${AuthService.instance.token.value}',
   };
 
   // Exponential backoff retry: 1s, 2s, 4s
@@ -105,7 +106,7 @@ class ApiService {
     try {
       return await _retryWithBackoff(() async {
         final request = http.MultipartRequest('POST', Uri.parse('${AppConfig.serverBaseUrl}$path'));
-        if (jwtToken != null) request.headers['Authorization'] = 'Bearer $jwtToken';
+        if (AuthService.instance.token.value != null) request.headers['Authorization'] = 'Bearer ${AuthService.instance.token.value}';
         request.files.add(await http.MultipartFile.fromPath('image', image.path));
         final streamedResponse = await request.send().timeout(const Duration(seconds: 30));
         final response = await http.Response.fromStream(streamedResponse);
@@ -129,7 +130,7 @@ class ApiService {
     try {
       return await _retryWithBackoff(() async {
         final request = http.MultipartRequest('POST', Uri.parse('${AppConfig.serverBaseUrl}$path'));
-        if (jwtToken != null) request.headers['Authorization'] = 'Bearer $jwtToken';
+        if (AuthService.instance.token.value != null) request.headers['Authorization'] = 'Bearer ${AuthService.instance.token.value}';
         request.fields.addAll(fields);
         for (final entry in filePaths) {
           request.files.add(await http.MultipartFile.fromPath(entry.key, entry.value));
@@ -177,7 +178,7 @@ class ApiService {
           final imagePath = body?['imagePath'] as String?;
           if (imagePath != null && await File(imagePath).exists()) {
             final request = http.MultipartRequest('POST', Uri.parse('${AppConfig.serverBaseUrl}$path'));
-            if (jwtToken != null) request.headers['Authorization'] = 'Bearer $jwtToken';
+            if (AuthService.instance.token.value != null) request.headers['Authorization'] = 'Bearer ${AuthService.instance.token.value}';
             request.files.add(await http.MultipartFile.fromPath('image', imagePath));
             final streamed = await request.send().timeout(const Duration(seconds: 30));
             success = streamed.statusCode < 500;

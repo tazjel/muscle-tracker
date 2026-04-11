@@ -1,6 +1,7 @@
 // GTD3D App Config, Theme, and global state
 import 'package:flutter/material.dart';
 import 'dart:ui' as ui;
+import 'services/auth_service.dart';
 
 // --- CONFIG ---
 
@@ -71,11 +72,17 @@ class AppTheme {
 }
 
 // --- GLOBAL STATE ---
-// Non-private so other files can access them after extraction from main.dart.
+// Delegated to AuthService for centralized reactive state.
+// These getters/setters maintain backward compatibility during migration.
 
-String? jwtToken;
-String? customerId;
-String? customerName;
+String? get jwtToken => AuthService.instance.token.value;
+set jwtToken(String? v) => AuthService.instance.token.value = v;
+
+String? get customerId => AuthService.instance.customerId.value;
+set customerId(String? v) => AuthService.instance.customerId.value = v;
+
+String? get customerName => AuthService.instance.customerName.value;
+set customerName(String? v) => AuthService.instance.customerName.value = v;
 
 void showSnackError(BuildContext context, String message) {
   ScaffoldMessenger.of(context).showSnackBar(

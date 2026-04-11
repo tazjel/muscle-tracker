@@ -15,6 +15,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'studio_server.dart';
 import 'config.dart';
+import 'services/auth_service.dart';
 import 'widgets/dev_panel.dart';
 import 'widgets/level_painter.dart';
 import 'widgets/skin_guide_overlay.dart';
@@ -66,46 +67,22 @@ Future<void> main() async {
   });
   _cameras = await availableCameras();
 
-  // Restore saved auth
-  final prefs = await SharedPreferences.getInstance();
-  final savedToken = prefs.getString('jwt_token');
-  final savedCustomerId = prefs.getString('customer_id');
-  final savedCustomerName = prefs.getString('customer_name');
+  // Initialize auth service
+  await AuthService.instance.loadFromPrefs();
 
-  if (savedToken != null) {
-    // Validate saved token
-    try {
-      final res = await http.get(
-        Uri.parse('${AppConfig.serverBaseUrl}/api/health'),
-      ).timeout(const Duration(seconds: 4));
-      if (res.statusCode == 200) {
-        jwtToken = savedToken;
-        customerId = savedCustomerId ?? '1';
-        customerName = savedCustomerName ?? 'User';
-      }
-    } catch (e) { print('Token validation failed: $e'); }
+  if (AuthService.instance.isLoggedIn) {
+    final valid = await AuthService.instance.validateToken();
+    if (!valid) {
+      AuthService.instance.logout();
+    }
   }
 
   // Fallback: try auto-login for dev mode
-  if (jwtToken == null && AppConfig.devMode) {
-    try {
-      final res = await http.post(
-        Uri.parse('${AppConfig.serverBaseUrl}/api/auth/token'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': 'demo@muscle.com'}),
-      ).timeout(const Duration(seconds: 4));
-      final data = jsonDecode(res.body);
-      if (res.statusCode == 200 && data['status'] == 'success') {
-        jwtToken = data['token'];
-        customerId = data['customer_id']?.toString() ?? '1';
-        customerName = data['name'] ?? 'Demo User';
-        // Persist for next launch
-        prefs.setString('jwt_token', jwtToken!);
-        prefs.setString('customer_id', customerId!);
-        prefs.setString('customer_name', customerName!);
-      }
-    } catch (e) { print('Auto-login failed: $e'); }
+  if (!AuthService.instance.isLoggedIn && AppConfig.devMode) {
+    await AuthService.instance.login(email: 'demo@muscle.com');
   }
+
+  // Final fallback
   jwtToken ??= 'demo';
   customerId ??= '1';
   customerName ??= 'Demo User';
