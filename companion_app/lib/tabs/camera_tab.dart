@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:path_provider/path_provider.dart';
@@ -63,6 +64,9 @@ class CameraTabState extends State<CameraTab> {
     // Privacy: delete any unsent captures
     if (frontPath != null) SecureDelete.path(frontPath!);
     if (sidePath != null) SecureDelete.path(sidePath!);
+    // Zero out in-memory image data
+    ghostImage?.dispose();
+    ghostImage = null;
     super.dispose();
   }
 
@@ -206,7 +210,7 @@ class CameraTabState extends State<CameraTab> {
         frames.add(img.path);
         setState(() { autoInstruction = 'BURST ${frames.length}/$count'; });
       } catch (e) {
-        print('Burst capture error: $e');
+        if (kDebugMode) print('Burst capture error: $e');
         await Future.delayed(const Duration(milliseconds: 200));
       }
     }

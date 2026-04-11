@@ -1,11 +1,11 @@
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config.dart';
 
 /// Centralized auth state using ValueNotifier for reactive UI updates.
-/// Replaces the global jwtToken/customerId/customerName variables.
+/// Credentials stored in Android Keystore via flutter_secure_storage (encrypted).
 class AuthService {
   static final AuthService _instance = AuthService._();
   factory AuthService() => _instance;
@@ -17,16 +17,17 @@ class AuthService {
   final customerId = ValueNotifier<String?>(null);
   final customerName = ValueNotifier<String?>(null);
 
-  SharedPreferences? _prefs;
+  static const _storage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
 
   bool get isLoggedIn => token.value != null;
 
-  /// Load saved credentials from SharedPreferences.
+  /// Load saved credentials from encrypted secure storage.
   Future<void> loadFromPrefs() async {
-    _prefs = await SharedPreferences.getInstance();
-    final savedToken = _prefs?.getString('jwt_token');
-    final savedId = _prefs?.getString('customer_id');
-    final savedName = _prefs?.getString('customer_name');
+    final savedToken = await _storage.read(key: 'jwt_token');
+    final savedId = await _storage.read(key: 'customer_id');
+    final savedName = await _storage.read(key: 'customer_name');
 
     if (savedToken != null) {
       token.value = savedToken;
@@ -65,35 +66,35 @@ class AuthService {
         token.value = data['token'];
         customerId.value = data['customer_id']?.toString() ?? '1';
         customerName.value = data['name'] ?? 'User';
-        _persist();
+        await _persist();
         return true;
       }
     } catch (e) {
-      print('AuthService login failed: $e');
+      if (kDebugMode) print('AuthService login failed: $e');
     }
     return false;
   }
 
-  /// Clear auth state and persisted credentials.
-  void logout() {
+  /// Clear auth state and delete encrypted credentials.
+  Future<void> logout() async {
     token.value = null;
     customerId.value = null;
     customerName.value = null;
-    _prefs?.remove('jwt_token');
-    _prefs?.remove('customer_id');
-    _prefs?.remove('customer_name');
+    await _storage.delete(key: 'jwt_token');
+    await _storage.delete(key: 'customer_id');
+    await _storage.delete(key: 'customer_name');
   }
 
-  /// Persist current auth state to SharedPreferences.
-  void _persist() {
+  /// Persist current auth state to encrypted secure storage.
+  Future<void> _persist() async {
     if (token.value != null) {
-      _prefs?.setString('jwt_token', token.value!);
+      await _storage.write(key: 'jwt_token', value: token.value!);
     }
     if (customerId.value != null) {
-      _prefs?.setString('customer_id', customerId.value!);
+      await _storage.write(key: 'customer_id', value: customerId.value!);
     }
     if (customerName.value != null) {
-      _prefs?.setString('customer_name', customerName.value!);
+      await _storage.write(key: 'customer_name', value: customerName.value!);
     }
   }
 }

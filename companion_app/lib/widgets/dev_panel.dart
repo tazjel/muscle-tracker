@@ -40,9 +40,8 @@ class DevPanel extends StatelessWidget {
             'Profile: ${profileCompleted ? "✓" : "✗"}',
             style: TextStyle(color: profileCompleted ? Colors.greenAccent : Colors.redAccent, fontSize: 10),
           ),
-          if (jwtToken != null)
-            Text('JWT: ${jwtToken!.length > 8 ? jwtToken!.substring(0, 8) : jwtToken!}…',
-                style: const TextStyle(color: Colors.white38, fontSize: 9)),
+          Text('Auth: ${jwtToken != null ? "✓" : "✗"}',
+              style: TextStyle(color: jwtToken != null ? Colors.greenAccent : Colors.redAccent, fontSize: 10)),
           const SizedBox(height: 6),
           if (onEditProfile != null)
             _devBtn('Edit Profile', Colors.teal, onEditProfile!),

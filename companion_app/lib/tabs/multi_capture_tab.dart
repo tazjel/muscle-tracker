@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:path_provider/path_provider.dart';
@@ -83,14 +84,14 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
         widget.latestSensor['gyro_y'] = event.y;
         widget.latestSensor['gyro_z'] = event.z;
       });
-    } catch (e) { print('Gyro sensor unavailable: $e'); }
+    } catch (e) { if (kDebugMode) print('Gyro sensor unavailable: $e'); }
     try {
       magSub = magnetometerEventStream().listen((event) {
         widget.latestSensor['mag_x'] = event.x;
         widget.latestSensor['mag_y'] = event.y;
         widget.latestSensor['mag_z'] = event.z;
       });
-    } catch (e) { print('Magnetometer unavailable: $e'); }
+    } catch (e) { if (kDebugMode) print('Magnetometer unavailable: $e'); }
   }
 
   Future<void> _loadDualRole() async {
@@ -101,7 +102,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
     try {
       final docsDir = await getApplicationDocumentsDirectory();
       paths.insert(0, '${docsDir.path}/muscle_tracker_role.json');
-    } catch (e) { print('Failed to get docs dir: $e'); }
+    } catch (e) { if (kDebugMode) print('Failed to get docs dir: $e'); }
     for (final path in paths) {
       try {
         final file = File(path);
@@ -115,7 +116,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
           _startTriggerPolling();
           return;
         }
-      } catch (e) { print('Role file read error: $e'); }
+      } catch (e) { if (kDebugMode) print('Role file read error: $e'); }
     }
   }
 
@@ -134,7 +135,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
             _dualCapture();
             return;
           }
-        } catch (e) { print('Trigger poll error: $e'); }
+        } catch (e) { if (kDebugMode) print('Trigger poll error: $e'); }
       }
     });
   }
@@ -154,7 +155,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
           if (widget.controller.value.isTakingPicture) { await Future.delayed(const Duration(milliseconds: 100)); continue; }
           final img = await widget.controller.takePicture();
           frames.add(img.path);
-        } catch (e) { print('Dual capture frame error: $e'); await Future.delayed(const Duration(milliseconds: 200)); }
+        } catch (e) { if (kDebugMode) print('Dual capture frame error: $e'); await Future.delayed(const Duration(milliseconds: 200)); }
       }
       if (frames.isNotEmpty) {
         String best = frames.first;
@@ -217,7 +218,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
           if (mounted) setState(() => profileFrameCount = framePaths.length);
           isTakingProfileFrame = false;
         }
-      } catch (e) { print('Profile frame capture error: $e'); isTakingProfileFrame = false; }
+      } catch (e) { if (kDebugMode) print('Profile frame capture error: $e'); isTakingProfileFrame = false; }
       tick++;
     });
   }

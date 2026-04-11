@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'dart:typed_data';
 import 'dart:io';
@@ -89,7 +90,7 @@ class StudioWebServer {
     });
 
     _server = await io.serve(router, '0.0.0.0', port);
-    print('Studio Server running on port ${_server!.port}');
+    if (kDebugMode) print('Studio Server running on port ${_server!.port}');
   }
 
   Future<void> stop() async {

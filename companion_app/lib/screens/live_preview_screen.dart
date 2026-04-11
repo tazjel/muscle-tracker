@@ -118,7 +118,16 @@ class _LivePreviewScreenState extends State<LivePreviewScreen> {
   }
 
   @override
-  void dispose() { _analysisTimer?.cancel(); _controller?.dispose(); super.dispose(); }
+  void dispose() {
+    _analysisTimer?.cancel();
+    _controller?.dispose();
+    // Zero out sensitive image bytes in memory
+    if (_lockedFrameBytes != null) {
+      _lockedFrameBytes!.fillRange(0, _lockedFrameBytes!.length, 0);
+      _lockedFrameBytes = null;
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

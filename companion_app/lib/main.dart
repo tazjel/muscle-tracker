@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:sensors_plus/sensors_plus.dart';
@@ -73,7 +74,7 @@ Future<void> main() async {
   if (AuthService.instance.isLoggedIn) {
     final valid = await AuthService.instance.validateToken();
     if (!valid) {
-      AuthService.instance.logout();
+      await AuthService.instance.logout();
     }
   }
 
@@ -105,7 +106,7 @@ Future<void> main() async {
           body: jsonEncode(AppConfig.devProfile),
         ).timeout(const Duration(seconds: 5));
       }
-    } catch (e) { print('Dev profile check failed: $e'); }
+    } catch (e) { if (kDebugMode) print('Dev profile check failed: $e'); }
     // In dev mode, always mark complete so we go straight to camera
     AppConfig.profileCompleted = true;
   } else {
@@ -117,7 +118,7 @@ Future<void> main() async {
       ).timeout(const Duration(seconds: 4));
       final pData = jsonDecode(pRes.body);
       AppConfig.profileCompleted = pData['profile']?['profile_completed'] == true;
-    } catch (e) { print('Production profile check failed: $e'); }
+    } catch (e) { if (kDebugMode) print('Production profile check failed: $e'); }
   }
 
   await ApiService.instance.init();
@@ -167,7 +168,7 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       await _cameraService.initialize();
       if (mounted) setState(() {});
-    } catch (e) { print('Camera init failed: $e'); }
+    } catch (e) { if (kDebugMode) print('Camera init failed: $e'); }
   }
 
   void _initSensors() {

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'dart:async';
@@ -166,7 +167,7 @@ class _LiveScanTabState extends State<LiveScanTab> {
       if (resp.statusCode == 200) setState(() => liveScanFrameCount++);
       // Privacy: delete frame immediately after upload attempt
       await SecureDelete.path(img.path);
-    } catch (e) { print('Live scan frame upload error: $e'); }
+    } catch (e) { if (kDebugMode) print('Live scan frame upload error: $e'); }
   }
 
   Future<void> _pollLiveScanStatus() async {
@@ -192,7 +193,7 @@ class _LiveScanTabState extends State<LiveScanTab> {
           liveScanInstruction = liveScanGuidance.first['message'] ?? 'KEEP ROTATING';
         }
       });
-    } catch (e) { print('Live scan poll error: $e'); }
+    } catch (e) { if (kDebugMode) print('Live scan poll error: $e'); }
   }
 
   Future<void> finalizeLiveScan() async {
