@@ -38,6 +38,8 @@ import 'screens/body_scan_review_screen.dart';
 import 'services/api_service.dart';
 import 'services/camera_service.dart';
 import 'services/sensor_service.dart';
+import 'services/connectivity_service.dart';
+import 'widgets/connection_banner.dart';
 
 late List<CameraDescription> _cameras;
 
@@ -114,6 +116,7 @@ Future<void> main() async {
     } catch (_) {}
   }
 
+  ConnectivityService.instance.start();
   runApp(const MuscleCompanionApp());
 }
 
@@ -197,7 +200,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     final latestSensor = _sensorService.latestValues;
     return Scaffold(
-      body: IndexedStack(
+      body: Column(
+        children: [
+          ConnectionBanner(isOnline: ConnectivityService.instance.isOnline),
+          Expanded(child: IndexedStack(
         index: _currentTab,
         children: [
           CameraTab(
@@ -231,6 +237,8 @@ class _HomeScreenState extends State<HomeScreen> {
             selectedMuscleGroup: 'quadricep',
             cameraDistanceCm: 75.0,
           ),
+        ],
+      )),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(

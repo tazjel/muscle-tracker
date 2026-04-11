@@ -8,6 +8,8 @@ const ScanPanel = {
     _fpsTimer: null,
     _currentCustomerId: null,
     scans: [],
+    _progressTimer: null,    // timer for polling processing scans
+    _processingDots: 0,      // spinner state for progress indicator
 
     init() {
         this._renderCameraStatus();
@@ -104,6 +106,48 @@ const ScanPanel = {
         }
         this.scans = data.scans || data || [];
         this._renderScanList(this.scans);
+
+        // Start progress polling if any scan is still processing
+        this._stopProgressPoll();
+        const hasProcessing = this.scans.some(s => s.status === 'processing');
+        if (hasProcessing) {
+            this._startProgressPoll(customerId);
+        }
+    },
+
+    _startProgressPoll(customerId) {
+        if (this._progressTimer) return; // already polling
+        document.dispatchEvent(new CustomEvent('scan-processing-start'));
+        this._progressTimer = setInterval(async () => {
+            const { ok, data } = await Studio.apiGet(`/api/customer/${customerId}/scans`);
+            if (!ok) return;
+            const scans = data.scans || data || [];
+            this.scans = scans;
+            this._renderScanList(scans);
+            // Advance spinner dots
+            this._processingDots = (this._processingDots + 1) % 4;
+            this._updateProcessingIndicators();
+            // Stop when no more scans are processing
+            const stillProcessing = scans.some(s => s.status === 'processing');
+            if (!stillProcessing) {
+                this._stopProgressPoll();
+                document.dispatchEvent(new CustomEvent('scan-processing-end'));
+            }
+        }, 3000);
+    },
+
+    _stopProgressPoll() {
+        if (this._progressTimer) {
+            clearInterval(this._progressTimer);
+            this._progressTimer = null;
+        }
+    },
+
+    _updateProcessingIndicators() {
+        const dots = '.'.repeat(this._processingDots + 1);
+        document.querySelectorAll('[data-scan-processing]').forEach(el => {
+            el.textContent = `Processing${dots}`;
+        });
     },
 
     _renderScanList(scans) {
@@ -121,16 +165,19 @@ const ScanPanel = {
             const status = s.status || 'done';
             const tagClass = status === 'done' || status === 'finalized' ? 'tag-ok'
                 : status === 'error' ? 'tag-err' : 'tag-warn';
+            const isProcessing = status === 'processing';
             const cid = this._currentCustomerId || '';
             return `<div class="list-item">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%;">
                     <div>
                         <div style="font-size:0.8125rem;">${date}</div>
                         <div class="meta">${groups}</div>
+                        ${isProcessing ? `<div style="font-size:11px;color:var(--accent);margin-top:2px;"
+                            data-scan-processing>Processing.</div>` : ''}
                     </div>
                     <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
                         <span class="tag ${tagClass}">${status}</span>
-                        ${cid ? `<a href="#" style="font-size:11px;color:var(--accent);"
+                        ${cid && !isProcessing ? `<a href="#" style="font-size:11px;color:var(--accent);"
                             onclick="ScanPanel.viewReport(${cid},${s.id});return false;">Report</a>` : ''}
                     </div>
                 </div>
@@ -181,6 +228,8 @@ const ScanPanel = {
             document.dispatchEvent(new CustomEvent('scan-uploaded', { detail: { customerId } }));
             return;
         }
+
+        this._stopProgressPoll(); // reset before reload
 
         const formData = new FormData();
         formData.append('front', frontFile);

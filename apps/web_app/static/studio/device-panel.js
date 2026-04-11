@@ -6,17 +6,30 @@ const DevicePanel = {
     _captureBtn: null,
     _currentCustomerId: null,
     _healthTimer: null,
+    _scanActive: false,      // true while a scan is processing (drives adaptive poll rate)
+    _serverOnline: null,     // last known server state (null = unknown)
 
     init() {
         this._injectCaptureButton();
         this._renderDeviceStatus();
         this._renderActionButtons();
+        this._renderServerBadge();
         this._pollHealth();
 
         document.addEventListener('customer-selected', (e) => {
             this._currentCustomerId = e.detail.id;
             this._enableCapture();
             this._enableActions();
+        });
+
+        // Track scan-active state for adaptive polling
+        document.addEventListener('scan-processing-start', () => {
+            this._scanActive = true;
+            this._resetPollTimer();
+        });
+        document.addEventListener('scan-processing-end', () => {
+            this._scanActive = false;
+            this._resetPollTimer();
         });
     },
 
@@ -63,6 +76,31 @@ const DevicePanel = {
         `;
     },
 
+    _renderServerBadge() {
+        // Inject "Server: …" badge into the device-status panel header if present
+        const panelHeader = document.querySelector('#panel-device-status .panel-header');
+        if (!panelHeader || document.getElementById('server-conn-badge')) return;
+        const badge = document.createElement('span');
+        badge.id = 'server-conn-badge';
+        badge.style.cssText = 'margin-left:auto;font-size:11px;';
+        badge.innerHTML = Studio.MOCK_MODE
+            ? '<span style="color:#a3a3a3;">mock</span>'
+            : '<span style="color:#a3a3a3;">…</span>';
+        panelHeader.appendChild(badge);
+    },
+
+    _updateServerBadge(online) {
+        const badge = document.getElementById('server-conn-badge');
+        if (!badge) return;
+        if (Studio.MOCK_MODE) {
+            badge.innerHTML = '<span style="color:#a3a3a3;">mock</span>';
+            return;
+        }
+        badge.innerHTML = online
+            ? '<span style="color:#22c55e;">&#x25cf; Connected</span>'
+            : '<span style="color:#ef4444;">&#x25cf; Disconnected</span>';
+    },
+
     _renderActionButtons() {
         const el = document.getElementById('device-actions-section');
         if (!el) return;
@@ -85,24 +123,40 @@ const DevicePanel = {
     },
 
     _pollHealth() {
-        if (Studio.MOCK_MODE) return;
+        if (Studio.MOCK_MODE) {
+            this._updateServerBadge(null);
+            return;
+        }
         const poll = async () => {
             try {
                 const resp = await fetch(`${Studio.API_BASE}/api/health`).catch(() => null);
+                const online = !!(resp && resp.ok);
+                if (online !== this._serverOnline) {
+                    this._serverOnline = online;
+                    this._updateServerBadge(online);
+                }
                 const badge = document.getElementById('device-health-badge');
-                if (!badge) return;
-                if (resp && resp.ok) {
-                    badge.innerHTML = '<span class="tag tag-ok">OK</span>';
-                } else {
-                    badge.innerHTML = '<span class="tag tag-err">Offline</span>';
+                if (badge) {
+                    badge.innerHTML = online
+                        ? '<span class="tag tag-ok">OK</span>'
+                        : '<span class="tag tag-err">Offline</span>';
                 }
             } catch (e) {
+                this._serverOnline = false;
+                this._updateServerBadge(false);
                 const badge = document.getElementById('device-health-badge');
                 if (badge) badge.innerHTML = '<span class="tag tag-err">Offline</span>';
             }
         };
         poll();
-        this._healthTimer = setInterval(poll, 30000);
+        // Adaptive interval: 3 s when scan is active, 30 s when idle
+        const interval = this._scanActive ? 3000 : 30000;
+        this._healthTimer = setInterval(poll, interval);
+    },
+
+    _resetPollTimer() {
+        if (this._healthTimer) { clearInterval(this._healthTimer); this._healthTimer = null; }
+        this._pollHealth();
     },
 
     _enableCapture() {

@@ -9,7 +9,7 @@ const Studio = {
     panels: {},          // Registered panel modules
     logs: [],            // Activity log entries
     _token: null,        // JWT token acquired on init
-    MOCK_MODE: true,     // Dev mode — no backend needed
+    MOCK_MODE: false,    // Live mode — auto-detects backend availability
 
     async _acquireToken() {
         try {
@@ -31,13 +31,25 @@ const Studio = {
     },
 
     async init() {
-        // await this._acquireToken(); // disabled in dev mode
+        // Auto-detect backend; fall back to mock mode if unavailable
+        if (!this.MOCK_MODE) {
+            try {
+                const resp = await fetch(`${this.API_BASE}/api/health`).catch(() => null);
+                if (!resp || !resp.ok) {
+                    this.MOCK_MODE = true;
+                    console.warn('[Studio] Backend not reachable — falling back to mock mode');
+                } else {
+                    await this._acquireToken();
+                }
+            } catch (e) {
+                this.MOCK_MODE = true;
+                console.warn('[Studio] Backend check failed — falling back to mock mode:', e.message);
+            }
+        }
         this._setupTabs();
         this._setupPanelToggles();
         this._setupNavLinks();
         this._setupKeyboardShortcuts();
-        // this._pollDevices(); // disabled in dev mode
-        // this._pollGPU();     // disabled in dev mode
         // Load panel modules (const globals aren't on window — check typeof)
         if (typeof CustomerPanel !== 'undefined') {
             try { await CustomerPanel.init(); } catch(e) { this.log('CustomerPanel init error: ' + e.message, 'error'); }
