@@ -198,8 +198,6 @@ const Viewport = {
         const first = meshes[0];
         const meshId = first.id;
         if (!meshId) return;
-        // Hide empty state immediately so the Three.js canvas is visible during load
-        this._showEmpty(false);
         this._showInfo('Loading mesh…');
         const url = `${Studio.API_BASE}/api/mesh/${meshId}.glb`;
         this.loadGLB(url);

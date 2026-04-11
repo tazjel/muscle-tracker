@@ -147,7 +147,7 @@ const CustomerPanel = {
             <form id="edit-profile-form">
                 ${fields.map(f => `<div class="form-group">
                     <label class="form-label">${f.replace(/_/g, ' ').replace(' cm', ' (cm)').replace(' kg', ' (kg)')}</label>
-                    <input class="form-input" name="${f}" type="number" step="0.1" value="${data[f] || ''}">
+                    <input class="form-input" name="${f}" type="number" step="0.1" value="${(data.profile || data)[f] || ''}">
                 </div>`).join('')}
                 <div class="btn-row">
                     <button class="btn btn-accent btn-sm" type="submit">Save</button>
