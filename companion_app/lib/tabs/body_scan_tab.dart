@@ -97,6 +97,7 @@ class _BodyScanTabState extends State<BodyScanTab> {
             'timestamp_ms': DateTime.now().millisecondsSinceEpoch,
           });
 
+          if (!mounted || !fullScanRunning) return;
           setState(() {
             fullScanFrameCount = fullScanFrames.length;
             fullScanInstruction = 'PASS $passNum/3 — $label\nFrame ${i + 1}/10 — KEEP ROTATING';
@@ -122,6 +123,7 @@ class _BodyScanTabState extends State<BodyScanTab> {
     }
 
     try { await scanAudioPlayer!.play(AssetSource('audio/scan_complete.mp3')); } catch (_) {}
+    if (!mounted) return;
     setState(() { fullScanInstruction = 'SCAN COMPLETE — UPLOADING...'; });
     await _uploadFullBodyScan();
   }
@@ -163,8 +165,8 @@ class _BodyScanTabState extends State<BodyScanTab> {
 
       if (response.statusCode == 200) {
         final result = jsonDecode(body);
-        setState(() { fullScanRunning = false; fullScanInstruction = 'UPLOAD COMPLETE'; });
         if (!mounted) return;
+        setState(() { fullScanRunning = false; fullScanInstruction = 'UPLOAD COMPLETE'; });
         if (result['session_id'] != null) {
           Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => _BodyScanViewerScreen(
@@ -174,10 +176,11 @@ class _BodyScanTabState extends State<BodyScanTab> {
           ));
         }
       } else {
+        if (!mounted) return;
         setState(() { fullScanInstruction = 'UPLOAD FAILED: $body'; });
       }
     } catch (e) {
-      setState(() { fullScanInstruction = 'UPLOAD ERROR: $e'; });
+      if (mounted) setState(() { fullScanInstruction = 'UPLOAD ERROR: $e'; });
     }
   }
 

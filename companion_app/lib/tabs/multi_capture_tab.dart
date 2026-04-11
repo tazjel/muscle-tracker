@@ -102,6 +102,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
         final file = File(path);
         if (await file.exists()) {
           final data = jsonDecode(await file.readAsString());
+          if (!mounted) return;
           setState(() {
             dualRole = data['role'] ?? 'front';
             isDualMode = true;
@@ -160,10 +161,12 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
         final dest = '${dualDir.path}/${dualRole}_${dualCaptureCount}_$timestamp.jpg';
         await File(best).copy(dest);
       }
+      if (!mounted) return;
       setState(() { dualStatus = 'DONE'; isCapturing = false; });
       await Future.delayed(const Duration(seconds: 2));
       if (mounted) setState(() => dualStatus = 'READY');
     } catch (e) {
+      if (!mounted) return;
       setState(() { dualStatus = 'ERROR'; isCapturing = false; });
       await Future.delayed(const Duration(seconds: 2));
       if (mounted) setState(() => dualStatus = 'READY');
@@ -177,6 +180,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
     final dir = await getTemporaryDirectory();
     final sessionDir = Directory('${dir.path}/profile_session_${DateTime.now().millisecondsSinceEpoch}');
     await sessionDir.create(recursive: true);
+    if (!mounted) return;
     setState(() { profileRunning = true; profileLocked = true; profileSecondsLeft = 20; profileFrameCount = 0; });
     int tick = 0;
     profileTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
@@ -201,7 +205,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
             'timestamp': DateTime.now().millisecondsSinceEpoch / 1000.0,
             ...widget.latestSensor,
           });
-          setState(() => profileFrameCount = framePaths.length);
+          if (mounted) setState(() => profileFrameCount = framePaths.length);
           isTakingProfileFrame = false;
         }
       } catch (e) { print('Profile frame capture error: $e'); isTakingProfileFrame = false; }
@@ -210,6 +214,7 @@ class _MultiCaptureTabState extends State<MultiCaptureTab> {
   }
 
   Future<void> _finishProfileCapture(List<String> framePaths, Directory sessionDir) async {
+    if (!mounted) return;
     setState(() { profileRunning = false; profileLocked = false; isTakingProfileFrame = false; profileSecondsLeft = 0; statusMessage = 'Uploading session...'; });
     try {
       var request = http.MultipartRequest(
