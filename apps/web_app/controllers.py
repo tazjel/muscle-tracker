@@ -9,7 +9,9 @@ import json
 import base64
 import cv2
 import numpy as np
+import time
 from datetime import datetime
+from .event_hub import broadcast, subscribe, unsubscribe, get_recent
 
 logger = logging.getLogger(__name__)
 
@@ -420,6 +422,46 @@ def live_analyze():
 @action.uses(cors)
 def api_options(path):
     return ""
+
+
+# --- SERVER-SENT EVENTS ---
+
+@action('api/events', method=['GET'])
+@action.uses(cors)
+def sse_stream():
+    """SSE endpoint for real-time studio updates.
+
+    Clients connect with EventSource and receive JSON events.
+    Supports Last-Event-ID header for reconnection.
+    """
+    response.headers['Content-Type'] = 'text/event-stream'
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Connection'] = 'keep-alive'
+    response.headers['X-Accel-Buffering'] = 'no'  # Disable nginx buffering
+
+    # Check for reconnection
+    last_id = int(request.headers.get('Last-Event-ID', 0))
+
+    sub = subscribe()
+    try:
+        # Send missed events on reconnect
+        missed = get_recent(since_id=last_id)
+        for event in missed:
+            yield f"id: {event['id']}\nevent: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
+
+        # Stream new events
+        while True:
+            if sub['queue']:
+                event = sub['queue'].popleft()
+                yield f"id: {event['id']}\nevent: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
+            else:
+                # Send keepalive comment every 15s
+                yield ": keepalive\n\n"
+                time.sleep(1)
+    except GeneratorExit:
+        pass
+    finally:
+        unsubscribe(sub)
 
 
 # --- STATIC FILE SERVING ---

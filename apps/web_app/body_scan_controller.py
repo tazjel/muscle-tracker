@@ -3,6 +3,7 @@ from py4web import action, request, response, abort
 from py4web.utils.cors import CORS
 from .models import db
 from .controllers import cors
+from .event_hub import broadcast
 import os
 import logging
 import json
@@ -109,6 +110,7 @@ def upload_body_scan(customer_id):
             coverage_report=coverage_json,
         )
         db.commit()
+        broadcast('scan_progress', {'customer_id': customer_id, 'session_id': session_id, 'status': 'frame_processed'})
 
         return dict(
             session_id=session_id,
@@ -591,6 +593,7 @@ def upload_live_frame(customer_id, session_id):
 
     db(db.body_scan_session.id == session.id).update(**update_fields)
     db.commit()
+    broadcast('scan_progress', {'customer_id': customer_id, 'session_id': session_id, 'status': 'frame_processed'})
 
     return dict(
         status='ok',

@@ -6,6 +6,7 @@ from .controllers import (
     _auth_check, _abs_path,
     ALLOWED_EXTENSIONS, cors,
 )
+from .event_hub import broadcast
 import os
 import logging
 
@@ -108,6 +109,7 @@ def reconstruct_3d(customer_id):
             num_faces=mesh_data.get('num_faces'),
         )
         db.commit()
+        broadcast('mesh_ready', {'customer_id': customer_id, 'mesh_id': mesh_id})
 
         return dict(
             status='success',

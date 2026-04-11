@@ -6,6 +6,7 @@ from .controllers import (
     _auth_check, _abs_path, _BODY_PROFILE_FIELDS,
     ALLOWED_EXTENSIONS, cors,
 )
+from .event_hub import broadcast
 import os
 import logging
 import json
@@ -378,6 +379,7 @@ def update_body_profile(customer_id):
     )
     customer.update_record(**updates)
     db.commit()
+    broadcast('customer_updated', {'customer_id': customer_id})
     return dict(status='success', profile_completed=updates['profile_completed'], updated=list(updates.keys()))
 
 
