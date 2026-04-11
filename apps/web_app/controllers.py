@@ -12,6 +12,7 @@ import numpy as np
 import time
 from datetime import datetime
 from .event_hub import broadcast, subscribe, unsubscribe, get_recent
+from .rate_limit import rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,9 @@ def login():
     Issue a JWT token. Accepts email or customer_id.
     If the customer has a password_hash set, password is required.
     """
+    limited = rate_limit('auth', max_requests=10, window_seconds=60)
+    if limited:
+        return limited
     data = request.json or {}
     email = data.get('email', '').strip()
     customer_id = data.get('customer_id')
@@ -150,6 +154,9 @@ def auth_admin_token():
     """
     Issue an admin JWT token.
     """
+    limited = rate_limit('auth', max_requests=10, window_seconds=60)
+    if limited:
+        return limited
     data = request.json or {}
     secret = data.get('admin_secret', '')
     expected = os.environ.get('MUSCLE_TRACKER_ADMIN_SECRET', 'dev-admin-secret')
@@ -279,6 +286,9 @@ def create_customer():
 @action('api/pose_check', method=['POST'])
 @action.uses(db, cors)
 def pose_check():
+    limited = rate_limit('upload', max_requests=5, window_seconds=60)
+    if limited:
+        return limited
     payload, err = _auth_check()
     if err: return err
 
